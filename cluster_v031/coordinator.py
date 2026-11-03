@@ -44,11 +44,25 @@ class SessionCoordinator:
                   session_id TEXT NOT NULL, rank INTEGER NOT NULL,
                   node_id TEXT NOT NULL, state TEXT NOT NULL,
                   result_json TEXT, error TEXT,
+                  reserved_cpu INTEGER NOT NULL DEFAULT 1,
+                  reserved_memory_mb INTEGER NOT NULL DEFAULT 512,
                   PRIMARY KEY(session_id, rank),
                   UNIQUE(session_id,node_id)
                 );
                 CREATE INDEX IF NOT EXISTS tp_node_jobs ON tp_assignments(node_id,state);
             """)
+            # Migrate existing v0.3.1 SQLite deployments in place.
+            columns = {item["name"] for item in db.execute(
+                "PRAGMA table_info(tp_assignments)")}
+            if "reserved_cpu" not in columns:
+                db.execute("ALTER TABLE tp_assignments ADD COLUMN reserved_cpu INTEGER NOT NULL DEFAULT 1")
+            if "reserved_memory_mb" not in columns:
+                db.execute("ALTER TABLE tp_assignments ADD COLUMN reserved_memory_mb INTEGER NOT NULL DEFAULT 512")
+
+    @staticmethod
+    def _reservation_mb(weight_file_bytes):
+        # Conservative runtime reserve; actual RSS must still be measured.
+        return 512 + math.ceil(weight_file_bytes * 2 / (1024 * 1024))
 
     @staticmethod
     def _allocate_port():
@@ -62,7 +76,7 @@ class SessionCoordinator:
             WHERE s.state IN ('preparing','running') AND (
               s.deadline<? OR EXISTS (
                 SELECT 1 FROM tp_assignments a JOIN nodes n ON n.id=a.node_id
-                WHERE a.session_id=s.id AND n.last_seen<?
+                WHERE a.session_id=s.id AND a.state IN ('assigned','ready') AND n.last_seen<?
               ))""", (now, now - self.cluster.heartbeat_ttl)).fetchall()
         for row in rows:
             db.execute("""UPDATE tp_sessions SET state='failed',
@@ -81,20 +95,21 @@ class SessionCoordinator:
                     or node["cpu_cores"] - reservation["cpu"] < 1):
                 continue
             free_ram = node["free_ram_mb"] - reservation["ram"]
-            if free_ram < 128:
+            if free_ram < 512:
                 continue
             score = node["compute_score"] * max(0.05, 1 - node["cpu_load_pct"] / 100)
             idle.append((score, free_ram, node["id"]))
         idle.sort(reverse=True)
         chosen = []
         for rank in range(workers):
-            need = 128 + math.ceil(file_sizes[rank] * 2 / (1024 * 1024))
+            need = self._reservation_mb(file_sizes[rank])
             match = next((node for node in idle
                           if node[1] >= need and node[2] not in chosen), None)
             if match is None:
                 raise LeaseConflict("not enough online idle tp_gpt2 nodes with RAM headroom")
             chosen.append(match[2])
-        return chosen
+        return [(node_id, self._reservation_mb(file_sizes[rank]))
+                for rank, node_id in enumerate(chosen)]
 
     def create_synthetic(self, *, workers, hidden, heads, layers, prompt_ids, new_tokens):
         if (not 1 <= workers <= 4 or not 8 <= hidden <= 128
@@ -175,10 +190,11 @@ class SessionCoordinator:
                        (session_id, "preparing", now, now, now + self.prepare_ttl,
                         workers, json.dumps(prompt_ids), new_tokens, "127.0.0.1",
                         port, json.dumps(manifest), None))
-            for rank, node_id in enumerate(nodes):
-                db.execute("""INSERT INTO tp_assignments(session_id,rank,node_id,state)
-                              VALUES(?,?,?,?)""",
-                           (session_id, rank, node_id, "assigned"))
+            for rank, (node_id, reserved_mb) in enumerate(nodes):
+                db.execute("""INSERT INTO tp_assignments(
+                                session_id,rank,node_id,state,reserved_cpu,reserved_memory_mb)
+                              VALUES(?,?,?,'assigned',1,?)""",
+                           (session_id, rank, node_id, reserved_mb))
         return self.status(session_id)
 
     def _indexed_files(self, session_id):
@@ -273,6 +289,7 @@ class SessionCoordinator:
 
     def authorize_file(self, node_id, token, session_id, filename):
         with self.cluster._tx() as db:
+            self._expire(db, self.clock())
             row = self._assignment_for(db, node_id, token, session_id)
             allowed = {"manifest.json", f"rank_{row['rank']}.pt"}
             if row["rank"] == 0:
@@ -283,6 +300,7 @@ class SessionCoordinator:
 
     def ready(self, node_id, token, session_id):
         with self.cluster._tx() as db:
+            self._expire(db, self.clock())
             row = self._assignment_for(db, node_id, token, session_id)
             if row["state"] != "preparing" or row["assignment_state"] not in ("assigned", "ready"):
                 raise LeaseConflict("session not preparing")
@@ -301,30 +319,83 @@ class SessionCoordinator:
 
     def complete(self, node_id, token, session_id, result=None, error=None):
         with self.cluster._tx() as db:
+            now = self.clock()
+            self._expire(db, now)
             row = self._assignment_for(db, node_id, token, session_id)
-            if row["state"] not in ("running", "failed") or row["assignment_state"] != "ready":
-                raise LeaseConflict("cannot complete session that is not running or already completed")
+            if row["state"] != "running" or row["assignment_state"] != "ready":
+                raise LeaseConflict("session failed, expired or already completed")
             if error and len(error) > 500:
                 raise ValueError("error too long")
             if result is not None and len(json.dumps(result)) > 65536:
                 raise ValueError("result too large")
+            if error is None:
+                # This checks protocol structure, not trustworthiness of a
+                # computation performed by an untrusted outside device.
+                if not isinstance(result, dict):
+                    raise ValueError("rank completion requires a result object")
+                if row["rank"] == 0:
+                    ids = result.get("generated_ids")
+                    model = json.loads(row["config_json"])
+                    if (not isinstance(ids, list)
+                            or len(ids) != row["new_tokens"]
+                            or any(type(v) is not int or not 0 <= v < model["vocab"]
+                                   for v in ids)):
+                        raise ValueError("rank zero returned invalid generated token IDs")
+                elif result.get("rank") != row["rank"] or result.get("completed") is not True:
+                    raise ValueError("peer rank returned invalid completion result")
             assignment_state = "failed" if error else "done"
             db.execute("""UPDATE tp_assignments SET state=?,result_json=?,error=?
                           WHERE session_id=? AND node_id=?""",
                        (assignment_state,
                         json.dumps(result) if result is not None else None,
                         error, session_id, node_id))
-            now = self.clock()
             if error:
                 db.execute("""UPDATE tp_sessions SET state='failed',error=?,updated=?
                               WHERE id=?""",
                            (f"rank {row['rank']}: {error}", now, session_id))
-            elif row["state"] == "running":
+            else:
                 outstanding = db.execute("""SELECT COUNT(*) AS n FROM tp_assignments
                     WHERE session_id=? AND state!='done'""",
                     (session_id,)).fetchone()["n"]
                 if outstanding == 0:
                     db.execute("""UPDATE tp_sessions SET state='completed',updated=?
-                                  WHERE id=?""",
-                               (now, session_id))
+                                  WHERE id=?""", (now, session_id))
         return {"ok": True, "state": assignment_state}
+
+    def cancel(self, session_id):
+        """Idempotent administrative cancellation; workers poll for revocation."""
+        with self.cluster._tx() as db:
+            self._expire(db, self.clock())
+            row = db.execute("SELECT state FROM tp_sessions WHERE id=?",
+                             (session_id,)).fetchone()
+            if row is None:
+                raise KeyError("session not found")
+            if row["state"] in ("preparing", "running"):
+                db.execute("""UPDATE tp_sessions SET state='failed',
+                              error='cancelled by administrator',updated=?
+                              WHERE id=?""", (self.clock(), session_id))
+                return {"status": "failed", "cancelled": True}
+            return {"status": row["state"], "cancelled": False}
+
+    def prune(self, older_than_seconds=86400):
+        """Remove *terminal* session files after a grace period.
+
+        A running session can never be pruned. SQLite deletion and the file
+        cleanup are separate; an interrupted cleanup is safe to retry.
+        """
+        if older_than_seconds < 60:
+            raise ValueError("retention must be at least 60 seconds")
+        with self.cluster._tx() as db:
+            now = self.clock()
+            self._expire(db, now)
+            rows = db.execute("""SELECT id FROM tp_sessions
+                    WHERE state IN ('completed','failed') AND updated<=?""",
+                    (now - older_than_seconds,)).fetchall()
+            ids = [row["id"] for row in rows]
+            for session_id in ids:
+                db.execute("DELETE FROM tp_assignments WHERE session_id=?", (session_id,))
+                db.execute("DELETE FROM tp_sessions WHERE id=?", (session_id,))
+        for session_id in ids:
+            self._file_index.pop(session_id, None)
+            shutil.rmtree(self.root / session_id, ignore_errors=True)
+        return {"removed": len(ids)}
