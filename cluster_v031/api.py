@@ -2,7 +2,8 @@
 import hmac
 
 from fastapi import APIRouter, Header, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel, Field
 
 from cluster_v03.store import LeaseConflict
@@ -98,9 +99,27 @@ def create_router(coordinator: SessionCoordinator, *, admin_key: str):
     @router.get("/sessions/{session_id}/files/{filename}")
     def shard(session_id: str, filename: str, node_id: str,
               x_node_token: str = Header(default="")):
-        location = handle(coordinator.authorize_file, node_id, x_node_token,
-                          session_id, filename)
-        return FileResponse(location, media_type="application/octet-stream")
+        opened = handle(coordinator.open_authorized_file, node_id, x_node_token,
+                        session_id, filename)
+
+        def chunks():
+            try:
+                while True:
+                    block = opened.read(1024 * 1024)
+                    if not block:
+                        break
+                    yield block
+            finally:
+                opened.close()
+
+        size = opened.seek(0, 2)
+        opened.seek(0)
+        return StreamingResponse(
+            chunks(), media_type="application/octet-stream",
+            headers={"Content-Length": str(size),
+                     "X-Content-Type-Options": "nosniff",
+                     "Cache-Control": "no-store"},
+            background=BackgroundTask(opened.close))
 
     @router.post("/sessions/{session_id}/ready")
     def ready(session_id: str, body: NodeAction,
