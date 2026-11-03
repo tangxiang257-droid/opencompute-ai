@@ -69,3 +69,19 @@ curl -X POST http://127.0.0.1:8000/v0.2/plan \
 ```
 
 This endpoint calculates a plan only. It does not start Workers, reserve devices or expose an internet-facing scheduler. Keep the API bound to localhost unless proper authentication and isolation are later implemented.
+
+
+## Autotune: choose based on measured throughput on *this computer*
+
+The static planner can identify candidates likely to fit, but it cannot predict compute speed. The optional benchmark compares the same synthetic model and prompt at every capacity-feasible TP degree, then picks the **fastest observed configuration on the current host**:
+
+```bash
+python -m benchmarks.autotune --devices 4 --hidden 32 --heads 4 \
+    --layers 2 --new-tokens 8 --repeats 3 --memory-mib 512
+
+# Optional analytical delay (on top of real localhost Gloo communication)
+python -m benchmarks.autotune --devices 4 --hidden 32 --heads 4 \
+    --latency-ms 5 --bandwidth-mbps 100 --simulate-network
+```
+
+The result distinguishes `capacity_first_workers` (static heuristic) from `fastest_observed_workers_on_test_host` (local empirical measurement). Neither result guarantees the best configuration on real personal devices: actual hardware, per-device FLOPS, RAM availability and true network measurements must eventually feed the scheduler.
