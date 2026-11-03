@@ -113,8 +113,8 @@ class RendezvousSessions(unittest.TestCase):
     def test_retry_admin_only(self):
         sid = self.session().json()["session_id"]
         self.assertEqual(self.api.post(f"/v0.3.1/sessions/{sid}/retry").status_code, 401)
-        self.assertEqual(self.api.post(f"/v0.3.1/sessions/../../retry",
-            headers={"X-Admin-Key": ADMIN}).status_code, 404)
+        self.assertEqual(self.api.post("/v0.3.1/sessions/not-hex/retry",
+            headers={"X-Admin-Key": ADMIN}).status_code, 422)
 
     def test_restart_invalidates_in_memory_rendezvous(self):
         sid = self.session().json()["session_id"]
