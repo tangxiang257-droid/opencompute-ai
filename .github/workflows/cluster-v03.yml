@@ -16,7 +16,9 @@ on:
       - 'benchmarks/cluster_sim.py'
       - 'backend/app.py'
       - 'Dockerfile.worker'
+      - 'Dockerfile.tp-worker'
       - 'docker-compose.yml'
+      - 'docker-compose.tp-local.yml'
       - 'requirements-dev.txt'
       - '.github/workflows/cluster-v03.yml'
   pull_request:
@@ -35,7 +37,9 @@ on:
       - 'benchmarks/cluster_sim.py'
       - 'backend/app.py'
       - 'Dockerfile.worker'
+      - 'Dockerfile.tp-worker'
       - 'docker-compose.yml'
+      - 'docker-compose.tp-local.yml'
       - 'requirements-dev.txt'
       - '.github/workflows/cluster-v03.yml'
 jobs:
@@ -51,6 +55,11 @@ jobs:
         run: |
           python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -r requirements-dev.txt
+      - name: Validate optional Linux TP container composition without starting services
+        run: |
+          OPENCOMPUTE_ADMIN_KEY=ci-test-admin-placeholder-long-only \
+          OPENCOMPUTE_JOIN_KEY=ci-test-join-placeholder-long-only \
+          docker compose -f docker-compose.tp-local.yml config --quiet
       - name: Compile check source and regression tests
         run: python -m compileall -q backend compute cluster_v03 cluster_v031 tests benchmarks
       - name: Test scheduling, auth, leases, concurrent claims and Worker jobs
