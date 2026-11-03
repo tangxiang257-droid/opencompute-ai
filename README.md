@@ -92,3 +92,5 @@ python -m unittest discover -s tests -v
 - `python -m compute.topology_planner --devices 4 --memory-mib 1024 --latency-ms 5 --bandwidth-mbps 100` previews rank-local memory and estimated network overhead.
 - `POST /v0.2/plan` is a localhost-only dry-run endpoint, not a live scheduler.
 - Planner outputs are **estimates, not measured memory feasibility or throughput guarantees**.
+
+- `python -m benchmarks.autotune --devices 4 --hidden 32 --heads 4 --layers 2 --repeats 3` measures feasible CPU TP configurations and reports the fastest **on the test host**, not an internet-wide optimum.
