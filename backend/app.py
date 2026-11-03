@@ -20,7 +20,7 @@ from compute.topology_planner import plan
 app = FastAPI(title="OpenCompute AI CPU research API")
 
 
-def require_admin(x_admin_key: str = Header(default="")):
+def require_admin(x_admin_key: str = Header(default="", alias="X-Admin-Key")):
     """Fail closed when a long independent admin secret was not configured."""
     secret = os.getenv("OPENCOMPUTE_ADMIN_KEY", "")
     if len(secret) < 16:
