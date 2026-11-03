@@ -1,4 +1,4 @@
-import os, sqlite3, time, uuid, json, hashlib
+import os, sqlite3, time, uuid, json, hashlib, hmac
 from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, Depends
 from fastapi.responses import HTMLResponse
@@ -21,7 +21,7 @@ def db():
 def auth(x_api_key: str = Header(default="")):
     if len(KEY) < 16:
         raise HTTPException(503, "Legacy app admin key not configured")
-    if not x_api_key or not __import__("hmac").compare_digest(x_api_key, KEY):
+    if not x_api_key or not hmac.compare_digest(x_api_key, KEY):
         raise HTTPException(401, "Invalid API key")
 
 class Node(BaseModel):
