@@ -141,6 +141,7 @@ def execute_rank(folder, assignment, timeout=150, cancellation_check=None):
         "RANK": str(rank), "WORLD_SIZE": str(world),
         "MASTER_ADDR": assignment["master_host"],
         "MASTER_PORT": str(assignment["master_port"]),
+        "OPENCOMPUTE_EXTERNAL_STORE": "1",
         "OMP_NUM_THREADS": "1",
     })
     command = [
