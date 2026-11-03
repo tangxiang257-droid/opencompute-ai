@@ -87,7 +87,8 @@ def download_and_verify(base, assignment, node_id, token, data_root):
             or any(not isinstance(entry, dict) for entry in entries)):
         raise ValueError("unexpected manifest files")
     names = [entry.get("name") for entry in entries]
-    if set(names) != required or len(set(names)) != len(names):
+    if (any(not isinstance(name, str) for name in names)
+            or set(names) != required or len(set(names)) != len(names)):
         raise ValueError("unexpected or duplicate manifest files")
     # Validate all descriptors before issuing any network request.
     for entry in entries:
