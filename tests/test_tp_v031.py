@@ -182,6 +182,10 @@ class Sessions(unittest.TestCase):
         self.assertEqual(self.ready(sid, node).status_code, 409)
         self.assertEqual(self.api.post("/v0.3.1/sessions/prune",
             json={"older_than_seconds": 60}).status_code, 401)
+        self.assertEqual(self.api.post(
+            f"/v0.3.1/sessions/{sid}/stopped",
+            headers={"X-Node-Token": node["node_token"]},
+            json={"node_id": node["id"]}).status_code, 200)
         start = self.coordinator.clock()
         self.coordinator.clock = lambda: start + 61
         cleanup = self.api.post("/v0.3.1/sessions/prune",
@@ -233,6 +237,13 @@ class Sessions(unittest.TestCase):
         self.assertEqual(self.api.post(
             f"/v0.3.1/sessions/{sid}/cancel",
             headers={"X-Admin-Key": ADMIN}).status_code, 200)
+        # A failed process group keeps its reservation until its Worker
+        # actually acknowledges teardown, or the conservative grace expires.
+        self.assertIsNone(self.store.claim(node["id"], node["node_token"])["task"])
+        self.assertEqual(self.api.post(
+            f"/v0.3.1/sessions/{sid}/stopped",
+            headers={"X-Node-Token": node["node_token"]},
+            json={"node_id": node["id"]}).status_code, 200)
         self.assertIsNotNone(self.store.claim(node["id"], node["node_token"])["task"])
 
 
