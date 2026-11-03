@@ -322,7 +322,12 @@ class SessionCoordinator:
             now = self.clock()
             self._expire(db, now)
             row = self._assignment_for(db, node_id, token, session_id)
-            if row["state"] != "running" or row["assignment_state"] != "ready":
+            if error:
+                allowed = (row["state"] in ("preparing", "running")
+                           and row["assignment_state"] in ("assigned", "ready"))
+            else:
+                allowed = row["state"] == "running" and row["assignment_state"] == "ready"
+            if not allowed:
                 raise LeaseConflict("session failed, expired or already completed")
             if error and len(error) > 500:
                 raise ValueError("error too long")
