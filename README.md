@@ -74,3 +74,12 @@ python -m unittest discover -s tests -v
 `compute.block` implements a pre-norm residual attention + GELU MLP block with two All-Reduce operations per block. Both demos compare results against streaming single-process references. The block demo regenerates deterministic shard files separately in each process for convenient single-host testing, so it does not measure storage or network efficiency.
 
 **Not yet included:** learned tokenizer/embeddings, trained checkpoint import, token sampling, full autoregressive Transformer-block KV cache, true multi-host orchestration, internet-safe worker communication, network bandwidth shaping or production GPU acceleration. Attention KV cache is demonstrated separately in `compute.attention`.
+
+
+## v0.2 follow-up: network and official GPT-2 compatibility
+
+- [Local Gloo timing and simulated WAN sensitivity](docs/network-lab.md).
+- [Hugging Face reference compatibility workflow](.github/workflows/gpt2-compat.yml): automatic offline test comparing our distributed output against a random-weight official GPT-2 implementation, and manually triggered real `sshleifer/tiny-gpt2` checkpoint parity.
+- [Real checkpoint validation script](benchmarks/validate_pretrained.py): `python -m benchmarks.validate_pretrained --model sshleifer/tiny-gpt2 --workers 2 --new-tokens 2`.
+
+**Scope:** single-host experiments are validated locally; HF integration requires optional dependencies and the pretrained model run requires a download. Added bandwidth/latency waits are an explicit sensitivity model, not actual WAN shaping.
