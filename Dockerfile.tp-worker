@@ -1,0 +1,10 @@
+# Linux localhost-only research TP Worker; not for untrusted internet nodes.
+FROM python:3.11-slim
+WORKDIR /app
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir "requests>=2.31,<3" "psutil>=5.9,<8"
+COPY compute/ compute/
+COPY cluster_v03/ cluster_v03/
+COPY cluster_v031/ cluster_v031/
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1
+CMD ["python", "-m", "cluster_v031.worker", "--url", "http://127.0.0.1:8000", "--cache", "/cache"]
