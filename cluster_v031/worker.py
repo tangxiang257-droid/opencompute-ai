@@ -122,6 +122,28 @@ def download_and_verify(base, assignment, node_id, token, data_root):
     return folder
 
 
+def restricted_child_env(assignment):
+    """Allowlist the minimum environment needed by trusted local Gloo ranks.
+
+    In particular, never pass coordinator/admin/join credentials, cloud keys,
+    or user-provided LD_PRELOAD / PYTHONPATH into the inference subprocess.
+    """
+    env = {name: os.environ[name] for name in (
+        "PATH", "HOME", "LANG", "LC_ALL", "TMPDIR")
+        if name in os.environ}
+    env.update({
+        "RANK": str(assignment["rank"]),
+        "WORLD_SIZE": str(assignment["workers"]),
+        "MASTER_ADDR": assignment["master_host"],
+        "MASTER_PORT": str(assignment["master_port"]),
+        "OPENCOMPUTE_EXTERNAL_STORE": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "PYTHONUNBUFFERED": "1",
+    })
+    return env
+
+
 def execute_rank(folder, assignment, timeout=150, cancellation_check=None,
                  rss_limit_mib=None):
     """Run a fixed module and stop the process if the session is revoked.
@@ -147,16 +169,7 @@ def execute_rank(folder, assignment, timeout=150, cancellation_check=None,
     if (type(assignment["master_port"]) is not int
             or not 1 <= assignment["master_port"] <= 65535):
         raise ValueError("invalid rendezvous port")
-    env = os.environ.copy()
-    for name in ("OPENCOMPUTE_JOIN_KEY", "OPENCOMPUTE_ADMIN_KEY", "X_NODE_TOKEN"):
-        env.pop(name, None)
-    env.update({
-        "RANK": str(rank), "WORLD_SIZE": str(world),
-        "MASTER_ADDR": assignment["master_host"],
-        "MASTER_PORT": str(assignment["master_port"]),
-        "OPENCOMPUTE_EXTERNAL_STORE": "1",
-        "OMP_NUM_THREADS": "1",
-    })
+    env = restricted_child_env(assignment)
     # Limits are applied by the child *before* importing PyTorch; no unsafe
     # preexec_fn is used while the agent heartbeat thread is running.
     command = [
@@ -231,6 +244,8 @@ def execute_rank(folder, assignment, timeout=150, cancellation_check=None,
 
 
 def run(*, base_url, join_key, name, cache_root, once=False, poll_seconds=0.5):
+    if os.name == "posix":
+        os.umask(0o077)  # temporary shard caches and metadata remain owner-only
     if len(join_key) < 16:
         raise ValueError("join key must have >=16 characters")
     if not (base_url.startswith("http://127.0.0.1:")
