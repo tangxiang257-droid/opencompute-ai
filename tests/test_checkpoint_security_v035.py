@@ -208,6 +208,38 @@ class WorkerCheckpointGuard(unittest.TestCase):
             download.assert_not_called()
 
 
+    def test_duplicate_descriptors_and_cache_directory_symlink(self):
+        session = "a" * 32
+        entries = [
+            {"name": "manifest.json", "size": 100, "sha256": "a" * 64},
+            {"name": "rank_0.pt", "size": 100, "sha256": "b" * 64},
+            {"name": "rank0_io.pt", "size": 100, "sha256": "c" * 64},
+        ]
+        assignment = {"session_id": session, "rank": 0,
+                      "workers": 1, "files": [entries[0], entries[1], entries[1]]}
+        with tempfile.TemporaryDirectory() as root, \
+             patch("cluster_v031.worker.requests.get") as download:
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                download_and_verify("http://127.0.0.1:8000",
+                                    assignment, "node", "token", root)
+            download.assert_not_called()
+        assignment["files"] = entries
+        with tempfile.TemporaryDirectory() as root, \
+             patch("cluster_v031.worker.requests.get") as download:
+            cache = Path(root) / "cache"
+            cache.mkdir()
+            outside = Path(root) / "outside"
+            outside.mkdir()
+            try:
+                (cache / session).symlink_to(outside, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"directory symlink unavailable: {exc}")
+            with self.assertRaisesRegex(ValueError, "cached model directory symlink"):
+                download_and_verify("http://127.0.0.1:8000",
+                                    assignment, "node", "token", cache)
+            download.assert_not_called()
+
+
 class ChildEnvironment(unittest.TestCase):
     def test_secrets_never_reach_inference_child(self):
         assignment = {"rank": 0, "workers": 2, "master_host": "127.0.0.1",
