@@ -1,0 +1,20 @@
+services:
+  api:
+    build: .
+    ports: ["127.0.0.1:8000:8000"]
+    environment:
+      DATABASE_PATH: /data/opencompute.db
+      ADMIN_KEY: ${ADMIN_KEY:?Set ADMIN_KEY in .env}
+    volumes: ["db:/data"]
+    restart: unless-stopped
+  worker:
+    build: .
+    command: python -m app.worker
+    environment:
+      API_URL: http://api:8000
+      ADMIN_KEY: ${ADMIN_KEY:?Set ADMIN_KEY in .env}
+      WORKER_NAME: simulated-worker
+    depends_on: [api]
+    restart: unless-stopped
+volumes:
+  db:
