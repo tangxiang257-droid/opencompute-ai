@@ -19,6 +19,27 @@ import time
 import psutil
 import requests
 
+from cluster_v03.worker import calibrate_cpu_score
+
+
+def _memory_mb():
+    """Best-effort host/cgroup memory capacity, never overstate container RAM."""
+    mem = psutil.virtual_memory()
+    total, available = int(mem.total), int(mem.available)
+    # Linux cgroup v2: Docker may report host RAM via psutil.
+    try:
+        limit_text = Path("/sys/fs/cgroup/memory.max").read_text().strip()
+        current_text = Path("/sys/fs/cgroup/memory.current").read_text().strip()
+        if limit_text.isdigit() and current_text.isdigit():
+            limit, current = int(limit_text), int(current_text)
+            if limit > 0:
+                total = min(total, limit)
+                available = min(available, max(0, limit - current))
+    except (OSError, ValueError):
+        pass
+    return (max(128, min(1048576, total // (1024 * 1024))),
+            max(0, min(1048576, available // (1024 * 1024))))
+
 
 def _request(base, method, route, *, headers, json_body=None, timeout=15):
     response = requests.request(method, base.rstrip("/") + route, headers=headers,
@@ -169,7 +190,8 @@ def run(*, base_url, join_key, name, cache_root, once=False, poll_seconds=0.5):
     if not (base_url.startswith("http://127.0.0.1:")
             or base_url.startswith("http://localhost:")):
         raise ValueError("v0.3.1 auto-launch is deliberately localhost only")
-    resources = psutil.virtual_memory()
+    total_ram_mb, _ = _memory_mb()
+    compute_score = max(0.01, min(1e6, calibrate_cpu_score()))
     register = _request(
         base_url, "POST", "/v0.3/nodes/register",
         headers={"X-Join-Key": join_key},
@@ -177,8 +199,8 @@ def run(*, base_url, join_key, name, cache_root, once=False, poll_seconds=0.5):
             "name": name,
             "platform": platform.system().lower(),
             "cpu_cores": max(1, min(128, os.cpu_count() or 1)),
-            "ram_mb": max(128, min(1048576, int(resources.total / 1048576))),
-            "compute_score": 100, "slots": 1, "capabilities": ["tp_gpt2"],
+            "ram_mb": total_ram_mb,
+            "compute_score": compute_score, "slots": 1, "capabilities": ["tp_gpt2"],
         },
     ).json()
     node_id, token = register["id"], register["node_token"]
@@ -188,7 +210,7 @@ def run(*, base_url, join_key, name, cache_root, once=False, poll_seconds=0.5):
     def heartbeat_loop():
         while not stop.is_set():
             try:
-                free = min(int(psutil.virtual_memory().available / 1048576), 1048576)
+                _, free = _memory_mb()
                 _request(base_url, "POST", f"/v0.3/nodes/{node_id}/heartbeat",
                          headers=headers, json_body={
                              "free_ram_mb": free,
