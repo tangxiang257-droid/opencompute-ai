@@ -94,6 +94,8 @@ class Sessions(unittest.TestCase):
         sid = created.json()["session_id"]
         a, b = self.assign(high), self.assign(low)
         self.assertEqual((a["rank"], b["rank"]), (0, 1))
+        self.assertGreaterEqual(a["reserved_memory_mb"], 512)
+        self.assertGreaterEqual(b["reserved_memory_mb"], 512)
         self.assertIsNone(self.assign(other))
         self.assertEqual(self.create().status_code, 409)
         self.assertEqual(self.api.get(f"/v0.3.1/nodes/{high['id']}/assignment").status_code, 401)
