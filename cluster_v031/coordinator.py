@@ -345,7 +345,8 @@ class SessionCoordinator:
         with self.cluster._tx() as db:
             self._expire(db, self.clock())
             self.cluster._require_node(db, node_id, token)
-            row = db.execute("""SELECT s.*,a.rank,a.state AS assignment_state
+            row = db.execute("""SELECT s.*,a.rank,a.state AS assignment_state,
+                       a.reserved_memory_mb
                 FROM tp_assignments a JOIN tp_sessions s ON a.session_id=s.id
                 WHERE a.node_id=? AND a.state IN ('assigned','ready')
                   AND s.state IN ('preparing','running')
@@ -368,6 +369,7 @@ class SessionCoordinator:
             "master_port": row["master_port"],
             "prompt_ids": json.loads(row["prompt_json"]),
             "max_new_tokens": row["new_tokens"],
+            "reserved_memory_mb": row["reserved_memory_mb"],
             "files": files,
         }}
 
