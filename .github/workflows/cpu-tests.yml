@@ -17,3 +17,5 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Small benchmark
         run: python -m benchmarks.run --hidden 64 --batch 4 --iterations 2
+      - name: MLP communication-delay smoke test
+        run: python -m benchmarks.mlp_latency --workers 2 --hidden 16 --expansion 32 --batch 2 --iterations 1
