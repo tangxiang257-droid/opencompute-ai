@@ -1,0 +1,75 @@
+# Optional Linux-host-network local lab ONLY. Never publish beyond localhost.
+# Intended for exactly two trusted same-machine CPU TP Workers.
+# Run: docker compose -f docker-compose.tp-local.yml up -d --build
+x-tp-worker: &tp-worker
+  build:
+    context: .
+    dockerfile: Dockerfile.tp-worker
+  network_mode: host
+  depends_on:
+    - coordinator
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp:size=67108864
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  pids_limit: 128
+  mem_limit: 2g
+  cpus: 1
+  environment:
+    OPENCOMPUTE_JOIN_KEY: "${OPENCOMPUTE_JOIN_KEY:?Set an independent secret in .env}"
+    OPENCOMPUTE_API_URL: http://127.0.0.1:8000
+    OMP_NUM_THREADS: "1"
+
+services:
+  coordinator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Host loopback is essential for current 127.0.0.1 TCPStore rendezvous.
+    # Linux only; incompatible with ordinary bridge-network Compose setup.
+    network_mode: host
+    command: ["uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", "8000"]
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    mem_limit: 4g
+    cpus: 2
+    environment:
+      OPENCOMPUTE_ADMIN_KEY: "${OPENCOMPUTE_ADMIN_KEY:?Set an independent secret in .env}"
+      OPENCOMPUTE_JOIN_KEY: "${OPENCOMPUTE_JOIN_KEY:?Set a separate join secret in .env}"
+      OPENCOMPUTE_DB_PATH: /data/cluster.sqlite
+      OPENCOMPUTE_TP_ROOT: /data/sessions
+      OPENCOMPUTE_TP_CHECKPOINTS: /data/checkpoints
+      OMP_NUM_THREADS: "1"
+    volumes:
+      - coordinator_state:/data
+
+  tp_worker_a:
+    <<: *tp-worker
+    environment:
+      OPENCOMPUTE_JOIN_KEY: "${OPENCOMPUTE_JOIN_KEY:?Set a separate join secret in .env}"
+      OPENCOMPUTE_WORKER_NAME: tp-docker-a
+      OMP_NUM_THREADS: "1"
+    volumes:
+      - worker_a_cache:/cache
+
+  tp_worker_b:
+    <<: *tp-worker
+    environment:
+      OPENCOMPUTE_JOIN_KEY: "${OPENCOMPUTE_JOIN_KEY:?Set a separate join secret in .env}"
+      OPENCOMPUTE_WORKER_NAME: tp-docker-b
+      OMP_NUM_THREADS: "1"
+    volumes:
+      - worker_b_cache:/cache
+
+volumes:
+  coordinator_state:
+  worker_a_cache:
+  worker_b_cache:
