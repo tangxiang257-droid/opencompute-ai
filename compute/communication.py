@@ -23,14 +23,15 @@ class CommunicationMeter:
         self.injected_seconds = 0.0
 
     def _run(self, kind, tensor, call):
+        # A one-rank process group needs no network collective at all.
+        if self.world == 1:
+            return
         size = tensor.numel() * tensor.element_size()
         before = time.perf_counter()
         call()
         self.gloo_seconds += time.perf_counter() - before
         self.calls[kind] += 1
         self.payload_bytes[kind] += size
-        if self.world == 1:
-            return
         # AllReduce: ring algorithm has 2*(N-1)/N bytes per rank.
         # Broadcast: simplified one-full-payload-per-rank model.
         multiplier = 2 * (self.world - 1) / self.world if kind == "all_reduce" else 1.0
