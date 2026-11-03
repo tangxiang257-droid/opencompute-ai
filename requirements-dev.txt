@@ -1,0 +1,7 @@
+# Install CPU PyTorch separately for the existing v0.2 tests.
+# This file has no torch dependency so the v0.3-only test workflow remains lightweight.
+fastapi>=0.115,<1
+pydantic>=2,<3
+httpx>=0.27,<1
+requests>=2.31,<3
+psutil>=5.9,<8
