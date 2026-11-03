@@ -1,3 +1,15 @@
+# OpenCompute AI — v0.3.3 本机 Gloo 端口绑定与会话重建
+
+**本轮修复：** 以协调器持有的 `TCPStore` 替代“分配并释放临时端口”的竞态设计；注册 Worker 连接同一个已经绑定的 Store，原 `torchrun` 实验保持兼容。失败会话现在可由管理员手动创建**新的推理组**，从原始提示词与分片重新执行。
+
+- [v0.3.3 实现细节、重试 API 与剩余风险](docs/v0.3.3-rendezvous-recovery.md)
+- [新增的 Mock TCPStore / 重建 / 重启回归测试](tests/test_rendezvous_v033.py)
+- [GitHub Actions](https://github.com/tangxiang257-droid/opencompute-ai/actions)
+
+**严禁误解为无缝断线续算：** KV Cache 不会恢复，分布式进程组不能在运行中替换 Rank。本版本仍限制**可信本机、单 API 进程、最多一个 TP 会话**；尚未验收公网或跨物理设备运行。
+
+---
+
 # OpenCompute AI — v0.3.2 安全与可靠性修复
 
 **重要更新：** 加强本机 CPU 张量并行实验环境的管理接口鉴权、跨任务资源预留、会话超时检查、管理员取消、Worker 子进程终止、模型分片缓存清理及结果格式验证。
