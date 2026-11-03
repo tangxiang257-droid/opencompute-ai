@@ -8,3 +8,6 @@ generated/
 *.pt
 *.pth
 *.safetensors
+
+# v0.3 local SQLite state (do not commit API credentials)
+.opencompute/
