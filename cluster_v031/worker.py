@@ -229,7 +229,21 @@ def run(*, base_url, join_key, name, cache_root, once=False, poll_seconds=0.5):
                     print(f"{name} ready {session_id[:8]}, rank={job['rank']}", flush=True)
                 except Exception as exc:
                     print(f"prepare failed: {type(exc).__name__}: {exc}", flush=True)
-                    raise
+                    # Fail the entire process group promptly instead of waiting
+                    # for the coordinator to notice a missing heartbeat.
+                    try:
+                        _request(base_url, "POST",
+                                 f"/v0.3.1/sessions/{session_id}/complete",
+                                 headers=headers,
+                                 json_body={"node_id": node_id, "result": None,
+                                            "error": f"prepare: {type(exc).__name__}: {str(exc)[:300]}"})
+                    except requests.RequestException as reporting_error:
+                        print(f"failed to report prepare error: {reporting_error}", flush=True)
+                    shutil.rmtree(Path(cache_root) / session_id, ignore_errors=True)
+                    if once:
+                        return
+                    time.sleep(poll_seconds)
+                    continue
             if not job["run"]:
                 time.sleep(poll_seconds)
                 continue
