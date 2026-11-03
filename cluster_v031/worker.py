@@ -223,6 +223,16 @@ def run(*, base_url, join_key, name, cache_root, once=False, poll_seconds=0.5):
     ).json()
     node_id, token = register["id"], register["node_token"]
     headers = {"X-Node-Token": token}
+
+    def acknowledge_stopped(session_id):
+        """Release failed-session reservations only after this rank is no longer running."""
+        try:
+            _request(base_url, "POST",
+                     f"/v0.3.1/sessions/{session_id}/stopped",
+                     headers=headers, json_body={"node_id": node_id})
+        except requests.RequestException as exc:
+            print(f"stop acknowledgement warning: {exc}", flush=True)
+
     stop = threading.Event()
 
     def heartbeat_loop():
@@ -252,6 +262,7 @@ def run(*, base_url, join_key, name, cache_root, once=False, poll_seconds=0.5):
                 # while this agent was waiting for the other ranks.
                 if warmed:
                     for old_id in warmed:
+                        acknowledge_stopped(old_id)
                         shutil.rmtree(Path(cache_root) / old_id, ignore_errors=True)
                     warmed.clear()
                     if once:
@@ -279,6 +290,7 @@ def run(*, base_url, join_key, name, cache_root, once=False, poll_seconds=0.5):
                                             "error": f"prepare: {type(exc).__name__}: {str(exc)[:300]}"})
                     except requests.RequestException as reporting_error:
                         print(f"failed to report prepare error: {reporting_error}", flush=True)
+                    acknowledge_stopped(session_id)
                     shutil.rmtree(Path(cache_root) / session_id, ignore_errors=True)
                     if once:
                         return
@@ -318,6 +330,8 @@ def run(*, base_url, join_key, name, cache_root, once=False, poll_seconds=0.5):
                     raise
                 # Another rank failed / administrator cancelled the session.
                 print(f"{name}: discarded late result for {session_id[:8]}", flush=True)
+            if error:
+                acknowledge_stopped(session_id)
             print(f"{name} finished {session_id[:8]}: {error or 'ok'}", flush=True)
             warmed.remove(session_id)
             shutil.rmtree(Path(cache_root) / session_id, ignore_errors=True)
