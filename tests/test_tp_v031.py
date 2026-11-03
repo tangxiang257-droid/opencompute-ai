@@ -1,4 +1,5 @@
 """Offline managed tensor-parallel session tests: auth, placement, files, state."""
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -245,6 +246,26 @@ class Sessions(unittest.TestCase):
             headers={"X-Node-Token": node["node_token"]},
             json={"node_id": node["id"]}).status_code, 200)
         self.assertIsNotNone(self.store.claim(node["id"], node["node_token"])["task"])
+
+
+class MigrationTests(unittest.TestCase):
+    def test_upgrade_existing_v031_assignment_schema(self):
+        with tempfile.TemporaryDirectory() as root:
+            database = Path(root) / "cluster.sqlite"
+            store = ClusterStore(database)
+            with sqlite3.connect(database) as db:
+                db.execute("""CREATE TABLE tp_assignments (
+                    session_id TEXT NOT NULL, rank INTEGER NOT NULL,
+                    node_id TEXT NOT NULL, state TEXT NOT NULL,
+                    result_json TEXT, error TEXT,
+                    PRIMARY KEY(session_id, rank),
+                    UNIQUE(session_id,node_id))""")
+            SessionCoordinator(store, Path(root) / "sessions")
+            with sqlite3.connect(database) as db:
+                columns = {row[1] for row in db.execute(
+                    "PRAGMA table_info(tp_assignments)")}
+            self.assertIn("reserved_cpu", columns)
+            self.assertIn("reserved_memory_mb", columns)
 
 
 if __name__ == "__main__":
