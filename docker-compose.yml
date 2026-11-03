@@ -6,6 +6,8 @@ services:
     environment:
       OMP_NUM_THREADS: "1"
       OPENCOMPUTE_DB_PATH: "/data/cluster-v03.sqlite"
+      OPENCOMPUTE_TP_ROOT: "/data/tp-sessions"
+      OPENCOMPUTE_TP_CHECKPOINTS: "/data/checkpoints"
       OPENCOMPUTE_ADMIN_KEY: "${OPENCOMPUTE_ADMIN_KEY:-}"
       OPENCOMPUTE_JOIN_KEY: "${OPENCOMPUTE_JOIN_KEY:-}"
     volumes:
