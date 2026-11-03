@@ -1,3 +1,14 @@
+# OpenCompute AI — CPU-distributed inference research prototype (v0.2)
+
+**Current milestone:** complete multi-layer GPT-2-style greedy decoding with rank-local weights, KV caches, and inter-process All-Reduce. An optional offline exporter supports trusted Hugging Face GPT-2 checkpoints; cloud servers are not needed for development.
+
+- **[v0.2 quick start, pretrained checkpoint import and limitations](docs/v0.2-distributed-gpt2.md)**
+- **[CPU CI runs](https://github.com/tangxiang257-droid/opencompute-ai/actions)**
+
+The v0.1 experiments and earlier limitations below are **historical descriptions** of incremental prototypes, not the current full feature list.
+
+---
+
 # OpenCompute AI v0.1 — CPU tensor parallel prototype
 
 The repository also contains an earlier task-scheduler prototype in `app/`. The default Docker deployment now launches the tensor-parallel benchmark API, not the old task queue.
