@@ -76,6 +76,11 @@ def create_router(coordinator: SessionCoordinator, *, admin_key: str):
         admin(x_admin_key)
         return handle(coordinator.status, session_id)
 
+    @router.post("/sessions/{session_id}/retry")
+    def retry(session_id: str, x_admin_key: str = Header(default="")):
+        admin(x_admin_key)
+        return handle(coordinator.retry, session_id)
+
     @router.post("/sessions/{session_id}/cancel")
     def cancel(session_id: str, x_admin_key: str = Header(default="")):
         admin(x_admin_key)
