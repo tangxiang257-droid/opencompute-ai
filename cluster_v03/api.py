@@ -15,7 +15,7 @@ class Registration(BaseModel):
     ram_mb: int = Field(ge=128, le=1048576)
     compute_score: float = Field(ge=0.01, le=1e6)
     slots: int = Field(default=1, ge=1, le=128)
-    capabilities: list[Literal["sum", "sha256", "matmul_checksum"]] = Field(min_length=1, max_length=3)
+    capabilities: list[Literal["sum", "sha256", "matmul_checksum", "tp_gpt2"]] = Field(min_length=1, max_length=4)
 
 
 class Heartbeat(BaseModel):
