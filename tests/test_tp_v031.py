@@ -212,6 +212,10 @@ class Sessions(unittest.TestCase):
         self.assertEqual(self.complete(
             sid, slow, result={"rank": 1}).status_code, 422)
         self.assertEqual(self.complete(
+            sid, slow, result={"rank": True, "completed": True}).status_code, 422)
+        self.assertEqual(self.complete(
+            sid, fast, error="").status_code, 422)
+        self.assertEqual(self.complete(
             sid, fast, result={"generated_ids": [1, 2, 3]}).status_code, 200)
         self.assertEqual(self.complete(
             sid, slow, result={"rank": 1, "completed": True}).status_code, 200)
