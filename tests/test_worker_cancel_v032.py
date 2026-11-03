@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from cluster_v031.worker import execute_rank
+from cluster_v031.worker import execute_rank, download_and_verify
 
 
 class FakeHungChild:
@@ -33,6 +33,22 @@ class FakeHungChild:
 
 
 class WorkerCancellationTests(unittest.TestCase):
+    def test_reject_nonlocal_rendezvous_before_launch(self):
+        assignment = {"rank": 0, "workers": 2, "master_host": "example.com",
+                      "master_port": 29500, "prompt_ids": [1, 2],
+                      "max_new_tokens": 2}
+        with patch("cluster_v031.worker.subprocess.Popen") as launched:
+            with self.assertRaisesRegex(ValueError, "localhost"):
+                execute_rank(Path("/tmp"), assignment)
+            launched.assert_not_called()
+
+    def test_reject_session_directory_traversal_before_download(self):
+        assignment = {"session_id": "../../outside", "rank": 0, "workers": 2}
+        with tempfile.TemporaryDirectory() as root:
+            with self.assertRaisesRegex(ValueError, "session identifier"):
+                download_and_verify("http://127.0.0.1:8000", assignment,
+                                    "node", "token", root)
+
     def test_cancelled_session_terminates_hung_gloo_child(self):
         child = FakeHungChild()
         def stop_process_group(_pid, _signal):
