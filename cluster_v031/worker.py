@@ -23,6 +23,7 @@ import requests
 
 from cluster_v03.worker import calibrate_cpu_score
 from cluster_v031.limits import process_tree_rss_bytes
+from cluster_v031.checkpoints import validate_manifest
 
 
 def _memory_mb():
@@ -81,9 +82,17 @@ def download_and_verify(base, assignment, node_id, token, data_root):
     if {entry["name"] for entry in assignment["files"]} != required:
         raise ValueError("unexpected manifest files")
     for entry in assignment["files"]:
-        name = entry["name"]
-        if not name.isascii() or name not in required or entry["size"] > 512_000_000:
-            raise ValueError("unsafe model shard filename or size")
+        if not isinstance(entry, dict):
+            raise ValueError("invalid model file descriptor")
+        name = entry.get("name")
+        size = entry.get("size")
+        checksum = entry.get("sha256")
+        maximum = 16_384 if name == "manifest.json" else 512_000_000
+        if (not isinstance(name, str) or not name.isascii() or name not in required
+                or type(size) is not int or not 0 < size <= maximum
+                or not isinstance(checksum, str)
+                or re.fullmatch(r"[0-9a-f]{64}", checksum) is None):
+            raise ValueError("unsafe model shard name, size or digest")
         target = folder / name
         if target.is_file() and _file_digest(target) == entry["sha256"]:
             continue
@@ -113,8 +122,7 @@ def download_and_verify(base, assignment, node_id, token, data_root):
             temporary.unlink(missing_ok=True)
 
     config = read_manifest(folder)
-    if config["workers"] != assignment["workers"]:
-        raise ValueError("worker count mismatch")
+    validate_manifest(config, expected_workers=assignment["workers"])
     # Warm disk cache and validate tensor shapes. Inference process reloads its
     # own shard later; weights are NOT kept resident across this boundary.
     layers, io = load_rank(folder, rank, config)
