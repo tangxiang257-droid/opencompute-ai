@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import resource
 import time
 from datetime import timedelta
 from pathlib import Path
@@ -69,6 +70,11 @@ def run():
         local = torch.tensor(samples, dtype=torch.float64)
         all_samples = [torch.empty_like(local) for _ in range(world)]
         dist.all_gather(all_samples, local)
+        # ru_maxrss is KiB on Linux (GitHub Actions / Docker target).
+        # It measures peak process RSS, including runtime and buffers, not just weights.
+        rss_kib = torch.tensor([resource.getrusage(resource.RUSAGE_SELF).ru_maxrss], dtype=torch.int64)
+        all_rss = [torch.zeros_like(rss_kib) for _ in range(world)]
+        dist.all_gather(all_rss, rss_kib)
         if rank == 0:
             per_step = torch.stack(all_samples).max(dim=0).values
             report = {
@@ -81,6 +87,8 @@ def run():
                 "weight_elements_per_worker": local_w.numel(),
                 "full_weight_elements": hidden * hidden,
                 "full_weight_materialized": False,
+                "peak_worker_rss_kib": [int(v.item()) for v in all_rss],
+                "theoretical_local_weight_bytes": local_w.numel() * local_w.element_size(),
                 "note": "Rank-local disk shards; reference computed in streaming blocks on rank 0."
             }
             print(json.dumps(report), flush=True)
