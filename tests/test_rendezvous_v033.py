@@ -110,6 +110,26 @@ class RendezvousSessions(unittest.TestCase):
         self.assertEqual(self.servers[-1].port, 24002)
         self.assertNotIn(sid, self.coordinator._stores)
 
+    def test_owned_store_retired_after_all_ranks_complete(self):
+        sid = self.session().json()["session_id"]
+        for node in (self.node0, self.node1):
+            ready = self.api.post(f"/v0.3.1/sessions/{sid}/ready",
+                headers={"X-Node-Token": node["node_token"]},
+                json={"node_id": node["id"]})
+            self.assertEqual(ready.status_code, 200, ready.text)
+        self.assertIn(sid, self.coordinator._stores)
+        first = self.api.post(f"/v0.3.1/sessions/{sid}/complete",
+            headers={"X-Node-Token": self.node0["node_token"]},
+            json={"node_id": self.node0["id"], "result": {"generated_ids": [1, 2]}})
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertIn(sid, self.coordinator._stores)
+        second = self.api.post(f"/v0.3.1/sessions/{sid}/complete",
+            headers={"X-Node-Token": self.node1["node_token"]},
+            json={"node_id": self.node1["id"],
+                  "result": {"rank": 1, "completed": True}})
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertNotIn(sid, self.coordinator._stores)
+
     def test_retry_admin_only(self):
         sid = self.session().json()["session_id"]
         self.assertEqual(self.api.post(f"/v0.3.1/sessions/{sid}/retry").status_code, 401)
