@@ -194,6 +194,59 @@ class SessionCoordinator:
             shutil.rmtree(folder, ignore_errors=True)
             raise
 
+    def retry(self, old_session_id):
+        """Restart a failed group from its original prompt and immutable shards.
+
+        The KV cache is not recoverable. A retry creates a fresh rendezvous,
+        fresh rank assignments and a new session ID. It is never automatic.
+        """
+        if not re.fullmatch(r"[0-9a-f]{32}", old_session_id):
+            raise ValueError("invalid session identifier")
+        with self.cluster._tx() as db:
+            now = self.clock()
+            self._expire(db, now)
+            row = db.execute("SELECT * FROM tp_sessions WHERE id=?",
+                             (old_session_id,)).fetchone()
+            if row is None:
+                raise KeyError("session not found")
+            if row["state"] != "failed":
+                raise LeaseConflict("only failed sessions can be retried")
+            pending = db.execute("""SELECT COUNT(*) AS n FROM tp_assignments
+                    WHERE session_id=? AND state IN ('assigned','ready')""",
+                    (old_session_id,)).fetchone()["n"]
+            if pending and row["updated"] + 180 > now:
+                raise LeaseConflict("wait for failed ranks to stop before retry")
+            workers = row["workers"]
+            prompt_ids = json.loads(row["prompt_json"])
+            new_tokens = row["new_tokens"]
+            expected = json.loads(row["config_json"])
+        source = (self.root / old_session_id).resolve()
+        if not source.is_relative_to(self.root) or not source.is_dir():
+            raise ValueError("original session checkpoints are no longer available")
+        new_id = uuid.uuid4().hex
+        dest = self.root / new_id
+        dest.mkdir(parents=True, exist_ok=False)
+        try:
+            filenames = ["manifest.json", "rank0_io.pt"] + [
+                f"rank_{i}.pt" for i in range(workers)]
+            for name in filenames:
+                original = (source / name).resolve()
+                if (not original.is_relative_to(source) or
+                        not original.is_file() or original.stat().st_size > 512_000_000):
+                    raise ValueError("original shard missing or too large")
+                shutil.copyfile(original, dest / name)
+            manifest = read_manifest(dest)
+            if manifest != expected:
+                raise ValueError("original checkpoint manifest changed")
+            response = self._register_session(new_id, dest, manifest, workers,
+                                              prompt_ids, new_tokens)
+            response["retry_of"] = old_session_id
+            response["resume_mode"] = "fresh_group_from_original_prompt_no_kv_recovery"
+            return response
+        except BaseException:
+            shutil.rmtree(dest, ignore_errors=True)
+            raise
+
     def _register_session(self, session_id, folder, manifest,
                           workers, prompt_ids, new_tokens):
         sizes = [(folder / f"rank_{rank}.pt").stat().st_size
