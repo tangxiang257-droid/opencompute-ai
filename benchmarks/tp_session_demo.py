@@ -13,6 +13,8 @@ import tempfile
 import time
 
 import requests
+from compute.gpt2_reference import greedy
+from compute.gpt2_shards import synthetic_state
 
 
 def free_port():
@@ -102,6 +104,13 @@ def run(timeout=60):
             if (0 not in ranks or not ranks[0]["result"]
                     or len(ranks[0]["result"]["generated_ids"]) != 3):
                 raise RuntimeError("missing rank zero generated IDs")
+            expected, _ = greedy(
+                [1, 2, 3],
+                *synthetic_state(hidden=16, heads=4, layers=2, vocab=64, positions=64),
+                3,
+            )
+            if ranks[0]["result"]["generated_ids"] != expected:
+                raise AssertionError("managed TP result differs from dense reference")
             return {
                 "status": status["status"], "workers": len(workers),
                 "generated_ids": ranks[0]["result"]["generated_ids"],
