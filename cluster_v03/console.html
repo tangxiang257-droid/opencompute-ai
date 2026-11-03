@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenCompute AI · v0.3 集群控制台</title>
+<style>
+:root{font:15px system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:dark;background:#0b1120;color:#e5edf9}
+body{max-width:1080px;margin:32px auto;padding:0 20px}header{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
+h1{font-size:26px;margin:0}.muted{color:#9ab0cb;font-size:13px}section{border:1px solid #27344f;border-radius:16px;background:#131e30;padding:18px;margin:18px 0}
+input,button,select{background:#1e2c43;border:1px solid #374863;color:#ecf2fe;border-radius:8px;padding:10px;font:inherit}
+button{cursor:pointer;background:#3474d9;border-color:#3474d9}button:hover{background:#4b88e8}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.tile{background:#1b2a41;border-radius:10px;padding:14px}
+.big{font-size:27px;font-weight:700}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:10px;border-bottom:1px solid #27344f}th{color:#b7c9df}.table-wrap{overflow-x:auto}
+.good{color:#65e4aa}.bad{color:#f9b06e}label{display:block;margin:8px 0 5px}
+</style>
+</head>
+<body>
+<header><div><h1>◈ OpenCompute AI</h1><p class="muted">v0.3 异构算力池 · 仅限私有测试</p></div>
+<div class="row"><input id="key" type="password" autocomplete="off" aria-label="管理员 API Key" placeholder="管理员 API Key"><button id="refresh">刷新集群状态</button></div></header>
+<section><div class="grid" id="stats"><div class="tile">请填写管理员密钥并刷新</div></div><p id="message" class="muted" role="status"></p></section>
+<section><h2>提交测试任务</h2><div class="row"><select id="kind"><option value="sum">数组求和</option><option value="sha256">文本 SHA256</option><option value="matmul_checksum">矩阵校验和</option></select><input id="value" value="1,2,3" aria-label="任务输入"><button id="submit">提交任务</button></div>
+<p class="muted">求和填写 1,2,3；SHA256 填写文本；矩阵填写 1–64 的整数。任务仅在已注册 Worker 中运行。</p></section>
+<section><h2>在线 Worker</h2><div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th><th>CPU 核心</th><th>可用内存</th><th>负载</th><th>算力评分</th></tr></thead><tbody id="nodes"></tbody></table></div></section>
+<section><h2>最近任务</h2><div class="table-wrap"><table><thead><tr><th>ID</th><th>类型</th><th>状态</th><th>执行节点</th><th>尝试次数</th><th>结果</th></tr></thead><tbody id="tasks"></tbody></table></div></section>
+<script>
+const el=id=>document.getElementById(id);
+const note=text=>el('message').textContent=text;
+async function api(path,options={}){
+  const r=await fetch(path,{...options,headers:{'X-Admin-Key':el('key').value,'Content-Type':'application/json',...(options.headers||{})}});
+  const body=await r.json().catch(()=>({detail:r.statusText}));
+  if(!r.ok)throw Error(body.detail||r.statusText);
+  return body;
+}
+function td(row,value){const cell=document.createElement('td');cell.textContent=String(value??'—');row.appendChild(cell);}
+async function refresh(){
+  try{
+    const data=await api('/v0.3/status');note('数据已更新');
+    el('stats').replaceChildren();
+    for(const [name,value] of [['在线节点',data.nodes.filter(n=>n.online).length],['等待任务',data.counts.queued],['执行中',data.counts.leased],['已完成',data.counts.completed],['失败',data.counts.failed]]){
+      const tile=document.createElement('div');tile.className='tile';
+      const title=document.createElement('div');title.className='muted';title.textContent=name;
+      const amount=document.createElement('div');amount.className='big';amount.textContent=value;
+      tile.append(title,amount);el('stats').appendChild(tile);
+    }
+    el('nodes').replaceChildren();
+    for(const n of data.nodes){const row=document.createElement('tr');td(row,n.name);td(row,n.online?'在线':'离线');td(row,n.cpu_cores);td(row,n.free_ram_mb+' MiB');td(row,n.cpu_load_pct+'%');td(row,n.compute_score);el('nodes').appendChild(row);}
+    el('tasks').replaceChildren();
+    for(const t of data.tasks){const row=document.createElement('tr');td(row,t.id.slice(0,8));td(row,t.kind);td(row,t.status);td(row,(t.assigned_node||'').slice(0,8));td(row,t.attempts);td(row,t.error||JSON.stringify(t.result));el('tasks').appendChild(row);}
+  }catch(e){note('读取失败：'+e.message)}
+}
+async function submit(){
+  try{
+    const kind=el('kind').value,value=el('value').value;
+    const payload=kind==='sum'?{numbers:value.split(',').map(v=>Number(v.trim()))}:kind==='sha256'?{text:value}:{size:Number(value)};
+    const result=await api('/v0.3/tasks',{method:'POST',body:JSON.stringify({kind,payload})});
+    note('任务已入队：'+result.id.slice(0,8));await refresh();
+  }catch(e){note('提交失败：'+e.message)}
+}
+el('kind').addEventListener('change',()=>{el('value').value=el('kind').value==='sum'?'1,2,3':el('kind').value==='sha256'?'OpenCompute AI':'16'});
+el('refresh').addEventListener('click',refresh);el('submit').addEventListener('click',submit);
+</script>
+</body>
+</html>
