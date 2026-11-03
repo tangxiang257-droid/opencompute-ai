@@ -192,8 +192,11 @@ class ClusterStore:
             sessions = conn.execute("""SELECT a.node_id,COUNT(*) AS running,
                      SUM(a.reserved_cpu) AS cpu,SUM(a.reserved_memory_mb) AS ram
                      FROM tp_assignments a JOIN tp_sessions s ON s.id=a.session_id
-                     WHERE s.state IN ('preparing','running') AND s.deadline>=?
-                     GROUP BY a.node_id""", (now,)).fetchall()
+                     WHERE (s.state IN ('preparing','running') AND s.deadline>=?
+                            AND a.state IN ('assigned','ready','done'))
+                        OR (s.state='failed' AND s.updated+180>=?
+                            AND a.state IN ('assigned','ready'))
+                     GROUP BY a.node_id""", (now, now)).fetchall()
             for row in sessions:
                 reserve = active.setdefault(row["node_id"],
                                              {"slots": 0, "cpu": 0, "ram": 0})
