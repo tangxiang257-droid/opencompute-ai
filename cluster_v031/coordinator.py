@@ -215,8 +215,8 @@ class SessionCoordinator:
                 """SELECT rank,node_id,state,result_json,error FROM tp_assignments
                    WHERE session_id=? ORDER BY rank""", (session_id,))]
         for entry in assigned:
-            entry["result"] = (json.loads(entry.pop("result_json"))
-                               if entry["result_json"] else None)
+            raw = entry.pop("result_json")
+            entry["result"] = json.loads(raw) if raw else None
         return {
             "session_id": session_id, "status": row["state"],
             "workers": row["workers"], "assigned": assigned,
