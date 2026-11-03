@@ -5,6 +5,29 @@ services:
       - "127.0.0.1:8000:8000"
     environment:
       OMP_NUM_THREADS: "1"
+      OPENCOMPUTE_DB_PATH: "/data/cluster-v03.sqlite"
+      OPENCOMPUTE_ADMIN_KEY: "${OPENCOMPUTE_ADMIN_KEY:-}"
+      OPENCOMPUTE_JOIN_KEY: "${OPENCOMPUTE_JOIN_KEY:-}"
+    volumes:
+      - cluster_data:/data
     mem_limit: 4g
     cpus: 2
     restart: unless-stopped
+
+  # Opt-in local demonstration; run with --profile sim --scale worker=3.
+  worker:
+    profiles: ["sim"]
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    depends_on:
+      - opencompute
+    environment:
+      OPENCOMPUTE_API_URL: "http://opencompute:8000"
+      OPENCOMPUTE_JOIN_KEY: "${OPENCOMPUTE_JOIN_KEY:-}"
+    mem_limit: 512m
+    cpus: 1
+    restart: unless-stopped
+
+volumes:
+  cluster_data:
