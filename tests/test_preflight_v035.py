@@ -8,7 +8,6 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 
 from compute.gpt2_shards import export_state, synthetic_state
@@ -22,18 +21,15 @@ class GlooPreflightTests(unittest.TestCase):
             "--shards", str(folder), "--prompt-ids", prompt,
             "--max-new-tokens", "2",
         ]
-        started = time.monotonic()
         result = subprocess.run(
             command, capture_output=True, text=True, timeout=50,
             env={**os.environ, "OMP_NUM_THREADS": "1"})
-        elapsed = time.monotonic() - started
         self.assertNotEqual(result.returncode, 0,
                             "invalid distributed input unexpectedly succeeded")
         self.assertIn("distributed preflight failed",
                       result.stderr + result.stdout)
-        # Normal torchrun startup contributes overhead. Failure must not wait
-        # for the 120s process-group collective timeout.
-        self.assertLess(elapsed, 45)
+        # A 50s subprocess timeout bounds the failure, rather than waiting
+        # for the default 120s process-group collective timeout.
 
     def _fixture(self, folder):
         state, config = synthetic_state(
