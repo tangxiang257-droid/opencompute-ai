@@ -9,8 +9,9 @@ import sys
 import tempfile
 
 from compute.shards import prepare
+from compute.topology_planner import plan
 
-app = FastAPI(title="OpenCompute AI v0.1")
+app = FastAPI(title="OpenCompute AI CPU research API")
 
 
 class Benchmark(BaseModel):
@@ -21,7 +22,7 @@ class Benchmark(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.1.1"}
+    return {"status": "ok", "version": "0.2.1"}
 
 
 @app.post("/benchmarks")
@@ -46,3 +47,35 @@ def benchmark(payload: Benchmark):
             except json.JSONDecodeError:
                 continue
         raise HTTPException(status_code=500, detail="benchmark produced no report")
+
+
+class PlanRequest(BaseModel):
+    hidden: int = Field(default=768, ge=1, le=16384)
+    heads: int = Field(default=12, ge=1, le=256)
+    layers: int = Field(default=12, ge=1, le=256)
+    positions: int = Field(default=1024, ge=1, le=262144)
+    inner: int = Field(default=3072, ge=1, le=65536)
+    vocab: int = Field(default=50257, ge=1, le=500000)
+    devices: int = Field(default=4, ge=1, le=32)
+    memory_mib: float = Field(default=1024, gt=0, le=1048576)
+    runtime_reserve_mib: float = Field(default=256, ge=0, le=1048576)
+    prompt_tokens: int = Field(default=16, ge=1, le=262144)
+    new_tokens: int = Field(default=16, ge=1, le=262144)
+    latency_ms: float = Field(default=1, ge=0, le=60000)
+    bandwidth_mbps: float = Field(default=100, gt=0, le=1000000)
+
+
+@app.post("/v0.2/plan")
+def plan_topology(payload: PlanRequest):
+    """Dry-run topology estimates, not actual allocated workers."""
+    try:
+        return plan(
+            {"hidden": payload.hidden, "heads": payload.heads,
+             "layers": payload.layers, "positions": payload.positions,
+             "inner": payload.inner, "vocab": payload.vocab},
+            devices=payload.devices, memory_mib=payload.memory_mib,
+            runtime_reserve_mib=payload.runtime_reserve_mib,
+            prompt_tokens=payload.prompt_tokens, new_tokens=payload.new_tokens,
+            latency_ms=payload.latency_ms, bandwidth_mbps=payload.bandwidth_mbps)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
