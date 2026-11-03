@@ -18,6 +18,7 @@ import uuid
 
 from compute.gpt2_shards import export_state, synthetic_state
 from compute.gpt2_generate import read_manifest
+from cluster_v031.checkpoints import inspect_bundle, inspect_file, validate_manifest, expected_files
 from cluster_v03.store import LeaseConflict
 
 
@@ -41,7 +42,7 @@ class SessionCoordinator:
                   workers INTEGER NOT NULL, prompt_json TEXT NOT NULL,
                   new_tokens INTEGER NOT NULL, master_host TEXT NOT NULL,
                   master_port INTEGER NOT NULL, config_json TEXT NOT NULL,
-                  error TEXT
+                  error TEXT, retry_of TEXT
                 );
                 CREATE TABLE IF NOT EXISTS tp_assignments (
                   session_id TEXT NOT NULL, rank INTEGER NOT NULL,
@@ -53,6 +54,11 @@ class SessionCoordinator:
                   UNIQUE(session_id,node_id)
                 );
                 CREATE INDEX IF NOT EXISTS tp_node_jobs ON tp_assignments(node_id,state);
+                CREATE TABLE IF NOT EXISTS tp_files (
+                  session_id TEXT NOT NULL, name TEXT NOT NULL,
+                  size INTEGER NOT NULL, sha256 TEXT NOT NULL,
+                  PRIMARY KEY(session_id,name)
+                );
             """)
             # Migrate existing v0.3.1 SQLite deployments in place.
             columns = {item["name"] for item in db.execute(
@@ -61,6 +67,10 @@ class SessionCoordinator:
                 db.execute("ALTER TABLE tp_assignments ADD COLUMN reserved_cpu INTEGER NOT NULL DEFAULT 1")
             if "reserved_memory_mb" not in columns:
                 db.execute("ALTER TABLE tp_assignments ADD COLUMN reserved_memory_mb INTEGER NOT NULL DEFAULT 512")
+            session_columns = {item["name"] for item in db.execute(
+                "PRAGMA table_info(tp_sessions)")}
+            if "retry_of" not in session_columns:
+                db.execute("ALTER TABLE tp_sessions ADD COLUMN retry_of TEXT")
             # A new coordinator cannot recover an old process's TCP listener.
             db.execute("""UPDATE tp_sessions SET state='failed',updated=?,
                           error='coordinator restarted; previous rendezvous lost'
@@ -169,6 +179,7 @@ class SessionCoordinator:
             manifest = read_manifest(source)
         except (FileNotFoundError, KeyError, json.JSONDecodeError) as exc:
             raise ValueError("checkpoint manifest missing or invalid") from exc
+        validate_manifest(manifest)
         world = manifest["workers"]
         if (not 1 <= world <= 4 or not 1 <= new_tokens <= 16
                 or not 1 <= len(prompt_ids) <= 32
@@ -185,7 +196,7 @@ class SessionCoordinator:
             for name in names:
                 src = (source / name).resolve()
                 if (not src.is_relative_to(source) or not src.is_file()
-                        or src.stat().st_size > 512_000_000):
+                        or src.is_symlink() or src.stat().st_size > 512_000_000):
                     raise ValueError("checkpoint file missing, unsafe or too large")
                 shutil.copyfile(src, folder / name)
             return self._register_session(session_id, folder, manifest,
@@ -248,9 +259,11 @@ class SessionCoordinator:
             raise
 
     def _register_session(self, session_id, folder, manifest,
-                          workers, prompt_ids, new_tokens):
-        sizes = [(folder / f"rank_{rank}.pt").stat().st_size
-                 + ((folder / "rank0_io.pt").stat().st_size if rank == 0 else 0)
+                          workers, prompt_ids, new_tokens, retry_of=None):
+        validate_manifest(manifest, expected_workers=workers)
+        pinned = inspect_bundle(folder, manifest)
+        sizes = [pinned[f"rank_{rank}.pt"]["size"]
+                 + (pinned["rank0_io.pt"]["size"] if rank == 0 else 0)
                  for rank in range(workers)]
         now = self.clock()
         store = None
@@ -266,10 +279,17 @@ class SessionCoordinator:
                 port = int(store.port)
                 if not 1 <= port <= 65535:
                     raise RuntimeError("TCPStore did not acquire a valid port")
-                db.execute("INSERT INTO tp_sessions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                db.execute("""INSERT INTO tp_sessions(
+                               id,state,created,updated,deadline,workers,prompt_json,
+                               new_tokens,master_host,master_port,config_json,error,retry_of)
+                               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                            (session_id, "preparing", now, now, now + self.prepare_ttl,
                             workers, json.dumps(prompt_ids), new_tokens, "127.0.0.1",
-                            port, json.dumps(manifest), None))
+                            port, json.dumps(manifest), None, retry_of))
+                for item in pinned.values():
+                    db.execute("""INSERT INTO tp_files(session_id,name,size,sha256)
+                                  VALUES(?,?,?,?)""",
+                               (session_id, item["name"], item["size"], item["sha256"]))
                 for rank, (node_id, reserved_mb) in enumerate(nodes):
                     db.execute("""INSERT INTO tp_assignments(
                                     session_id,rank,node_id,state,reserved_cpu,reserved_memory_mb)
@@ -282,26 +302,12 @@ class SessionCoordinator:
         return self.status(session_id)
 
     def _indexed_files(self, session_id):
-        if session_id not in self._file_index:
-            folder = self.root / session_id
-            entries = {}
-            for item in folder.iterdir():
-                if not item.is_file():
-                    continue
-                checksum = hashlib.sha256()
-                with item.open("rb") as reader:
-                    while True:
-                        block = reader.read(1024 * 1024)
-                        if not block:
-                            break
-                        checksum.update(block)
-                entries[item.name] = {
-                    "name": item.name,
-                    "size": item.stat().st_size,
-                    "sha256": checksum.hexdigest(),
-                }
-            self._file_index[session_id] = entries
-        return self._file_index[session_id]
+        # The digest/size are pinned at creation in SQLite, not discovered
+        # from mutable disk contents when a Worker happens to poll.
+        with closing(self.cluster._db()) as db:
+            entries = db.execute("""SELECT name,size,sha256 FROM tp_files
+                                    WHERE session_id=?""", (session_id,)).fetchall()
+        return {row["name"]: dict(row) for row in entries}
 
     def status(self, session_id):
         with self.cluster._tx() as db:
@@ -323,6 +329,7 @@ class SessionCoordinator:
             "prompt_ids": json.loads(row["prompt_json"]),
             "max_new_tokens": row["new_tokens"],
             "model": json.loads(row["config_json"]),
+            "retry_of": row["retry_of"],
             "error": row["error"],
         }
 
@@ -382,7 +389,18 @@ class SessionCoordinator:
                 allowed.add("rank0_io.pt")
             if row["state"] not in ("preparing", "running") or filename not in allowed:
                 raise PermissionError("file not assigned to this node")
-        return self.root / session_id / filename
+        pinned = self._indexed_files(session_id).get(filename)
+        if pinned is None:
+            raise ValueError("checkpoint has no persisted integrity record")
+        path = self.root / session_id / filename
+        try:
+            found = inspect_file(path, max_size=(16_384 if filename == "manifest.json"
+                                               else 512_000_000))
+        except (OSError, ValueError) as exc:
+            raise ValueError("assigned model file is unavailable or unsafe") from exc
+        if found["sha256"] != pinned["sha256"] or found["size"] != pinned["size"]:
+            raise ValueError("assigned model file changed after session creation")
+        return path
 
     def ready(self, node_id, token, session_id):
         with self.cluster._tx() as db:
@@ -509,6 +527,7 @@ class SessionCoordinator:
             ids = [row["id"] for row in rows]
             for session_id in ids:
                 db.execute("DELETE FROM tp_assignments WHERE session_id=?", (session_id,))
+                db.execute("DELETE FROM tp_files WHERE session_id=?", (session_id,))
                 db.execute("DELETE FROM tp_sessions WHERE id=?", (session_id,))
         for session_id in ids:
             self._file_index.pop(session_id, None)
