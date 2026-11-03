@@ -8,6 +8,8 @@ from datetime import timedelta
 import hashlib
 import json
 import math
+import os
+import stat
 import re
 from pathlib import Path
 import shutil
@@ -413,6 +415,43 @@ class SessionCoordinator:
         if found["sha256"] != pinned["sha256"] or found["size"] != pinned["size"]:
             raise ValueError("assigned model file changed after session creation")
         return path
+
+    def open_authorized_file(self, node_id, token, session_id, filename):
+        """Open and verify the same inode that HTTP will stream.
+
+        Prevents a symlink/path swap between authorization and FileResponse's
+        later path re-open. Cannot stop an authorized local writer modifying
+        the inode concurrently; model roots must remain administrator-owned.
+        """
+        path = self.authorize_file(node_id, token, session_id, filename)
+        expected = self._indexed_files(session_id).get(filename)
+        if expected is None:
+            raise ValueError("missing persisted file integrity pin")
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        try:
+            fd = os.open(path, flags)
+        except OSError as exc:
+            raise ValueError("unable to safely open model shard") from exc
+        fp = os.fdopen(fd, "rb")
+        try:
+            meta = os.fstat(fp.fileno())
+            if not stat.S_ISREG(meta.st_mode) or meta.st_size != expected["size"]:
+                raise ValueError("model file type or size changed")
+            checksum = hashlib.sha256()
+            while True:
+                block = fp.read(1024 * 1024)
+                if not block:
+                    break
+                checksum.update(block)
+            if checksum.hexdigest() != expected["sha256"]:
+                raise ValueError("model file contents changed during opening")
+            fp.seek(0)
+            return fp
+        except BaseException:
+            fp.close()
+            raise
 
     def ready(self, node_id, token, session_id):
         with self.cluster._tx() as db:
