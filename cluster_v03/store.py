@@ -175,12 +175,32 @@ class ClusterStore:
 
     @staticmethod
     def _active_reservations(conn, now):
+        """Account for BOTH ordinary task leases and managed TP process groups.
+
+        Called inside BEGIN IMMEDIATE, so TP allocations and ordinary claims
+        compete for the same capacity atomically.
+        """
         rows = conn.execute("""SELECT assigned_node,COUNT(*) AS running,
                                 SUM(required_cpu) AS cpu,SUM(required_memory_mb) AS ram
                                 FROM tasks WHERE status='leased' AND lease_until>=?
                                 GROUP BY assigned_node""", (now,)).fetchall()
-        return {r["assigned_node"]: {"slots": r["running"],
-                "cpu": r["cpu"], "ram": r["ram"]} for r in rows}
+        active = {r["assigned_node"]: {"slots": r["running"],
+                  "cpu": r["cpu"], "ram": r["ram"]} for r in rows}
+        schema = {row["name"] for row in conn.execute(
+            "PRAGMA table_info(tp_assignments)")}
+        if {"reserved_cpu", "reserved_memory_mb"} <= schema:
+            sessions = conn.execute("""SELECT a.node_id,COUNT(*) AS running,
+                     SUM(a.reserved_cpu) AS cpu,SUM(a.reserved_memory_mb) AS ram
+                     FROM tp_assignments a JOIN tp_sessions s ON s.id=a.session_id
+                     WHERE s.state IN ('preparing','running') AND s.deadline>=?
+                     GROUP BY a.node_id""", (now,)).fetchall()
+            for row in sessions:
+                reserve = active.setdefault(row["node_id"],
+                                             {"slots": 0, "cpu": 0, "ram": 0})
+                reserve["slots"] += row["running"]
+                reserve["cpu"] += row["cpu"]
+                reserve["ram"] += row["ram"]
+        return active
 
     def _best_node_for(self, job, nodes, active):
         best = None
