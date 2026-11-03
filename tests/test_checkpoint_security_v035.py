@@ -71,6 +71,22 @@ class PinnedSessions(unittest.TestCase):
             self.coordinator.authorize_file(
                 self.node["id"], self.node["node_token"], sid, "rank_0.pt")
 
+    def test_authenticated_download_holds_verified_inode_after_path_swap(self):
+        sid = self.create()["session_id"]
+        file = self.base / "sessions" / sid / "rank_0.pt"
+        original = file.read_bytes()
+        with self.coordinator.open_authorized_file(
+                self.node["id"], self.node["node_token"], sid, "rank_0.pt") as handle:
+            # This reproduces a path swap between authorization and transfer.
+            # The already-open descriptor continues reading the original bytes.
+            replacement = file.with_suffix(".replacement")
+            replacement.write_bytes(b"X" * len(original))
+            replacement.replace(file)
+            self.assertEqual(handle.read(), original)
+        with self.assertRaisesRegex(ValueError, "changed after session creation"):
+            self.coordinator.open_authorized_file(
+                self.node["id"], self.node["node_token"], sid, "rank_0.pt")
+
     def test_retry_checks_prior_shard_hash_and_keeps_lineage(self):
         sid = self.create()["session_id"]
         self.fail_and_stop(sid)
