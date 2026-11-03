@@ -376,7 +376,7 @@ def run(*, base_url, join_key, name, cache_root, once=False, poll_seconds=0.5):
 def main():
     parser = argparse.ArgumentParser(description="Trusted localhost GPT-2 TP Worker")
     parser.add_argument("--url", default="http://127.0.0.1:8000")
-    parser.add_argument("--name", default=platform.node() or "tp-cpu")
+    parser.add_argument("--name", default=os.getenv("OPENCOMPUTE_WORKER_NAME", platform.node() or "tp-cpu"))
     parser.add_argument("--cache", default="./.opencompute/tp-worker-cache")
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
