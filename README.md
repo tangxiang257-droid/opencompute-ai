@@ -1,3 +1,15 @@
+# OpenCompute AI — v0.3.5 持久化分片校验与安全重建
+
+本轮为每次模型推理会话在 SQLite 中持久化分片文件的 SHA-256 与大小，并记录失败重试的来源 ID。发生文件篡改或历史校验记录缺失时拒绝重试，避免无声替换权重；同时收紧 Worker 的子进程环境变量及可选 Linux 容器运行权限。
+
+- [v0.3.5 完整安全审查及兼容说明](docs/v0.3.5-checkpoint-security.md)
+- [检查点篡改、重试、迁移和 Worker 权限回归测试](tests/test_checkpoint_security_v035.py)
+- [GitHub Actions](https://github.com/tangxiang257-droid/opencompute-ai/actions)
+
+**版本边界：** 只适合可信本机研究原型，尚无公网节点准入、模型来源可信证明、真正 KV Cache 断点续算。新提交的 CI 结果必须单独验收；此前 v0.3.4 CI 通过不代表这次代码已经通过。
+
+---
+
 # OpenCompute AI — v0.3.4 Worker 资源保护与本机容器隔离
 
 本次将 TP 推理子进程置于更明确的资源限制下：POSIX 内核 CPU 时间配额、父进程定期检查实际进程树 RSS 并在超额时取消推理。虚拟地址空间硬限制为**可选**，默认不启用以避免误伤 PyTorch 的正常内存映射。
