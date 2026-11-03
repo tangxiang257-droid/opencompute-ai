@@ -1,4 +1,23 @@
-# OpenCompute AI — CPU-distributed inference research prototype (v0.2)
+# OpenCompute AI — v0.3 异构设备算力池（本地原型）
+
+**Current milestone:** An authenticated CPU Worker registry, heartbeat and resource reporting, capacity/performance-aware task claims, expiring leases, SQLite persistence, and a localhost browser console. The existing v0.2 GPT-2 tensor-parallel research prototype is preserved, but **its model shards are not yet dynamically scheduled onto registered v0.3 devices**.
+
+- **[v0.3 本地部署、模拟节点、测试和安全说明](docs/v0.3-heterogeneous-cluster.md)**
+- **[v0.3 私有集群控制台](cluster_v03/console.html)** (served at `http://127.0.0.1:8000/v0.3/console` after starting the API)
+- **[v0.2 分布式 GPT-2 实验](docs/v0.2-distributed-gpt2.md)**
+- **[GitHub CI](https://github.com/tangxiang257-droid/opencompute-ai/actions)**
+
+Start a private local cluster after generating two independent secrets in `.env`:
+
+```bash
+docker compose --profile sim up -d --build --scale worker=3
+```
+
+The API binds localhost only; workers run over the internal Docker network. **Never expose this early prototype to untrusted internet nodes.**
+
+---
+
+# Historical v0.2 CPU tensor parallel research milestones
 
 **Current milestone:** complete multi-layer GPT-2-style greedy decoding with rank-local weights, KV caches, and inter-process All-Reduce. An optional offline exporter supports trusted Hugging Face GPT-2 checkpoints; cloud servers are not needed for development.
 
