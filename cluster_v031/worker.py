@@ -116,17 +116,23 @@ def execute_rank(folder, assignment, timeout=150, cancellation_check=None):
     deadline = time.monotonic() + timeout
     def terminate_group():
         if process.poll() is None:
-            if os.name == "posix":
-                os.killpg(process.pid, signal.SIGTERM)
-            else:
-                process.terminate()
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGTERM)
+                else:
+                    process.terminate()
+            except ProcessLookupError:
+                return  # Already exited between poll and signal.
             try:
                 process.communicate(timeout=3)
             except subprocess.TimeoutExpired:
-                if os.name == "posix":
-                    os.killpg(process.pid, signal.SIGKILL)
-                else:
-                    process.kill()
+                try:
+                    if os.name == "posix":
+                        os.killpg(process.pid, signal.SIGKILL)
+                    else:
+                        process.kill()
+                except ProcessLookupError:
+                    pass
                 process.communicate()
 
     try:
