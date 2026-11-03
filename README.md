@@ -34,3 +34,17 @@ python -m benchmarks.run --hidden 512 --batch 16 --iterations 10
 The benchmark compares 1, 2 and 4 workers and reports per-step maximum elapsed time, computation/collective upper-bound components, numerical error and relative speedup. These are single-host CPU measurements; network benchmarks and measured memory RSS are not implemented yet. GitHub Actions runs small correctness tests and a smoke benchmark on pushes and pull requests.
 
 For Docker, use `docker compose up -d --build`, then POST to `http://127.0.0.1:8000/benchmarks` from the server itself. Keep port 8000 bound to localhost.
+
+## Transformer-style MLP tensor parallel prototype
+
+This experiment shards the first linear projection by columns and the second by rows, applies GELU locally, and All-Reduces the partial output. Each worker loads only its two local matrices from disk.
+
+```bash
+python -c "from compute.mlp import prepare_mlp; prepare_mlp('mlp_shards', 256, 512, 2)"
+OMP_NUM_THREADS=1 torchrun --standalone --nproc-per-node=2 -m compute.mlp --shards mlp_shards
+python -m benchmarks.mlp_latency --workers 2 --hidden 256 --expansion 512
+```
+
+The existing matrix benchmark now reports Linux per-process peak RSS in KiB, separately from the exact local weight bytes. The MLP benchmark reports local/full weight bytes and elapsed times.
+
+**Interpretation:** `--latency-ms` inserts an artificial delay before the collective. It is a sensitivity test, not real network emulation; no bandwidth throttling, multi-host measurement, GPU VRAM, attention/KV cache, or full Transformer model is included yet. CPU performance numbers vary with machine load and are not comparable across unrelated hosts.
