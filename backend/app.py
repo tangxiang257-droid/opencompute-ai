@@ -1,5 +1,8 @@
 """Local-only benchmark API. Do not expose without authentication and isolation."""
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from cluster_v03.api import create_router as create_cluster_router
+from cluster_v03.store import ClusterStore
 from pydantic import BaseModel, Field
 import json
 import os
@@ -12,6 +15,21 @@ from compute.shards import prepare
 from compute.topology_planner import plan
 
 app = FastAPI(title="OpenCompute AI CPU research API")
+cluster_db = ClusterStore(os.getenv("OPENCOMPUTE_DB_PATH", "./.opencompute/cluster.sqlite"))
+app.include_router(create_cluster_router(
+    cluster_db,
+    admin_key=os.getenv("OPENCOMPUTE_ADMIN_KEY", ""),
+    join_key=os.getenv("OPENCOMPUTE_JOIN_KEY", ""),
+))
+
+@app.get("/v0.3/console", include_in_schema=False)
+def cluster_console():
+    """Local browser UI; protected cluster data is loaded via admin-key requests."""
+    return FileResponse(
+        Path(__file__).resolve().parent.parent / "cluster_v03" / "console.html",
+        media_type="text/html"
+    )
+
 
 
 class Benchmark(BaseModel):
@@ -22,7 +40,7 @@ class Benchmark(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.2.1"}
+    return {"status": "ok", "version": "0.3.0"}
 
 
 @app.post("/benchmarks")
