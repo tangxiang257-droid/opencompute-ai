@@ -31,3 +31,6 @@ jobs:
         run: python -m compute.topology_planner --devices 4 --memory-mib 512 --runtime-reserve-mib 128
       - name: Optimized vs legacy synchronization A/B smoke check
         run: python -m benchmarks.compare_sync --workers 2 --hidden 16 --heads 4 --layers 1 --new-tokens 2 --repeats 1
+
+      - name: Capacity-filtered CPU TP autotune smoke
+        run: python -m benchmarks.autotune --devices 2 --hidden 16 --heads 4 --layers 1 --new-tokens 2 --repeats 1 --memory-mib 512
