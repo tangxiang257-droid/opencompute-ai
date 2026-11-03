@@ -144,7 +144,7 @@ class CheckpointValidation(unittest.TestCase):
                 validate_manifest({**manifest, "inner": 65})
             with self.assertRaisesRegex(ValueError, "normalization epsilon"):
                 validate_manifest({**manifest, "layer_norm_epsilon": float("nan")})
-            with self.assertRaisesRegex(ValueError, "changed"):
+            with self.assertRaisesRegex(ValueError, "integrity mismatch"):
                 inspect_bundle(folder, manifest, expected={
                     **pinned, "rank_0.pt": {**pinned["rank_0.pt"], "sha256": "0" * 64}
                 })
