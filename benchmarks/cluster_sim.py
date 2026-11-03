@@ -33,7 +33,9 @@ def simulate():
             node = nodes[name]
             claimed = store.claim(node["id"], node["node_token"])["task"]
             if claimed:
-                allocations.append({"node": name, "task": claimed["id"]})
+                allocations.append({"node": name, "task": claimed["id"],
+                                    "payload": claimed["payload"],
+                                    "lease_token": claimed["lease_token"]})
         for allocation in allocations:
             name = allocation["node"]
             node = nodes[name]
@@ -43,17 +45,12 @@ def simulate():
         assert len(allocations) == 3 and status["counts"]["leased"] == 3
         for allocation in allocations:
             node = nodes[allocation["node"]]
-            job = next(t for t in status["tasks"] if t["id"] == allocation["task"])
-            # Stored task payload isn't echoed in admin status; demo input is known.
-            # Retrieve current lease through direct storage only for this test.
-            with store._db() as conn:
-                raw = conn.execute("SELECT lease_token,payload_json FROM tasks WHERE id=?",
-                                   (job["id"],)).fetchone()
-            result = execute_task("sum", json.loads(raw["payload_json"]))
-            store.complete(node["id"], node["node_token"], job["id"],
-                           raw["lease_token"], result)
+            result = execute_task("sum", allocation["payload"])
+            store.complete(node["id"], node["node_token"], allocation["task"],
+                           allocation["lease_token"], result)
         return {"nodes": [name for name, *_ in profiles],
-                "first_claims": allocations,
+                "first_claims": [{"node": row["node"], "task": row["task"]}
+                                 for row in allocations],
                 "status": store.status()["counts"],
                 "remark": "Simulated capabilities; no actual remote compute or model TP"}
 
