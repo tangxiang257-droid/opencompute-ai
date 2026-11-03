@@ -193,6 +193,15 @@ class Sessions(unittest.TestCase):
         self.assertEqual(self.api.get(f"/v0.3.1/sessions/{sid}",
             headers={"X-Admin-Key": ADMIN}).status_code, 404)
 
+    def test_prepare_error_fails_group_immediately(self):
+        a, b = self.node("prepare-a", score=100), self.node("prepare-b", score=10)
+        sid = self.create().json()["session_id"]
+        result = self.complete(sid, a, error="corrupt rank shard")
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(self.status(sid)["status"], "failed")
+        self.assertIsNone(self.assign(b))
+        self.assertEqual(self.ready(sid, b).status_code, 409)
+
     def test_result_format_validation(self):
         fast, slow = self.node("valid-a", score=50), self.node("valid-b", score=10)
         sid = self.create().json()["session_id"]
