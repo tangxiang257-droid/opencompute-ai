@@ -6,6 +6,7 @@ this is an experimental research agent, NOT safe for unknown internet peers.
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -21,6 +22,7 @@ import psutil
 import requests
 
 from cluster_v03.worker import calibrate_cpu_score
+from cluster_v031.limits import process_tree_rss_bytes
 
 
 def _memory_mb():
@@ -120,12 +122,23 @@ def download_and_verify(base, assignment, node_id, token, data_root):
     return folder
 
 
-def execute_rank(folder, assignment, timeout=150, cancellation_check=None):
+def execute_rank(folder, assignment, timeout=150, cancellation_check=None,
+                 rss_limit_mib=None):
     """Run a fixed module and stop the process if the session is revoked.
 
     The parent agent continues heartbeat/control polling while the model runs.
     """
     rank, world = assignment["rank"], assignment["workers"]
+    if os.name != "posix":
+        raise RuntimeError("v0.3.4 CPU time isolation requires POSIX")
+    if not 1 <= timeout <= 3600:
+        raise ValueError("invalid local timeout")
+    if rss_limit_mib is not None:
+        if type(rss_limit_mib) is not int or not 512 <= rss_limit_mib <= 1048576:
+            raise ValueError("invalid worker RSS reservation")
+    vmem = os.getenv("OPENCOMPUTE_TP_MAX_VMEM_MIB", "").strip()
+    if vmem and (not vmem.isdecimal() or not 512 <= int(vmem) <= 1048576):
+        raise ValueError("invalid optional virtual memory limit")
     if (type(rank) is not int or type(world) is not int or
             not 1 <= world <= 4 or not 0 <= rank < world):
         raise ValueError("invalid rank or world size")
@@ -144,9 +157,16 @@ def execute_rank(folder, assignment, timeout=150, cancellation_check=None):
         "OPENCOMPUTE_EXTERNAL_STORE": "1",
         "OMP_NUM_THREADS": "1",
     })
+    # Limits are applied by the child *before* importing PyTorch; no unsafe
+    # preexec_fn is used while the agent heartbeat thread is running.
     command = [
-        sys.executable, "-m", "compute.gpt2_generate",
-        "--shards", str(folder),
+        sys.executable, "-m", "cluster_v031.limits",
+        "--cpu-seconds", str(min(3600, math.ceil(timeout) + 30)),
+    ]
+    if vmem:
+        command += ["--max-vmem-mib", vmem]
+    command += [
+        "--", "--shards", str(folder),
         "--prompt-ids", ",".join(map(str, assignment["prompt_ids"])),
         "--max-new-tokens", str(assignment["max_new_tokens"]),
     ]
@@ -184,6 +204,13 @@ def execute_rank(folder, assignment, timeout=150, cancellation_check=None):
                 stdout, stderr = process.communicate(timeout=min(1.0, remaining))
                 break
             except subprocess.TimeoutExpired:
+                if rss_limit_mib is not None:
+                    memory = process_tree_rss_bytes(process.pid)
+                    if memory is not None and memory > rss_limit_mib * 1024 * 1024:
+                        raise MemoryError(
+                            f"Gloo rank {rank} exceeded {rss_limit_mib} MiB RSS reservation")
+                    if memory is None and os.getenv("OPENCOMPUTE_TP_REQUIRE_RSS_MONITOR") == "1":
+                        raise RuntimeError("rank RSS cannot be monitored; strict mode rejects run")
                 if cancellation_check is not None and cancellation_check():
                     raise RuntimeError("session cancelled or no longer running")
         if process.returncode:
@@ -315,7 +342,8 @@ def run(*, base_url, join_key, name, cache_root, once=False, poll_seconds=0.5):
                         return False
 
                 report = execute_rank(Path(cache_root) / session_id, job,
-                                      cancellation_check=revoked)
+                                      cancellation_check=revoked,
+                                      rss_limit_mib=job.get("reserved_memory_mb"))
                 error = None
             except Exception as exc:
                 report = None
