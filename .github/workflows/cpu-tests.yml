@@ -19,3 +19,6 @@ jobs:
         run: python -m benchmarks.run --hidden 64 --batch 4 --iterations 2
       - name: MLP communication-delay smoke test
         run: python -m benchmarks.mlp_latency --workers 2 --hidden 16 --expansion 32 --batch 2 --iterations 1
+      - name: v0.2 attention and transformer block smoke test
+        run: |
+          python -m unittest tests.test_attention tests.test_block -v
