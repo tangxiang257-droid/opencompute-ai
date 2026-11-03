@@ -117,7 +117,8 @@ def parameter_bytes(value):
 
 @torch.inference_mode()
 def generate(path: Path, prompt_ids: list[int], max_new_tokens: int, rank: int, world: int,
-             return_logits=False, latency_ms=0.0, bandwidth_mbps=0.0):
+             return_logits=False, latency_ms=0.0, bandwidth_mbps=0.0,
+             legacy_token_broadcast=False):
     meta = read_manifest(path)
     if world != meta["workers"] or meta["heads"] % world:
         raise ValueError("number of distributed workers must match exported shards")
@@ -158,13 +159,15 @@ def generate(path: Path, prompt_ids: list[int], max_new_tokens: int, rank: int, 
             next_token = int(torch.argmax(logits).item())
             if return_logits:
                 logits_samples.append(logits.tolist())
-        else:
-            next_token = 0
-        synced = torch.tensor([next_token], dtype=torch.int64)
-        meter.broadcast(synced, src=0)
-        next_token = int(synced.item())
-        output_ids.append(next_token)
-        pending = [next_token] if rank == 0 else []
+        # Peers only need the next hidden input, which rank 0 broadcasts
+        # on the following iteration. Syncing the chosen token was redundant.
+        # Keep an opt-in legacy path to benchmark the saving directly.
+        if legacy_token_broadcast:
+            synced = torch.tensor([next_token if rank == 0 else 0], dtype=torch.int64)
+            meter.broadcast(synced, src=0)
+        if rank == 0:
+            output_ids.append(next_token)
+            pending = [next_token]
     elapsed = time.perf_counter() - total_start
     kv_bytes = sum(parameter_bytes(k) + parameter_bytes(v) for k, v in caches)
     values = torch.tensor([parameter_bytes(layers) + parameter_bytes(io), kv_bytes,
@@ -183,6 +186,7 @@ def generate(path: Path, prompt_ids: list[int], max_new_tokens: int, rank: int, 
             "weight_bytes_per_rank": [int(v[0]) for v in gathered],
             "kv_cache_bytes_per_rank": [int(v[1]) for v in gathered],
             "peak_rss_kib_per_rank_linux": [int(v[2]) for v in gathered],
+            "generation_sync": "legacy_token_broadcast" if legacy_token_broadcast else "hidden_only",
             "network_profile": {**meter.report(),
                                 "gloo_seconds_per_rank": [round(v[3].item() / 1_000_000, 6) for v in gathered],
                                 "injected_seconds_per_rank": [round(v[4].item() / 1_000_000, 6) for v in gathered]},
@@ -199,6 +203,7 @@ def main():
     parser.add_argument("--max-new-tokens", type=int, default=5)
     parser.add_argument("--report-logits", action="store_true", help="Debug only; potentially large JSON")
     parser.add_argument("--net-latency-ms", type=float, default=0, help="Synthetic extra delay per collective")
+    parser.add_argument("--legacy-token-broadcast", action="store_true", help="A/B baseline: unnecessarily broadcast each sampled token")
     parser.add_argument("--net-bandwidth-mbps", type=float, default=0, help="Synthetic extra delay from estimated wire bytes; 0 disables")
     args = parser.parse_args()
     torch.set_num_threads(1)
@@ -218,7 +223,8 @@ def main():
             else:
                 ids = [int(v.strip()) for v in args.prompt_ids.split(",")]
         result = generate(Path(args.shards), ids, args.max_new_tokens, rank, world,
-                          args.report_logits, args.net_latency_ms, args.net_bandwidth_mbps)
+                          args.report_logits, args.net_latency_ms, args.net_bandwidth_mbps,
+                          args.legacy_token_broadcast)
         if rank == 0:
             if tokenizer is not None:
                 result["generated_text"] = tokenizer.decode(result["generated_ids"], skip_special_tokens=False)
