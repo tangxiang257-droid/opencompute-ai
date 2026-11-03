@@ -24,6 +24,10 @@ class CheckpointRequest(BaseModel):
     max_new_tokens: int = Field(default=3, ge=1, le=16)
 
 
+class PruneRequest(BaseModel):
+    older_than_seconds: int = Field(default=86400, ge=60, le=31_536_000)
+
+
 class NodeAction(BaseModel):
     node_id: str = Field(min_length=1, max_length=64)
 
@@ -71,6 +75,16 @@ def create_router(coordinator: SessionCoordinator, *, admin_key: str):
     def status(session_id: str, x_admin_key: str = Header(default="")):
         admin(x_admin_key)
         return handle(coordinator.status, session_id)
+
+    @router.post("/sessions/{session_id}/cancel")
+    def cancel(session_id: str, x_admin_key: str = Header(default="")):
+        admin(x_admin_key)
+        return handle(coordinator.cancel, session_id)
+
+    @router.post("/sessions/prune")
+    def prune(body: PruneRequest, x_admin_key: str = Header(default="")):
+        admin(x_admin_key)
+        return handle(coordinator.prune, body.older_than_seconds)
 
     @router.get("/nodes/{node_id}/assignment")
     def assignment(node_id: str, x_node_token: str = Header(default="")):
