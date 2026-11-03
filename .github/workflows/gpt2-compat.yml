@@ -1,0 +1,46 @@
+name: GPT-2 Hugging Face compatibility
+on:
+  push:
+    paths:
+      - 'compute/gpt2_*.py'
+      - 'tests/test_hf_compat.py'
+      - 'benchmarks/validate_pretrained.py'
+      - '.github/workflows/gpt2-compat.yml'
+  workflow_dispatch:
+
+jobs:
+  offline-reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      HF_HUB_OFFLINE: '1'
+      OMP_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install 'transformers>=4.48,<5'
+      - name: Match independent Hugging Face GPT-2 logits (no downloads)
+        run: python -m unittest tests.test_hf_compat -v
+
+  pretrained-checkpoint:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      OMP_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install 'transformers>=4.48,<5'
+      - name: Compare actual pretrained tiny GPT-2 against two Workers
+        run: python -m benchmarks.validate_pretrained --model sshleifer/tiny-gpt2 --workers 2 --new-tokens 2
