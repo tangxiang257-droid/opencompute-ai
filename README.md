@@ -1,3 +1,15 @@
+# OpenCompute AI — v0.3.1 已注册 Worker 协同推理（本机实验）
+
+**新进展：** 将 v0.3 节点注册和资源感知调度接入 v0.2 GPT-2 CPU 张量并行。已实现 rank 指派、鉴权下载分片、SHA-256 校验、就绪屏障及两个独立 Worker 进程上的实际 Gloo 推理。可选择合成测试模型或预先导出的可信 GPT-2 TP 检查点。
+
+- **[v0.3.1 部署及使用指南](docs/v0.3.1-managed-tp.md)**
+- **[本机 HTTP + 两个 Worker 端到端实验](benchmarks/tp_session_demo.py)**：`python -m benchmarks.tp_session_demo`
+- **[GitHub Actions 测试](.github/workflows/cluster-v03.yml)**
+
+当前 Gloo rendezvous 固定为 `127.0.0.1`；不支持真实跨主机连接、公网陌生设备或可投入生产的大模型算力池。Docker Compose 的原有 `worker` 服务仍属于 v0.3 普通任务 Worker，**不是** v0.3.1 的 PyTorch TP Worker。v0.3.1 请按照文档在同一主机启动两份 `cluster_v031.worker`。
+
+---
+
 # OpenCompute AI — v0.3 异构设备算力池（本地原型）
 
 **Current milestone:** An authenticated CPU Worker registry, heartbeat and resource reporting, capacity/performance-aware task claims, expiring leases, SQLite persistence, and a localhost browser console. The existing v0.2 GPT-2 tensor-parallel research prototype is preserved, but **its model shards are not yet dynamically scheduled onto registered v0.3 devices**.
