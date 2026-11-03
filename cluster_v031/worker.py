@@ -326,13 +326,15 @@ def run(*, base_url, join_key, name, cache_root, once=False, poll_seconds=0.5):
                          headers=headers,
                          json_body={"node_id": node_id, "result": report, "error": error})
             except requests.HTTPError as exc:
-                if not (error and exc.response is not None
-                        and exc.response.status_code == 409):
+                if exc.response is None or exc.response.status_code != 409:
                     raise
-                # Another rank failed / administrator cancelled the session.
-                print(f"{name}: discarded late result for {session_id[:8]}", flush=True)
-            if error:
+                # A peer may have failed AFTER this rank computed successfully.
+                # Acknowledge local termination regardless of success/error.
                 acknowledge_stopped(session_id)
+                print(f"{name}: discarded late result for {session_id[:8]}", flush=True)
+            else:
+                if error:
+                    acknowledge_stopped(session_id)
             print(f"{name} finished {session_id[:8]}: {error or 'ok'}", flush=True)
             warmed.remove(session_id)
             shutil.rmtree(Path(cache_root) / session_id, ignore_errors=True)
