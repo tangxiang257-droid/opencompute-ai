@@ -1,0 +1,10 @@
+services:
+  opencompute:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      OMP_NUM_THREADS: "1"
+    mem_limit: 4g
+    cpus: 2
+    restart: unless-stopped
