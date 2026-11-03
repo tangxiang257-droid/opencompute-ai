@@ -453,6 +453,7 @@ class SessionCoordinator:
                 if outstanding == 0:
                     db.execute("""UPDATE tp_sessions SET state='completed',updated=?
                                   WHERE id=?""", (now, session_id))
+            self._sweep_stores(db, now)
         return {"ok": True, "state": assignment_state}
 
     def cancel(self, session_id):
@@ -467,6 +468,7 @@ class SessionCoordinator:
                 db.execute("""UPDATE tp_sessions SET state='failed',
                               error='cancelled by administrator',updated=?
                               WHERE id=?""", (self.clock(), session_id))
+                self._sweep_stores(db, self.clock())
                 return {"status": "failed", "cancelled": True}
             return {"status": row["state"], "cancelled": False}
 
@@ -481,6 +483,7 @@ class SessionCoordinator:
                 db.execute("""UPDATE tp_assignments SET state='stopped'
                               WHERE session_id=? AND node_id=?""",
                            (session_id, node_id))
+            self._sweep_stores(db, self.clock())
         return {"ok": True}
 
     def prune(self, older_than_seconds=86400):
