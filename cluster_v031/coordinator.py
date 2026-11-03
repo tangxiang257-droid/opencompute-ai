@@ -4,14 +4,16 @@ The trusted API host exports model shards. Each authenticated node may read
 only its own rank files. Not suitable for internet-facing untrusted peers.
 """
 from contextlib import closing
+from datetime import timedelta
 import hashlib
 import json
 import math
 import re
 from pathlib import Path
 import shutil
-import socket
 import time
+
+import torch.distributed as dist
 import uuid
 
 from compute.gpt2_shards import export_state, synthetic_state
@@ -28,6 +30,7 @@ class SessionCoordinator:
         self.checkpoint_root = (Path(checkpoint_root).resolve()
                                 if checkpoint_root else self.root.parent / "checkpoints")
         self._file_index = {}
+        self._stores = {}  # owning references keep rendezvous TCP ports bound
         self.clock = clock or time.time
         self.prepare_ttl, self.run_ttl = prepare_ttl, run_ttl
         with closing(self.cluster._db()) as db:
@@ -58,6 +61,10 @@ class SessionCoordinator:
                 db.execute("ALTER TABLE tp_assignments ADD COLUMN reserved_cpu INTEGER NOT NULL DEFAULT 1")
             if "reserved_memory_mb" not in columns:
                 db.execute("ALTER TABLE tp_assignments ADD COLUMN reserved_memory_mb INTEGER NOT NULL DEFAULT 512")
+            # A new coordinator cannot recover an old process's TCP listener.
+            db.execute("""UPDATE tp_sessions SET state='failed',updated=?,
+                          error='coordinator restarted; previous rendezvous lost'
+                          WHERE state IN ('preparing','running')""", (self.clock(),))
 
     @staticmethod
     def _reservation_mb(weight_file_bytes):
@@ -65,11 +72,25 @@ class SessionCoordinator:
         return 512 + math.ceil(weight_file_bytes * 2 / (1024 * 1024))
 
     @staticmethod
-    def _allocate_port():
-        # Laboratory only; bind-release is not a reservation against concurrent apps.
-        with socket.socket() as listener:
-            listener.bind(("127.0.0.1", 0))
-            return listener.getsockname()[1]
+    def _open_rendezvous():
+        """Bind ephemeral port atomically and keep its TCPStore listener alive."""
+        return dist.TCPStore(host_name="127.0.0.1", port=0, world_size=None,
+                             is_master=True, timeout=timedelta(seconds=120),
+                             wait_for_workers=False)
+
+    def _sweep_stores(self, db, now):
+        """Release listeners after completion or all failed peers tear down."""
+        for session_id in tuple(self._stores):
+            row = db.execute("SELECT state,updated FROM tp_sessions WHERE id=?",
+                             (session_id,)).fetchone()
+            if row is None or row["state"] == "completed":
+                self._stores.pop(session_id, None)
+            elif row["state"] == "failed":
+                pending = db.execute("""SELECT COUNT(*) AS n FROM tp_assignments
+                    WHERE session_id=? AND state IN ('assigned','ready')""",
+                    (session_id,)).fetchone()["n"]
+                if pending == 0 or row["updated"] + 180 <= now:
+                    self._stores.pop(session_id, None)
 
     def _expire(self, db, now):
         rows = db.execute("""SELECT s.id FROM tp_sessions s
@@ -82,6 +103,7 @@ class SessionCoordinator:
             db.execute("""UPDATE tp_sessions SET state='failed',
                        error='timeout or Worker heartbeat missing',updated=? WHERE id=?""",
                        (now, row["id"]))
+        self._sweep_stores(db, now)
 
     def _select_nodes(self, db, workers, file_sizes, now):
         nodes = db.execute("SELECT * FROM nodes WHERE last_seen>=?",
