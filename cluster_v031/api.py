@@ -102,6 +102,11 @@ def create_router(coordinator: SessionCoordinator, *, admin_key: str):
               x_node_token: str = Header(default="")):
         return handle(coordinator.ready, body.node_id, x_node_token, session_id)
 
+    @router.post("/sessions/{session_id}/stopped")
+    def stopped(session_id: str, body: NodeAction,
+                x_node_token: str = Header(default="")):
+        return handle(coordinator.stopped, body.node_id, x_node_token, session_id)
+
     @router.post("/sessions/{session_id}/complete")
     def complete(session_id: str, body: NodeCompletion,
                  x_node_token: str = Header(default="")):
