@@ -15,6 +15,7 @@ import signal
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -75,16 +76,22 @@ def download_and_verify(base, assignment, node_id, token, data_root):
             or not 0 <= rank < assignment["workers"]):
         raise ValueError("invalid shard rank assignment")
     folder = Path(data_root).resolve() / session_id
+    if folder.is_symlink():
+        raise ValueError("unsafe cached model directory symlink")
     folder.mkdir(parents=True, exist_ok=True)
     required = {"manifest.json", f"rank_{rank}.pt"}
     if rank == 0:
         required.add("rank0_io.pt")
-    if {entry["name"] for entry in assignment["files"]} != required:
+    entries = assignment.get("files")
+    if (not isinstance(entries, list) or len(entries) != len(required)
+            or any(not isinstance(entry, dict) for entry in entries)):
         raise ValueError("unexpected manifest files")
-    for entry in assignment["files"]:
-        if not isinstance(entry, dict):
-            raise ValueError("invalid model file descriptor")
-        name = entry.get("name")
+    names = [entry.get("name") for entry in entries]
+    if set(names) != required or len(set(names)) != len(names):
+        raise ValueError("unexpected or duplicate manifest files")
+    # Validate all descriptors before issuing any network request.
+    for entry in entries:
+        name = entry["name"]
         size = entry.get("size")
         checksum = entry.get("sha256")
         maximum = 16_384 if name == "manifest.json" else 512_000_000
@@ -93,7 +100,11 @@ def download_and_verify(base, assignment, node_id, token, data_root):
                 or not isinstance(checksum, str)
                 or re.fullmatch(r"[0-9a-f]{64}", checksum) is None):
             raise ValueError("unsafe model shard name, size or digest")
+    for entry in entries:
+        name = entry["name"]
         target = folder / name
+        if target.is_symlink():
+            raise ValueError("unsafe cached model shard symlink")
         if target.is_file() and _file_digest(target) == entry["sha256"]:
             continue
         endpoint = f"/v0.3.1/sessions/{session_id}/files/{name}"
@@ -101,12 +112,17 @@ def download_and_verify(base, assignment, node_id, token, data_root):
                                 params={"node_id": node_id},
                                 headers={"X-Node-Token": token},
                                 stream=True, timeout=60)
-        response.raise_for_status()
-        temporary = target.with_suffix(target.suffix + ".tmp")
+        temporary = None
         try:
+            response.raise_for_status()
             digest = hashlib.sha256()
             total = 0
-            with temporary.open("wb") as writer:
+            # A random exclusive temporary filename prevents another process
+            # from preparing a predictable .tmp symlink before the download.
+            with tempfile.NamedTemporaryFile(
+                    mode="wb", dir=folder, prefix=f".{name}.",
+                    suffix=".part", delete=False) as writer:
+                temporary = Path(writer.name)
                 for chunk in response.iter_content(chunk_size=1024 * 1024):
                     if chunk:
                         total += len(chunk)
@@ -119,7 +135,8 @@ def download_and_verify(base, assignment, node_id, token, data_root):
             temporary.replace(target)
         finally:
             response.close()
-            temporary.unlink(missing_ok=True)
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     config = read_manifest(folder)
     validate_manifest(config, expected_workers=assignment["workers"])
