@@ -200,23 +200,32 @@ class SessionCoordinator:
                  + ((folder / "rank0_io.pt").stat().st_size if rank == 0 else 0)
                  for rank in range(workers)]
         now = self.clock()
-        with self.cluster._tx() as db:
-            self._expire(db, now)
-            exists = db.execute("""SELECT 1 FROM tp_sessions
-                                 WHERE state IN ('preparing','running') LIMIT 1""").fetchone()
-            if exists:
-                raise LeaseConflict("only one active TP session is supported")
-            nodes = self._select_nodes(db, workers, sizes, now)
-            port = self._allocate_port()
-            db.execute("INSERT INTO tp_sessions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                       (session_id, "preparing", now, now, now + self.prepare_ttl,
-                        workers, json.dumps(prompt_ids), new_tokens, "127.0.0.1",
-                        port, json.dumps(manifest), None))
-            for rank, (node_id, reserved_mb) in enumerate(nodes):
-                db.execute("""INSERT INTO tp_assignments(
-                                session_id,rank,node_id,state,reserved_cpu,reserved_memory_mb)
-                              VALUES(?,?,?,'assigned',1,?)""",
-                           (session_id, rank, node_id, reserved_mb))
+        store = None
+        try:
+            with self.cluster._tx() as db:
+                self._expire(db, now)
+                exists = db.execute("""SELECT 1 FROM tp_sessions
+                                     WHERE state IN ('preparing','running') LIMIT 1""").fetchone()
+                if exists:
+                    raise LeaseConflict("only one active TP session is supported")
+                nodes = self._select_nodes(db, workers, sizes, now)
+                store = self._open_rendezvous()
+                port = int(store.port)
+                if not 1 <= port <= 65535:
+                    raise RuntimeError("TCPStore did not acquire a valid port")
+                db.execute("INSERT INTO tp_sessions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                           (session_id, "preparing", now, now, now + self.prepare_ttl,
+                            workers, json.dumps(prompt_ids), new_tokens, "127.0.0.1",
+                            port, json.dumps(manifest), None))
+                for rank, (node_id, reserved_mb) in enumerate(nodes):
+                    db.execute("""INSERT INTO tp_assignments(
+                                    session_id,rank,node_id,state,reserved_cpu,reserved_memory_mb)
+                                  VALUES(?,?,?,'assigned',1,?)""",
+                               (session_id, rank, node_id, reserved_mb))
+        except BaseException:
+            del store  # release listener if placement or SQL commit fails
+            raise
+        self._stores[session_id] = store
         return self.status(session_id)
 
     def _indexed_files(self, session_id):
