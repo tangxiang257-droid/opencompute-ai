@@ -17,6 +17,7 @@ import torch.distributed as dist
 import torch.nn.functional as F
 
 from compute.communication import CommunicationMeter
+from compute.rendezvous import init_gloo
 
 
 def read_manifest(path: Path) -> dict:
@@ -208,7 +209,7 @@ def main():
     args = parser.parse_args()
     torch.set_num_threads(1)
     rank, world = int(os.environ["RANK"]), int(os.environ["WORLD_SIZE"])
-    dist.init_process_group("gloo", timeout=timedelta(seconds=120))
+    external_store = init_gloo(timeout_seconds=120)
     try:
         ids = []
         tokenizer = None
@@ -231,6 +232,7 @@ def main():
             print(json.dumps(result, ensure_ascii=False), flush=True)
     finally:
         dist.destroy_process_group()
+        del external_store
 
 
 if __name__ == "__main__":
