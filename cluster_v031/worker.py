@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import signal
 import shutil
 import subprocess
@@ -61,6 +62,12 @@ def download_and_verify(base, assignment, node_id, token, data_root):
     from compute.gpt2_generate import load_rank, read_manifest
 
     session_id, rank = assignment["session_id"], assignment["rank"]
+    if not isinstance(session_id, str) or not re.fullmatch(r"[0-9a-f]{32}", session_id):
+        raise ValueError("invalid session identifier")
+    if (type(rank) is not int or type(assignment["workers"]) is not int
+            or not 1 <= assignment["workers"] <= 4
+            or not 0 <= rank < assignment["workers"]):
+        raise ValueError("invalid shard rank assignment")
     folder = Path(data_root).resolve() / session_id
     folder.mkdir(parents=True, exist_ok=True)
     required = {"manifest.json", f"rank_{rank}.pt"}
@@ -116,6 +123,14 @@ def execute_rank(folder, assignment, timeout=150, cancellation_check=None):
     The parent agent continues heartbeat/control polling while the model runs.
     """
     rank, world = assignment["rank"], assignment["workers"]
+    if (type(rank) is not int or type(world) is not int or
+            not 1 <= world <= 4 or not 0 <= rank < world):
+        raise ValueError("invalid rank or world size")
+    if assignment["master_host"] not in ("127.0.0.1", "localhost"):
+        raise ValueError("v0.3.2 only allows trusted localhost rendezvous")
+    if (type(assignment["master_port"]) is not int
+            or not 1 <= assignment["master_port"] <= 65535):
+        raise ValueError("invalid rendezvous port")
     env = os.environ.copy()
     for name in ("OPENCOMPUTE_JOIN_KEY", "OPENCOMPUTE_ADMIN_KEY", "X_NODE_TOKEN"):
         env.pop(name, None)
