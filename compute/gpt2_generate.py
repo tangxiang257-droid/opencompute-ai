@@ -119,18 +119,35 @@ def parameter_bytes(value):
 @torch.inference_mode()
 def generate(path: Path, prompt_ids: list[int], max_new_tokens: int, rank: int, world: int,
              return_logits=False, latency_ms=0.0, bandwidth_mbps=0.0,
-             legacy_token_broadcast=False):
-    meta = read_manifest(path)
-    if world != meta["workers"] or meta["heads"] % world:
-        raise ValueError("number of distributed workers must match exported shards")
-    if not 1 <= max_new_tokens <= 256:
-        raise ValueError("max_new_tokens must be 1..256")
-    if rank == 0:
-        if not prompt_ids or any(not 0 <= item < meta["vocab"] for item in prompt_ids):
-            raise ValueError("prompt must contain valid token IDs")
-        if len(prompt_ids) + max_new_tokens - 1 > meta["positions"]:
-            raise ValueError("generation exceeds model position embeddings")
-    layers, io = load_rank(path, rank, meta)
+             legacy_token_broadcast=False, preflight_error=None):
+    # Loading and rank-0 prompt validation used to raise before the first
+    # collective. When only one rank failed, its peers would hang on broadcast.
+    # Now every live rank reaches the same fixed-size Gloo preflight collective
+    # before any model-dependent broadcast/all-reduce.
+    error = preflight_error
+    meta, layers, io = None, None, None
+    if error is None:
+        try:
+            meta = read_manifest(path)
+            if (world != meta["workers"] or meta["heads"] % world
+                    or rank < 0 or rank >= world):
+                raise ValueError("distributed world does not match exported shards")
+            if not 1 <= max_new_tokens <= 256:
+                raise ValueError("max_new_tokens must be 1..256")
+            if rank == 0:
+                if (not prompt_ids or any(
+                        type(item) is not int or not 0 <= item < meta["vocab"]
+                        for item in prompt_ids)):
+                    raise ValueError("prompt must contain valid token IDs")
+                if len(prompt_ids) + max_new_tokens - 1 > meta["positions"]:
+                    raise ValueError("generation exceeds model position embeddings")
+            layers, io = load_rank(path, rank, meta)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+    ready = torch.tensor([0 if error else 1], dtype=torch.int32)
+    dist.all_reduce(ready, op=dist.ReduceOp.MIN)
+    if ready.item() != 1:
+        raise ValueError(f"distributed preflight failed: {error or 'another rank rejected its input or model shard'}")
     count = torch.tensor([len(prompt_ids) if rank == 0 else 0], dtype=torch.int64)
     dist.broadcast(count, src=0)
     prefill_len = int(count.item())
@@ -213,19 +230,24 @@ def main():
     try:
         ids = []
         tokenizer = None
+        input_error = None
         if rank == 0:
-            if args.prompt_text is not None:
-                try:
-                    from transformers import AutoTokenizer
-                except ImportError as exc:
-                    raise RuntimeError("pip install transformers to use --prompt-text") from exc
-                tokenizer = AutoTokenizer.from_pretrained(Path(args.shards) / "tokenizer", local_files_only=True)
-                ids = tokenizer.encode(args.prompt_text, add_special_tokens=False)
-            else:
-                ids = [int(v.strip()) for v in args.prompt_ids.split(",")]
+            try:
+                if args.prompt_text is not None:
+                    try:
+                        from transformers import AutoTokenizer
+                    except ImportError as exc:
+                        raise RuntimeError("pip install transformers to use --prompt-text") from exc
+                    tokenizer = AutoTokenizer.from_pretrained(
+                        Path(args.shards) / "tokenizer", local_files_only=True)
+                    ids = tokenizer.encode(args.prompt_text, add_special_tokens=False)
+                else:
+                    ids = [int(v.strip()) for v in args.prompt_ids.split(",")]
+            except Exception as exc:
+                input_error = f"prompt parsing failed: {type(exc).__name__}: {exc}"
         result = generate(Path(args.shards), ids, args.max_new_tokens, rank, world,
                           args.report_logits, args.net_latency_ms, args.net_bandwidth_mbps,
-                          args.legacy_token_broadcast)
+                          args.legacy_token_broadcast, preflight_error=input_error)
         if rank == 0:
             if tokenizer is not None:
                 result["generated_text"] = tokenizer.decode(result["generated_ids"], skip_special_tokens=False)
