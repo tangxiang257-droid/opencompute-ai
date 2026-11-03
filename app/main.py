@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 DB = os.getenv("DATABASE_PATH", "/data/opencompute.db")
-KEY = os.getenv("ADMIN_KEY", "dev-only-change-me")
+KEY = os.getenv("ADMIN_KEY", "")
 LEASE_SECONDS = 30
 app = FastAPI(title="OpenCompute AI", version="0.1.0")
 
@@ -19,7 +19,9 @@ def db():
     return c
 
 def auth(x_api_key: str = Header(default="")):
-    if x_api_key != KEY:
+    if len(KEY) < 16:
+        raise HTTPException(503, "Legacy app admin key not configured")
+    if not x_api_key or not __import__("hmac").compare_digest(x_api_key, KEY):
         raise HTTPException(401, "Invalid API key")
 
 class Node(BaseModel):
