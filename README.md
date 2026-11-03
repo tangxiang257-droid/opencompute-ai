@@ -1,3 +1,15 @@
+# OpenCompute AI — v0.3.5 多 Rank 安全预检查
+
+新增**分布式启动前错误同步**：如果 Rank 0 的 Prompt 解析失败、Token 越界，或任一 Rank 的检查点加载异常，所有仍存活的 Rank 都将在开始正式推理前通过 Gloo 预检查一致退出。避免已知异常导致其他 Rank 卡在下一次 Broadcast。
+
+- [v0.3.5 模型文件校验、重试溯源及多 Rank 预检查](docs/v0.3.5-checkpoint-security.md)
+- [v0.3.5 单机双 Rank 异常退出测试](tests/test_preflight_v035.py)
+- [GitHub Actions 运行状态](https://github.com/tangxiang257-droid/opencompute-ai/actions)
+
+**边界**：仅为可信本机多进程实验；无法阻止进程被系统杀死、机器断线引发的通信超时，也不等同于跨设备故障恢复。
+
+---
+
 # OpenCompute AI — v0.3.5 持久化分片校验与安全重建
 
 本轮为每次模型推理会话在 SQLite 中持久化分片文件的 SHA-256 与大小，并记录失败重试的来源 ID。发生文件篡改或历史校验记录缺失时拒绝重试，避免无声替换权重；同时收紧 Worker 的子进程环境变量及可选 Linux 容器运行权限。
