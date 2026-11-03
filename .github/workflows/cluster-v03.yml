@@ -1,0 +1,37 @@
+name: v0.3 heterogeneous CPU cluster
+on:
+  push:
+    paths:
+      - 'cluster_v03/**'
+      - 'tests/test_cluster_v03.py'
+      - 'benchmarks/cluster_sim.py'
+      - 'backend/app.py'
+      - 'Dockerfile.worker'
+      - 'docker-compose.yml'
+      - 'requirements-dev.txt'
+      - '.github/workflows/cluster-v03.yml'
+  pull_request:
+    paths:
+      - 'cluster_v03/**'
+      - 'tests/test_cluster_v03.py'
+      - 'benchmarks/cluster_sim.py'
+      - 'backend/app.py'
+      - 'Dockerfile.worker'
+      - 'docker-compose.yml'
+      - 'requirements-dev.txt'
+      - '.github/workflows/cluster-v03.yml'
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install lightweight v0.3 dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Test scheduling, auth, leases, concurrent claims and Worker jobs
+        run: python -m unittest discover -s tests -p 'test_cluster_v03.py' -v
+      - name: Simulate 3 heterogeneous devices without a cloud server
+        run: python -m benchmarks.cluster_sim
