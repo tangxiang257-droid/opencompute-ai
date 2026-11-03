@@ -322,6 +322,8 @@ class SessionCoordinator:
             now = self.clock()
             self._expire(db, now)
             row = self._assignment_for(db, node_id, token, session_id)
+            if error is not None and (not isinstance(error, str) or not error.strip()):
+                raise ValueError("error must contain nonblank text if supplied")
             if error:
                 allowed = (row["state"] in ("preparing", "running")
                            and row["assignment_state"] in ("assigned", "ready"))
@@ -346,7 +348,9 @@ class SessionCoordinator:
                             or any(type(v) is not int or not 0 <= v < model["vocab"]
                                    for v in ids)):
                         raise ValueError("rank zero returned invalid generated token IDs")
-                elif result.get("rank") != row["rank"] or result.get("completed") is not True:
+                elif (type(result.get("rank")) is not int
+                      or result["rank"] != row["rank"]
+                      or result.get("completed") is not True):
                     raise ValueError("peer rank returned invalid completion result")
             assignment_state = "failed" if error else "done"
             db.execute("""UPDATE tp_assignments SET state=?,result_json=?,error=?
