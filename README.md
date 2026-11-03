@@ -1,3 +1,16 @@
+# OpenCompute AI — v0.3.4 Worker 资源保护与本机容器隔离
+
+本次将 TP 推理子进程置于更明确的资源限制下：POSIX 内核 CPU 时间配额、父进程定期检查实际进程树 RSS 并在超额时取消推理。虚拟地址空间硬限制为**可选**，默认不启用以避免误伤 PyTorch 的正常内存映射。
+
+- [v0.3.4 资源限制、隔离能力与剩余风险](docs/v0.3.4-worker-limits.md)
+- [v0.3.4 资源保护回归测试](tests/test_resource_limits_v034.py)
+- [可选 Linux 本机 Docker TP Worker 配置](docker-compose.tp-local.yml)：两个真实 TP Worker、独立缓存、容器 CPU/内存/PID 配额；**并未运行跨物理设备实验**。
+- [自动化 CI 状态](https://github.com/tangxiang257-droid/opencompute-ai/actions)
+
+**注意：** 周期性 RSS 检查不是内核级物理内存配额。真正的内存硬限制需要 Linux cgroups / Docker 等隔离机制。本项目仍仅适用于可信本机开发；最新提交的 CI 状态需独立确认。
+
+---
+
 # OpenCompute AI — v0.3.3 本机 Gloo 端口绑定与会话重建
 
 **本轮修复：** 以协调器持有的 `TCPStore` 替代“分配并释放临时端口”的竞态设计；注册 Worker 连接同一个已经绑定的 Store，原 `torchrun` 实验保持兼容。失败会话现在可由管理员手动创建**新的推理组**，从原始提示词与分片重新执行。
