@@ -175,6 +175,9 @@ class SessionCoordinator:
             raise ValueError("checkpoint directory traversal rejected")
         if not source.is_dir():
             raise ValueError("checkpoint directory not found")
+        # Reject giant or symlinked metadata before json.loads could allocate
+        # unbounded memory on the coordinator.
+        inspect_file(source / "manifest.json", max_size=16_384)
         try:
             manifest = read_manifest(source)
         except (FileNotFoundError, KeyError, json.JSONDecodeError) as exc:
@@ -253,6 +256,7 @@ class SessionCoordinator:
                         or not original.is_file() or original.stat().st_size > 512_000_000):
                     raise ValueError("original shard missing or too large")
                 shutil.copyfile(original, dest / name)
+            inspect_file(dest / "manifest.json", max_size=16_384)
             manifest = read_manifest(dest)
             if manifest != expected:
                 raise ValueError("original checkpoint manifest changed")
