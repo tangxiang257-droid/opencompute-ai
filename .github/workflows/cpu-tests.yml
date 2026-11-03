@@ -21,3 +21,8 @@ jobs:
         run: python -m benchmarks.mlp_latency --workers 2 --hidden 16 --expansion 32 --batch 2 --iterations 1
       - name: v0.2 single/multi-rank token generation benchmark
         run: python -m benchmarks.generate --workers 1,2 --hidden 16 --heads 4 --layers 1 --new-tokens 2
+
+      - name: Actual localhost Gloo collective probe
+        run: OMP_NUM_THREADS=1 python -m torch.distributed.run --standalone --nproc-per-node=2 -m benchmarks.gloo_probe --payloads-bytes 8,1024 --iterations 2 --warmup 1
+      - name: WAN penalty sensitivity smoke test
+        run: OMP_NUM_THREADS=1 python -m benchmarks.network_sweep --workers 2 --hidden 16 --heads 4 --layers 1 --new-tokens 2 --latencies-ms 0,1 --bandwidths-mbps 0
