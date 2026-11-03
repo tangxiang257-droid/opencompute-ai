@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 import platform
+import signal
+import shutil
 import subprocess
 import sys
 import threading
@@ -87,8 +89,11 @@ def download_and_verify(base, assignment, node_id, token, data_root):
     return folder
 
 
-def execute_rank(folder, assignment, timeout=150):
-    """Run fixed GPT-2 module without shell via env://, one Gloo rank per agent."""
+def execute_rank(folder, assignment, timeout=150, cancellation_check=None):
+    """Run a fixed module and stop the process if the session is revoked.
+
+    The parent agent continues heartbeat/control polling while the model runs.
+    """
     rank, world = assignment["rank"], assignment["workers"]
     env = os.environ.copy()
     for name in ("OPENCOMPUTE_JOIN_KEY", "OPENCOMPUTE_ADMIN_KEY", "X_NODE_TOKEN"):
@@ -105,12 +110,42 @@ def execute_rank(folder, assignment, timeout=150):
         "--prompt-ids", ",".join(map(str, assignment["prompt_ids"])),
         "--max-new-tokens", str(assignment["max_new_tokens"]),
     ]
-    result = subprocess.run(command, capture_output=True, text=True,
-                            timeout=timeout, env=env)
-    if result.returncode:
-        raise RuntimeError(f"Gloo rank {rank} failed: {result.stderr[-700:]}")
+    process = subprocess.Popen(command, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, env=env,
+                               start_new_session=(os.name == "posix"))
+    deadline = time.monotonic() + timeout
+    def terminate_group():
+        if process.poll() is None:
+            if os.name == "posix":
+                os.killpg(process.pid, signal.SIGTERM)
+            else:
+                process.terminate()
+            try:
+                process.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+                process.communicate()
+
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"Gloo rank {rank} exceeded {timeout}s")
+            try:
+                stdout, stderr = process.communicate(timeout=min(1.0, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                if cancellation_check is not None and cancellation_check():
+                    raise RuntimeError("session cancelled or no longer running")
+        if process.returncode:
+            raise RuntimeError(f"Gloo rank {rank} failed: {stderr[-700:]}")
+    finally:
+        terminate_group()
     if rank == 0:
-        records = [json.loads(line) for line in result.stdout.splitlines()
+        records = [json.loads(line) for line in stdout.splitlines()
                    if line.startswith('{"engine":')]
         if len(records) != 1:
             raise ValueError("rank 0 missing inference report")
@@ -167,6 +202,14 @@ def run(*, base_url, join_key, name, cache_root, once=False, poll_seconds=0.5):
                                 headers=headers).json()
             job = response["assignment"]
             if not job:
+                # A preparing/running session may have been cancelled/expired
+                # while this agent was waiting for the other ranks.
+                if warmed:
+                    for old_id in warmed:
+                        shutil.rmtree(Path(cache_root) / old_id, ignore_errors=True)
+                    warmed.clear()
+                    if once:
+                        return
                 time.sleep(poll_seconds)
                 continue
             session_id = job["session_id"]
@@ -185,17 +228,39 @@ def run(*, base_url, join_key, name, cache_root, once=False, poll_seconds=0.5):
                 time.sleep(poll_seconds)
                 continue
             try:
-                report = execute_rank(Path(cache_root) / session_id, job)
+                def revoked():
+                    try:
+                        current = _request(
+                            base_url, "GET",
+                            f"/v0.3.1/nodes/{node_id}/assignment",
+                            headers=headers, timeout=5).json()["assignment"]
+                        return (current is None or current["session_id"] != session_id
+                                or not current["run"])
+                    except requests.RequestException:
+                        # Transient control-plane loss must not immediately kill
+                        # a running process; the hard local timeout still applies.
+                        return False
+
+                report = execute_rank(Path(cache_root) / session_id, job,
+                                      cancellation_check=revoked)
                 error = None
             except Exception as exc:
                 report = None
                 error = f"{type(exc).__name__}: {str(exc)[:350]}"
-            _request(base_url, "POST",
-                     f"/v0.3.1/sessions/{session_id}/complete",
-                     headers=headers,
-                     json_body={"node_id": node_id, "result": report, "error": error})
+            try:
+                _request(base_url, "POST",
+                         f"/v0.3.1/sessions/{session_id}/complete",
+                         headers=headers,
+                         json_body={"node_id": node_id, "result": report, "error": error})
+            except requests.HTTPError as exc:
+                if not (error and exc.response is not None
+                        and exc.response.status_code == 409):
+                    raise
+                # Another rank failed / administrator cancelled the session.
+                print(f"{name}: discarded late result for {session_id[:8]}", flush=True)
             print(f"{name} finished {session_id[:8]}: {error or 'ok'}", flush=True)
             warmed.remove(session_id)
+            shutil.rmtree(Path(cache_root) / session_id, ignore_errors=True)
             if once:
                 return
     finally:
