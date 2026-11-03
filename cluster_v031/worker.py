@@ -38,7 +38,10 @@ def _memory_mb():
                 available = min(available, max(0, limit - current))
     except (OSError, ValueError):
         pass
-    return (max(128, min(1048576, total // (1024 * 1024))),
+    total_mib = total // (1024 * 1024)
+    if total_mib < 128:
+        raise RuntimeError("Worker does not have the minimum 128 MiB memory")
+    return (min(1048576, total_mib),
             max(0, min(1048576, available // (1024 * 1024))))
 
 
