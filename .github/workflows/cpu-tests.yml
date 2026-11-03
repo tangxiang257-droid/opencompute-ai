@@ -26,3 +26,8 @@ jobs:
         run: OMP_NUM_THREADS=1 python -m torch.distributed.run --standalone --nproc-per-node=2 -m benchmarks.gloo_probe --payloads-bytes 8,1024 --iterations 2 --warmup 1
       - name: WAN penalty sensitivity smoke test
         run: OMP_NUM_THREADS=1 python -m benchmarks.network_sweep --workers 2 --hidden 16 --heads 4 --layers 1 --new-tokens 2 --latencies-ms 0,1 --bandwidths-mbps 0
+
+      - name: v0.2 topology planner smoke check
+        run: python -m compute.topology_planner --devices 4 --memory-mib 512 --runtime-reserve-mib 128
+      - name: Optimized vs legacy synchronization A/B smoke check
+        run: python -m benchmarks.compare_sync --workers 2 --hidden 16 --heads 4 --layers 1 --new-tokens 2 --repeats 1
