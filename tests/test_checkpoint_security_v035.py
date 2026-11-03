@@ -141,7 +141,7 @@ class CheckpointValidation(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "dimension: workers"):
                 validate_manifest({**manifest, "workers": True})
             with self.assertRaisesRegex(ValueError, "divisible"):
-                validate_manifest({**manifest, "inner": 65})
+                validate_manifest({**manifest, "heads": 3})
             with self.assertRaisesRegex(ValueError, "normalization epsilon"):
                 validate_manifest({**manifest, "layer_norm_epsilon": float("nan")})
             with self.assertRaisesRegex(ValueError, "integrity mismatch"):
