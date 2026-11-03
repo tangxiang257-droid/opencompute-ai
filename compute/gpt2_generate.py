@@ -16,6 +16,8 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 
+from compute.communication import CommunicationMeter
+
 
 def read_manifest(path: Path) -> dict:
     manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
@@ -83,7 +85,7 @@ def local_attention(x, layer: dict, cache, local_heads: int):
     return merged @ layer["attn_out_w"], (k, v)
 
 
-def forward_step(x, layers, caches, meta):
+def forward_step(x, layers, caches, meta, meter=None):
     """Run each shard on each rank; collective sums before adding shared biases."""
     new_caches = []
     local_heads = meta["heads"] // meta["workers"]
@@ -91,13 +93,13 @@ def forward_step(x, layers, caches, meta):
         normalized = F.layer_norm(x, (meta["hidden"],), layer["ln1_w"],
                                   layer["ln1_b"], meta["layer_norm_epsilon"])
         partial, new_cache = local_attention(normalized, layer, cache, local_heads)
-        dist.all_reduce(partial, op=dist.ReduceOp.SUM)
+        meter.all_reduce(partial) if meter is not None else dist.all_reduce(partial, op=dist.ReduceOp.SUM)
         x = x + partial + layer["attn_out_b"]
         normalized = F.layer_norm(x, (meta["hidden"],), layer["ln2_w"],
                                   layer["ln2_b"], meta["layer_norm_epsilon"])
         partial = F.gelu(normalized @ layer["mlp_fc_w"] + layer["mlp_fc_b"],
                          approximate="tanh") @ layer["mlp_out_w"]
-        dist.all_reduce(partial, op=dist.ReduceOp.SUM)
+        meter.all_reduce(partial) if meter is not None else dist.all_reduce(partial, op=dist.ReduceOp.SUM)
         x = x + partial + layer["mlp_out_b"]
         new_caches.append(new_cache)
     return x, new_caches
@@ -115,7 +117,7 @@ def parameter_bytes(value):
 
 @torch.inference_mode()
 def generate(path: Path, prompt_ids: list[int], max_new_tokens: int, rank: int, world: int,
-             return_logits=False):
+             return_logits=False, latency_ms=0.0, bandwidth_mbps=0.0):
     meta = read_manifest(path)
     if world != meta["workers"] or meta["heads"] % world:
         raise ValueError("number of distributed workers must match exported shards")
@@ -132,6 +134,7 @@ def generate(path: Path, prompt_ids: list[int], max_new_tokens: int, rank: int, 
     prefill_len = int(count.item())
     if prefill_len < 1 or prefill_len + max_new_tokens - 1 > meta["positions"]:
         raise ValueError("prompt length exceeds model context")
+    meter = CommunicationMeter(world, latency_ms=latency_ms, bandwidth_mbps=bandwidth_mbps)
     caches = [None] * meta["layers"]
     output_ids = []
     logits_samples = []
@@ -146,8 +149,8 @@ def generate(path: Path, prompt_ids: list[int], max_new_tokens: int, rank: int, 
             x = (io["wte"][idx] + io["wpe"][offsets]).unsqueeze(0).contiguous()
         else:
             x = torch.empty(1, length, meta["hidden"], dtype=torch.float32)
-        dist.broadcast(x, src=0)
-        x, caches = forward_step(x, layers, caches, meta)
+        meter.broadcast(x, src=0)
+        x, caches = forward_step(x, layers, caches, meta, meter)
         if rank == 0:
             x = F.layer_norm(x, (meta["hidden"],), io["ln_f_w"], io["ln_f_b"],
                              meta["layer_norm_epsilon"])
@@ -158,14 +161,16 @@ def generate(path: Path, prompt_ids: list[int], max_new_tokens: int, rank: int, 
         else:
             next_token = 0
         synced = torch.tensor([next_token], dtype=torch.int64)
-        dist.broadcast(synced, src=0)
+        meter.broadcast(synced, src=0)
         next_token = int(synced.item())
         output_ids.append(next_token)
         pending = [next_token] if rank == 0 else []
     elapsed = time.perf_counter() - total_start
     kv_bytes = sum(parameter_bytes(k) + parameter_bytes(v) for k, v in caches)
     values = torch.tensor([parameter_bytes(layers) + parameter_bytes(io), kv_bytes,
-                          resource.getrusage(resource.RUSAGE_SELF).ru_maxrss], dtype=torch.int64)
+                          resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
+                          round(meter.gloo_seconds * 1_000_000),
+                          round(meter.injected_seconds * 1_000_000)], dtype=torch.int64)
     gathered = [torch.zeros_like(values) for _ in range(world)]
     dist.all_gather(gathered, values)
     if rank == 0:
@@ -178,6 +183,9 @@ def generate(path: Path, prompt_ids: list[int], max_new_tokens: int, rank: int, 
             "weight_bytes_per_rank": [int(v[0]) for v in gathered],
             "kv_cache_bytes_per_rank": [int(v[1]) for v in gathered],
             "peak_rss_kib_per_rank_linux": [int(v[2]) for v in gathered],
+            "network_profile": {**meter.report(),
+                                "gloo_seconds_per_rank": [round(v[3].item() / 1_000_000, 6) for v in gathered],
+                                "injected_seconds_per_rank": [round(v[4].item() / 1_000_000, 6) for v in gathered]},
             **({"step_logits": logits_samples} if return_logits else {}),
         }
     return None
@@ -190,6 +198,8 @@ def main():
     parser.add_argument("--prompt-text", help="Encode using exported tokenizer (requires transformers)")
     parser.add_argument("--max-new-tokens", type=int, default=5)
     parser.add_argument("--report-logits", action="store_true", help="Debug only; potentially large JSON")
+    parser.add_argument("--net-latency-ms", type=float, default=0, help="Synthetic extra delay per collective")
+    parser.add_argument("--net-bandwidth-mbps", type=float, default=0, help="Synthetic extra delay from estimated wire bytes; 0 disables")
     args = parser.parse_args()
     torch.set_num_threads(1)
     rank, world = int(os.environ["RANK"]), int(os.environ["WORLD_SIZE"])
@@ -208,7 +218,7 @@ def main():
             else:
                 ids = [int(v.strip()) for v in args.prompt_ids.split(",")]
         result = generate(Path(args.shards), ids, args.max_new_tokens, rank, world,
-                          args.report_logits)
+                          args.report_logits, args.net_latency_ms, args.net_bandwidth_mbps)
         if rank == 0:
             if tokenizer is not None:
                 result["generated_text"] = tokenizer.decode(result["generated_ids"], skip_special_tokens=False)
