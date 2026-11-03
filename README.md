@@ -83,3 +83,12 @@ python -m unittest discover -s tests -v
 - [Real checkpoint validation script](benchmarks/validate_pretrained.py): `python -m benchmarks.validate_pretrained --model sshleifer/tiny-gpt2 --workers 2 --new-tokens 2`.
 
 **Scope:** single-host experiments are validated locally; HF integration requires optional dependencies and the pretrained model run requires a download. Added bandwidth/latency waits are an explicit sensitivity model, not actual WAN shaping.
+
+
+## v0.2.1: reduce synchronization and plan Worker groups
+
+- [Communication-elision, repeatable A/B test and capacity-first TP planner](docs/topology-optimization.md)
+- One redundant next-token Broadcast per generated token is removed. Per-block All-Reduce is unchanged.
+- `python -m compute.topology_planner --devices 4 --memory-mib 1024 --latency-ms 5 --bandwidth-mbps 100` previews rank-local memory and estimated network overhead.
+- `POST /v0.2/plan` is a localhost-only dry-run endpoint, not a live scheduler.
+- Planner outputs are **estimates, not measured memory feasibility or throughput guarantees**.
