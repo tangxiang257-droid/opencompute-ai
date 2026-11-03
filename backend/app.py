@@ -1,5 +1,5 @@
 """Local-only benchmark API. Do not expose without authentication and isolation."""
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.responses import FileResponse
 from cluster_v03.api import create_router as create_cluster_router
 from cluster_v03.store import ClusterStore
@@ -7,6 +7,7 @@ from cluster_v031.api import create_router as create_tp_router
 from cluster_v031.coordinator import SessionCoordinator
 from pydantic import BaseModel, Field
 import json
+import hmac
 import os
 from pathlib import Path
 import subprocess
@@ -17,6 +18,16 @@ from compute.shards import prepare
 from compute.topology_planner import plan
 
 app = FastAPI(title="OpenCompute AI CPU research API")
+
+
+def require_admin(x_admin_key: str = Header(default="")):
+    """Fail closed when a long independent admin secret was not configured."""
+    secret = os.getenv("OPENCOMPUTE_ADMIN_KEY", "")
+    if len(secret) < 16:
+        raise HTTPException(status_code=503, detail="admin authentication not configured")
+    if not x_admin_key or not hmac.compare_digest(secret, x_admin_key):
+        raise HTTPException(status_code=401, detail="invalid admin credentials")
+
 cluster_db = ClusterStore(os.getenv("OPENCOMPUTE_DB_PATH", "./.opencompute/cluster.sqlite"))
 tp_sessions = SessionCoordinator(
     cluster_db, os.getenv("OPENCOMPUTE_TP_ROOT", "./.opencompute/tp-models"),
@@ -51,7 +62,7 @@ def health():
 
 
 @app.post("/benchmarks")
-def benchmark(payload: Benchmark):
+def benchmark(payload: Benchmark, _: None = Depends(require_admin)):
     if payload.hidden % payload.workers:
         raise HTTPException(status_code=422, detail="hidden must be divisible by workers")
     with tempfile.TemporaryDirectory(prefix="opencompute-shards-") as tmp:
@@ -91,7 +102,7 @@ class PlanRequest(BaseModel):
 
 
 @app.post("/v0.2/plan")
-def plan_topology(payload: PlanRequest):
+def plan_topology(payload: PlanRequest, _: None = Depends(require_admin)):
     """Dry-run topology estimates, not actual allocated workers."""
     try:
         return plan(
