@@ -1,3 +1,14 @@
+# OpenCompute AI — v0.3.2 安全与可靠性修复
+
+**重要更新：** 加强本机 CPU 张量并行实验环境的管理接口鉴权、跨任务资源预留、会话超时检查、管理员取消、Worker 子进程终止、模型分片缓存清理及结果格式验证。
+
+- **[v0.3.2 修复清单、使用方法与仍未解决的问题](docs/v0.3.2-reliability.md)**
+- **[回归测试与 CI 工作流](.github/workflows/cluster-v03.yml)**
+
+**边界未改变：** 这仍是可信本机研究原型，不支持公网陌生节点。Gloo rendezvous 仍使用 `127.0.0.1`，端口占用竞态以及真正的跨设备故障恢复尚待解决。
+
+---
+
 # OpenCompute AI — v0.3.1 已注册 Worker 协同推理（本机实验）
 
 **新进展：** 将 v0.3 节点注册和资源感知调度接入 v0.2 GPT-2 CPU 张量并行。已实现 rank 指派、鉴权下载分片、SHA-256 校验、就绪屏障及两个独立 Worker 进程上的实际 Gloo 推理。可选择合成测试模型或预先导出的可信 GPT-2 TP 检查点。
@@ -51,7 +62,7 @@ Ubuntu with Docker Engine and Compose plugin; minimum 2 vCPU / 4 GiB RAM, recomm
 ```bash
 docker compose up -d --build
 curl http://127.0.0.1:8000/health
-curl -X POST http://127.0.0.1:8000/benchmarks -H 'Content-Type: application/json' -d '{"workers":2,"hidden":512,"batch":16}'
+curl -X POST http://127.0.0.1:8000/benchmarks -H "X-Admin-Key: $OPENCOMPUTE_ADMIN_KEY" -H 'Content-Type: application/json' -d '{"workers":2,"hidden":512,"batch":16}'
 ```
 
 Only localhost port 8000 is exposed. Access remotely through an SSH tunnel: `ssh -L 8000:127.0.0.1:8000 ubuntu@SERVER_IP`.
