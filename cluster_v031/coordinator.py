@@ -194,9 +194,10 @@ class SessionCoordinator:
             names = (["manifest.json", "rank0_io.pt"]
                      + [f"rank_{rank}.pt" for rank in range(world)])
             for name in names:
-                src = (source / name).resolve()
-                if (not src.is_relative_to(source) or not src.is_file()
-                        or src.is_symlink() or src.stat().st_size > 512_000_000):
+                candidate = source / name
+                src = candidate.resolve()
+                if (candidate.is_symlink() or not src.is_relative_to(source)
+                        or not src.is_file() or src.stat().st_size > 512_000_000):
                     raise ValueError("checkpoint file missing, unsafe or too large")
                 shutil.copyfile(src, folder / name)
             return self._register_session(session_id, folder, manifest,
@@ -231,6 +232,11 @@ class SessionCoordinator:
             prompt_ids = json.loads(row["prompt_json"])
             new_tokens = row["new_tokens"]
             expected = json.loads(row["config_json"])
+            old_pins = {entry["name"]: dict(entry) for entry in db.execute(
+                "SELECT name,size,sha256 FROM tp_files WHERE session_id=?",
+                (old_session_id,))}
+            if set(old_pins) != set(expected_files(workers)):
+                raise ValueError("old session lacks complete persisted file digests")
         source = (self.root / old_session_id).resolve()
         if not source.is_relative_to(self.root) or not source.is_dir():
             raise ValueError("original session checkpoints are no longer available")
@@ -241,17 +247,19 @@ class SessionCoordinator:
             filenames = ["manifest.json", "rank0_io.pt"] + [
                 f"rank_{i}.pt" for i in range(workers)]
             for name in filenames:
-                original = (source / name).resolve()
-                if (not original.is_relative_to(source) or
-                        not original.is_file() or original.stat().st_size > 512_000_000):
+                candidate = source / name
+                original = candidate.resolve()
+                if (candidate.is_symlink() or not original.is_relative_to(source)
+                        or not original.is_file() or original.stat().st_size > 512_000_000):
                     raise ValueError("original shard missing or too large")
                 shutil.copyfile(original, dest / name)
             manifest = read_manifest(dest)
             if manifest != expected:
                 raise ValueError("original checkpoint manifest changed")
+            inspect_bundle(dest, manifest, expected=old_pins)
             response = self._register_session(new_id, dest, manifest, workers,
-                                              prompt_ids, new_tokens)
-            response["retry_of"] = old_session_id
+                                              prompt_ids, new_tokens,
+                                              retry_of=old_session_id)
             response["resume_mode"] = "fresh_group_from_original_prompt_no_kv_recovery"
             return response
         except BaseException:
