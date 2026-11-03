@@ -45,6 +45,7 @@ class CommunicationTests(unittest.TestCase):
             report = next(json.loads(line) for line in completed.stdout.splitlines()
                           if line.startswith('{"engine":'))
             profile = report["network_profile"]
-            self.assertEqual(profile["calls"], {"broadcast": 4, "all_reduce": 4})
+            self.assertEqual(profile["calls"], {"broadcast": 2, "all_reduce": 4})
             self.assertGreater(profile["injected_seconds"], 0)
             self.assertGreater(profile["gloo_seconds"], 0)
+        self.assertEqual(report["generation_sync"], "hidden_only")
