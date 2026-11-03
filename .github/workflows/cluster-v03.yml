@@ -16,6 +16,9 @@ on:
   pull_request:
     paths:
       - 'cluster_v03/**'
+      - 'cluster_v031/**'
+      - 'tests/test_tp_v031.py'
+      - 'benchmarks/tp_session_demo.py'
       - 'tests/test_cluster_v03.py'
       - 'benchmarks/cluster_sim.py'
       - 'backend/app.py'
@@ -26,7 +29,7 @@ on:
 jobs:
   offline-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
