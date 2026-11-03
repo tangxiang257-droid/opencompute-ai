@@ -386,6 +386,19 @@ class SessionCoordinator:
                 return {"status": "failed", "cancelled": True}
             return {"status": row["state"], "cancelled": False}
 
+    def stopped(self, node_id, token, session_id):
+        """Acknowledge process-group teardown before releasing a failed TP slot."""
+        with self.cluster._tx() as db:
+            self._expire(db, self.clock())
+            row = self._assignment_for(db, node_id, token, session_id)
+            if row["state"] != "failed":
+                raise LeaseConflict("stop acknowledgement only applies to failed sessions")
+            if row["assignment_state"] in ("assigned", "ready"):
+                db.execute("""UPDATE tp_assignments SET state='stopped'
+                              WHERE session_id=? AND node_id=?""",
+                           (session_id, node_id))
+        return {"ok": True}
+
     def prune(self, older_than_seconds=86400):
         """Remove *terminal* session files after a grace period.
 
@@ -397,9 +410,13 @@ class SessionCoordinator:
         with self.cluster._tx() as db:
             now = self.clock()
             self._expire(db, now)
-            rows = db.execute("""SELECT id FROM tp_sessions
-                    WHERE state IN ('completed','failed') AND updated<=?""",
-                    (now - older_than_seconds,)).fetchall()
+            rows = db.execute("""SELECT s.id FROM tp_sessions s
+                    WHERE s.state IN ('completed','failed') AND s.updated<=?
+                      AND NOT EXISTS (SELECT 1 FROM tp_assignments a
+                         WHERE a.session_id=s.id AND s.state='failed'
+                           AND a.state IN ('assigned','ready')
+                           AND s.updated+180>=?)""",
+                    (now - older_than_seconds, now)).fetchall()
             ids = [row["id"] for row in rows]
             for session_id in ids:
                 db.execute("DELETE FROM tp_assignments WHERE session_id=?", (session_id,))
