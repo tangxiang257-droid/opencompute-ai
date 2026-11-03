@@ -2,3 +2,9 @@
 *.db
 __pycache__/
 .pytest_cache/
+
+# Generated model checkpoints and temporary profiling data
+generated/
+*.pt
+*.pth
+*.safetensors
