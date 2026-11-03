@@ -111,10 +111,10 @@ class Sessions(unittest.TestCase):
         self.assertTrue(self.ready(sid, low).json()["all_ready"])
         self.assertEqual(self.status(sid)["status"], "running")
         self.assertTrue(self.assign(high)["run"])
-        self.assertEqual(self.complete(sid, high, result={"generated_ids": [3, 3]}).status_code, 200)
-        self.assertEqual(self.complete(sid, low, result={"rank": 1}).status_code, 200)
+        self.assertEqual(self.complete(sid, high, result={"generated_ids": [3, 3, 3]}).status_code, 200)
+        self.assertEqual(self.complete(sid, low, result={"rank": 1, "completed": True}).status_code, 200)
         self.assertEqual(self.status(sid)["status"], "completed")
-        self.assertEqual(self.complete(sid, low, result={"rank": 1}).status_code, 409)
+        self.assertEqual(self.complete(sid, low, result={"rank": 1, "completed": True}).status_code, 409)
 
     def test_preexported_local_checkpoint_is_staged(self):
         source = self.root / "checkpoints" / "small"
@@ -143,6 +143,84 @@ class Sessions(unittest.TestCase):
         self.assertEqual(self.complete(sid, a, error="simulated failure").status_code, 200)
         self.assertEqual(self.status(sid)["status"], "failed")
         self.assertEqual(self.complete(sid, a, error="repeat").status_code, 409)
+
+
+    def test_expired_session_cannot_be_readied_or_downloaded(self):
+        node = self.node("expiry")
+        created = self.create(workers=1)
+        self.assertEqual(created.status_code, 200, created.text)
+        sid = created.json()["session_id"]
+        start = self.coordinator.clock()
+        self.coordinator.clock = lambda: start + self.coordinator.prepare_ttl + 2
+        self.assertEqual(self.ready(sid, node).status_code, 409)
+        denied = self.api.get(f"/v0.3.1/sessions/{sid}/files/rank_0.pt",
+                              params={"node_id": node["id"]},
+                              headers={"X-Node-Token": node["node_token"]})
+        self.assertEqual(denied.status_code, 401)
+        self.assertEqual(self.status(sid)["status"], "failed")
+
+    def test_expired_run_cannot_complete(self):
+        node = self.node("expiry-run")
+        sid = self.create(workers=1).json()["session_id"]
+        self.assertTrue(self.ready(sid, node).json()["all_ready"])
+        start = self.coordinator.clock()
+        self.coordinator.clock = lambda: start + self.coordinator.run_ttl + 1
+        self.assertEqual(self.complete(
+            sid, node, result={"generated_ids": [1, 2, 3]}).status_code, 409)
+        self.assertEqual(self.status(sid)["status"], "failed")
+
+    def test_cancel_and_explicit_prune_are_admin_only(self):
+        node = self.node("cancel")
+        sid = self.create(workers=1).json()["session_id"]
+        self.assertEqual(self.api.post(
+            f"/v0.3.1/sessions/{sid}/cancel").status_code, 401)
+        stop = self.api.post(f"/v0.3.1/sessions/{sid}/cancel",
+                             headers={"X-Admin-Key": ADMIN})
+        self.assertEqual(stop.status_code, 200, stop.text)
+        self.assertEqual(self.status(sid)["status"], "failed")
+        self.assertIsNone(self.assign(node))
+        self.assertEqual(self.ready(sid, node).status_code, 409)
+        self.assertEqual(self.api.post("/v0.3.1/sessions/prune",
+            json={"older_than_seconds": 60}).status_code, 401)
+        start = self.coordinator.clock()
+        self.coordinator.clock = lambda: start + 61
+        cleanup = self.api.post("/v0.3.1/sessions/prune",
+            headers={"X-Admin-Key": ADMIN},
+            json={"older_than_seconds": 60})
+        self.assertEqual(cleanup.status_code, 200, cleanup.text)
+        self.assertEqual(cleanup.json()["removed"], 1)
+        self.assertFalse((self.root / "sessions" / sid).exists())
+        self.assertEqual(self.api.get(f"/v0.3.1/sessions/{sid}",
+            headers={"X-Admin-Key": ADMIN}).status_code, 404)
+
+    def test_result_format_validation(self):
+        fast, slow = self.node("valid-a", score=50), self.node("valid-b", score=10)
+        sid = self.create().json()["session_id"]
+        self.ready(sid, fast)
+        self.ready(sid, slow)
+        self.assertEqual(self.complete(
+            sid, fast, result={"generated_ids": [1]}).status_code, 422)
+        self.assertEqual(self.complete(
+            sid, slow, result={"rank": 1}).status_code, 422)
+        self.assertEqual(self.complete(
+            sid, fast, result={"generated_ids": [1, 2, 3]}).status_code, 200)
+        self.assertEqual(self.complete(
+            sid, slow, result={"rank": 1, "completed": True}).status_code, 200)
+
+    def test_tp_reservations_block_regular_lease_until_cancelled(self):
+        node = self.store.register(
+            name="shared-capacity", platform="test", cpu_cores=4,
+            ram_mb=4096, compute_score=100, slots=1,
+            capabilities=["tp_gpt2", "sum"])
+        self.store.heartbeat(node["id"], node["node_token"],
+                             free_ram_mb=2048, cpu_load_pct=0)
+        sid = self.create(workers=1).json()["session_id"]
+        self.store.submit("sum", {"numbers": [1, 2]}, required_memory_mb=64)
+        self.assertIsNone(self.store.claim(node["id"], node["node_token"])["task"])
+        self.assertEqual(self.api.post(
+            f"/v0.3.1/sessions/{sid}/cancel",
+            headers={"X-Admin-Key": ADMIN}).status_code, 200)
+        self.assertIsNotNone(self.store.claim(node["id"], node["node_token"])["task"])
 
 
 if __name__ == "__main__":
