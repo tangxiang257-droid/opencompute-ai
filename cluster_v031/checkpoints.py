@@ -52,6 +52,9 @@ def validate_manifest(manifest, *, expected_workers=None):
         if type(manifest.get("tied_embeddings")) is not bool:
             raise ValueError("invalid tied-embedding option")
         if manifest["format"] == "opencompute-qwen2-tp-v2":
+            storage = manifest.get("weight_dtype", "float32")
+            if storage not in ("float32", "bfloat16") or not isinstance(storage, str):
+                raise ValueError("invalid Qwen2 storage precision")
             rows = manifest.get("io_chunk_rows")
             if type(rows) is not int or not 1 <= rows <= manifest["vocab"]:
                 raise ValueError("invalid Qwen2 vocabulary chunk rows")
