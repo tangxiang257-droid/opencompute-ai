@@ -54,6 +54,14 @@ MODELS = (
         description="已实现 Qwen2 的 RoPE/GQA/RMSNorm/SwiGLU CPU 张量并行；目前使用随机合成权重，不具备真实聊天能力。",
     ),
     ModelSpec(
+        id="qwen2-local-checkpoint", display_name="Qwen2 本地可信检查点",
+        family="Qwen", architecture="qwen2", engine="qwen2-tp",
+        provider="Local administrator", official_source=None,
+        capability="experimental", modes=("tensor_parallel",),
+        description="仅支持本地已导出、受文件大小限制且经管理员审核的 Qwen2 分片；未验证 DeepSeek/R1 全量预训练权重。",
+        requires_local_checkpoint=True,
+    ),
+    ModelSpec(
         id="deepseek-r1-distill-qwen-1.5b",
         display_name="DeepSeek-R1-Distill-Qwen-1.5B",
         family="DeepSeek", architecture="qwen2",
