@@ -184,13 +184,47 @@ def export_chunked(state, config, destination, workers=2, *,
         raise
 
 
-def _checked_tensor(path, shape, name="weight"):
+class TensorLRU:
+    """Optional, per-Worker, byte-bounded resident FP32 weights cache.
+
+    The bound covers *cached tensor bytes*, not temporary allocations or
+    PyTorch's allocator. A zero budget preserves the streaming-only behavior.
+    """
+    def __init__(self, cache_mib=0):
+        if type(cache_mib) is not int or not 0 <= cache_mib <= 512:
+            raise ValueError("cache budget must be 0..512 MiB")
+        self.limit = cache_mib * 1024 * 1024
+        self.entries = OrderedDict()
+        self.size = 0
+        self.hits = 0
+        self.misses = 0
+
+    def get(self, key, loader):
+        if key in self.entries:
+            self.entries.move_to_end(key)
+            self.hits += 1
+            return self.entries[key]
+        self.misses += 1
+        data = loader()
+        values = data.values() if isinstance(data, dict) else [data]
+        bytes_used = sum(v.numel() * v.element_size() for v in values)
+        if 0 < bytes_used <= self.limit:
+            while self.entries and self.size + bytes_used > self.limit:
+                _, removed = self.entries.popitem(last=False)
+                tensors = removed.values() if isinstance(removed, dict) else [removed]
+                self.size -= sum(t.numel() * t.element_size() for t in tensors)
+            self.entries[key] = data
+            self.size += bytes_used
+        return data
+
+
+def _checked_tensor(path, shape, name="weight", storage_type=torch.float32):
     data = load_file(str(path), device="cpu")
     if (set(data) != {name} or tuple(data[name].shape) != tuple(shape)
-            or data[name].dtype != torch.float32
+            or data[name].dtype != storage_type
             or not torch.isfinite(data[name]).all().item()):
         raise ValueError(f"invalid chunk tensor {path.name}")
-    return data[name]
+    return data[name].to(dtype=torch.float32)
 
 
 def _layer_shapes(meta):
@@ -205,39 +239,50 @@ def _layer_shapes(meta):
 
 
 class LayerStream:
-    def __init__(self, folder, rank, meta):
+    def __init__(self, folder, rank, meta, cache_mib=0):
         self.root, self.rank, self.meta = Path(folder), rank, meta
+        self.cache = TensorLRU(cache_mib)
 
     def __len__(self):
         return self.meta["layers"]
 
-    def __iter__(self):
+    def _read_layer(self, i):
+        path = self.root / f"rank_{self.rank}_layer_{i:03d}.safetensors"
+        layer = load_file(str(path), device="cpu")
         shapes = _layer_shapes(self.meta)
+        storage_type = weight_dtype(self.meta)
+        if set(layer) != set(shapes):
+            raise ValueError(f"invalid layer keys: {path.name}")
+        for key, shape in shapes.items():
+            x = layer[key]
+            if (tuple(x.shape) != shape or x.dtype != storage_type
+                    or not torch.isfinite(x).all().item()):
+                raise ValueError(f"invalid layer tensor: {key}")
+        # Float32 CPU math keeps the existing Gloo computation path compatible
+        # even when the on-disk checkpoint uses BF16 storage.
+        return {key: value.to(dtype=torch.float32)
+                for key, value in layer.items()}
+
+    def __iter__(self):
         for i in range(len(self)):
-            path = self.root / f"rank_{self.rank}_layer_{i:03d}.safetensors"
-            layer = load_file(str(path), device="cpu")
-            if set(layer) != set(shapes):
-                raise ValueError(f"invalid layer keys: {path.name}")
-            for key, shape in shapes.items():
-                x = layer[key]
-                if (tuple(x.shape) != shape or x.dtype != torch.float32
-                        or not torch.isfinite(x).all().item()):
-                    raise ValueError(f"invalid layer tensor: {key}")
-            yield layer
+            yield self.cache.get(i, lambda i=i: self._read_layer(i))
 
 
 class ChunkedIO:
-    def __init__(self, folder, meta):
+    def __init__(self, folder, meta, cache_mib=0):
         self.root, self.meta = Path(folder), meta
+        self.cache = TensorLRU(cache_mib)
         self.norm = _checked_tensor(self.root / "rank0_norm.safetensors",
-                                    (meta["hidden"],))
+                                    (meta["hidden"],),
+                                    storage_type=weight_dtype(meta))
 
     def _chunk(self, kind, i, start, stop):
         if kind == "head" and self.meta["tied_embeddings"]:
             kind = "embed"
-        return _checked_tensor(
-            self.root / f"rank0_{kind}_{i:03d}.safetensors",
-            (stop-start, self.meta["hidden"]))
+        name = f"rank0_{kind}_{i:03d}.safetensors"
+        return self.cache.get(name, lambda: _checked_tensor(
+            self.root / name, (stop-start, self.meta["hidden"]),
+            storage_type=weight_dtype(self.meta)))
 
     def embed(self, token_ids):
         flat = token_ids.reshape(-1)
@@ -258,7 +303,8 @@ class ChunkedIO:
         return torch.cat(parts, dim=-1)
 
 
-def load_chunked_rank(folder, rank, meta):
+def load_chunked_rank(folder, rank, meta, *, layer_cache_mib=0,
+                      io_cache_mib=0):
     files = rank_files(meta, rank)
     # Header preflight catches missing/corrupted files before any Gloo
     # broadcast, and neither stores all layers nor the full vocabulary in RAM.
@@ -286,10 +332,15 @@ def load_chunked_rank(folder, rank, meta):
                 raise ValueError(f"invalid Safetensors header keys: {name}")
             for key, shape in expected_shapes.items():
                 part = obj.get_slice(key)
-                if tuple(part.get_shape()) != tuple(shape) or part.get_dtype() != "F32":
+                expected_dtype = ("BF16" if weight_dtype(meta) == torch.bfloat16
+                                  else "F32")
+                if (tuple(part.get_shape()) != tuple(shape)
+                        or part.get_dtype() != expected_dtype):
                     raise ValueError(f"invalid Safetensors header tensor: {name}:{key}")
-    stream = LayerStream(folder, rank, meta)
-    for _ in stream:  # Full validation, at most one loaded layer at a time.
-        pass
-    io = ChunkedIO(folder, meta) if rank == 0 else None
+    stream = LayerStream(folder, rank, meta, cache_mib=layer_cache_mib)
+    # Preflight only decodes one layer at a time, without populating the
+    # inference cache before all ranks have passed their collective.
+    for i in range(len(stream)):
+        stream._read_layer(i)
+    io = ChunkedIO(folder, meta, cache_mib=io_cache_mib) if rank == 0 else None
     return stream, io
