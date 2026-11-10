@@ -74,7 +74,7 @@ def create_model_router(coordinator, *, admin_key: str):
                     prompt_ids=body.prompt_ids,
                     new_tokens=body.max_new_tokens,
                 )
-            elif spec.id == "gpt2-local-checkpoint":
+            elif spec.id in ("gpt2-local-checkpoint", "qwen2-local-checkpoint"):
                 if not body.checkpoint:
                     raise ValueError("a pre-exported local checkpoint is required")
                 if any(v is not None for v in (
@@ -85,6 +85,7 @@ def create_model_router(coordinator, *, admin_key: str):
                     checkpoint=body.checkpoint,
                     prompt_ids=body.prompt_ids,
                     new_tokens=body.max_new_tokens,
+                    expected_engine=spec.engine,
                 )
             else:
                 # All runtime adapters must be registered explicitly.
