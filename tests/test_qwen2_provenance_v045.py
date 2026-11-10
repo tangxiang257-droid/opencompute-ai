@@ -47,7 +47,13 @@ class ProvenanceAndTokenizerGates(unittest.TestCase):
                 (self.source / "config.json").write_text(
                     json.dumps(original), encoding="utf-8")
                 with patch.object(offline, "hf_reference") as hf:
-                    with self.assertRaisesRegex(ValueError, "source and shards mismatch"):
+                    # Tied-embedding mismatch is detected even earlier: the
+                    # source Safetensors header now contains an unexpected
+                    # separate lm_head.weight tensor for that config.
+                    expected_error = ("unrecognized Qwen2 tensor"
+                                      if name == "tie_word_embeddings"
+                                      else "source and shards mismatch")
+                    with self.assertRaisesRegex(ValueError, expected_error):
                         offline.run(self.source, self.exported, "你好",
                                     workers=2, compare_run=True)
                     hf.assert_not_called()
