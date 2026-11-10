@@ -2,6 +2,8 @@
 
 **浏览器控制台：** 启动 API 后访问 `http://127.0.0.1:8000/`。控制台使用管理员密钥连接现有集群 API，提供算力总览、Worker 设备清单、CPU 任务提交、模型目录、Qwen2 队列状态和设备接入说明。
 
+**Windows 本地一键启动：** [启动指南](docs/v0.6-windows-local-launcher.md) · [启动脚本](scripts/start-local.ps1) · `powershell -ExecutionPolicy Bypass -File .\scripts\start-local.ps1 -SimulateWorkers`（自动生成本地密钥并启动 3 个模拟 CPU Worker）。
+
 - [Web 控制台](web/index.html)
 - [控制台打包回归测试](tests/test_web_dashboard_v051.py)
 - [Qwen2 实时推理服务](cluster_v05/qwen2_service.py) · [HTTP API](cluster_v05/api.py)
