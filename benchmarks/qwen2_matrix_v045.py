@@ -35,7 +35,7 @@ def parse_choices(text, *, allowed):
 
 
 def launch_rank_group(folder, *, workers, max_new_tokens, prompt,
-                      timeout=100):
+                      timeout=100, local_fastpath=True):
     if not 1 <= workers <= 2 or not 1 <= max_new_tokens <= 8:
         raise ValueError("benchmark supports 1-2 ranks and 1-8 tokens")
     cmd = [sys.executable, "-m", "torch.distributed.run", "--standalone",
@@ -44,6 +44,8 @@ def launch_rank_group(folder, *, workers, max_new_tokens, prompt,
            "--prompt-ids", ",".join(str(i) for i in prompt),
            "--max-new-tokens", str(max_new_tokens),
            "--report-logits", "--profile"]
+    if not local_fastpath:
+        cmd.append("--no-single-rank-fastpath")
     started = time.perf_counter()
     proc = subprocess.run(
         cmd, capture_output=True, text=True, timeout=timeout,
