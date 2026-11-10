@@ -50,14 +50,14 @@ class CollectiveProfiler:
 
 
 def profile_rank_stats(*, preflight_us, decode_us, prefill_us, tokens,
-                       profiler, rss_sample_bytes=0):
+                       profiler, rss_sample_bytes=0, peak_rss_bytes_linux=0):
     """Fixed shape and stable units for Gloo gathering across all ranks."""
     fields = (
         preflight_us, decode_us, prefill_us, tokens,
         profiler.collective_ns // 1000,
         profiler.calls_all_reduce, profiler.payload_all_reduce_bytes,
         profiler.calls_broadcast, profiler.payload_broadcast_bytes,
-        rss_sample_bytes,
+        rss_sample_bytes, peak_rss_bytes_linux,
     )
     if any(type(x) is not int or x < 0 for x in fields):
         raise ValueError("invalid per-rank counter")
@@ -68,6 +68,7 @@ PROFILE_FIELDS = (
     "preflight_us", "decode_us", "prefill_us", "generated_steps",
     "collective_wall_us", "all_reduce_calls", "all_reduce_tensor_bytes",
     "broadcast_calls", "broadcast_tensor_bytes", "rss_sample_bytes",
+    "peak_rss_bytes_linux",
 )
 
 
