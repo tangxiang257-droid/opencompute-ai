@@ -17,6 +17,7 @@ from compute.qwen2_core import forward_layers, rms_norm
 from compute.qwen2_shards import FORMAT
 from compute.qwen2_chunked import FORMAT as CHUNK_FORMAT, ChunkedIO, load_chunked_rank, rank_files
 from compute.rendezvous import init_gloo
+from compute.qwen2_trace import CollectiveProfiler, profile_rank_stats, interpret_rank_stats
 
 
 def read_manifest(folder):
@@ -82,7 +83,9 @@ def load_rank(folder, rank, m, *, layer_cache_mib=0, io_cache_mib=0):
 
 @torch.inference_mode()
 def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
-             preflight_error=None, layer_cache_mib=0, io_cache_mib=0):
+             preflight_error=None, layer_cache_mib=0, io_cache_mib=0,
+             profile=False):
+    preflight_started_ns = time.perf_counter_ns()
     error = preflight_error
     m, layers, io = None, None, None
     if error is None:
@@ -106,9 +109,21 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
     dist.all_reduce(ready, op=dist.ReduceOp.MIN)
     if int(ready.item()) != 1:
         raise ValueError(f"Qwen2 rank preflight failed: {error or 'peer rank failed validation'}")
+    preflight_us = (time.perf_counter_ns() - preflight_started_ns) // 1000
+    trace = CollectiveProfiler() if profile else None
+
+    def broadcast(tensor):
+        if trace is None:
+            return dist.broadcast(tensor, src=0)
+        return trace.broadcast(tensor, src=0)
+
+    def reduce_sum(tensor):
+        if trace is None:
+            return dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+        return trace.all_reduce(tensor, op=dist.ReduceOp.SUM)
 
     length = torch.tensor([len(ids) if rank == 0 else 0], dtype=torch.int64)
-    dist.broadcast(length, src=0)
+    broadcast(length)
     prompt_length = int(length.item())
     if not 1 <= prompt_length <= m["positions"] - max_new_tokens + 1:
         raise ValueError("invalid synchronized Qwen2 context")
@@ -117,7 +132,9 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
     generated = []
     all_logits = []
     start = time.perf_counter()
+    prefill_us = 0
     for step in range(max_new_tokens):
+        step_started_ns = time.perf_counter_ns()
         sequence_length = prompt_length if step == 0 else 1
         if rank == 0:
             token = torch.tensor(pending, dtype=torch.long)
@@ -125,9 +142,8 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
                  else F.embedding(token, io["embed"])).unsqueeze(0).contiguous()
         else:
             x = torch.empty((1, sequence_length, m["hidden"]), dtype=torch.float32)
-        dist.broadcast(x, src=0)
-        x, caches = forward_layers(x, layers, caches, m,
-                                    reduce_sum=lambda v: dist.all_reduce(v, op=dist.ReduceOp.SUM))
+        broadcast(x)
+        x, caches = forward_layers(x, layers, caches, m, reduce_sum=reduce_sum)
         if rank == 0:
             last = rms_norm(x[:, -1, :],
                             io.norm if isinstance(io, ChunkedIO) else io["norm"],
@@ -139,6 +155,8 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
             if return_logits:
                 all_logits.append(logits.tolist())
             pending = [next_id]
+        if step == 0:
+            prefill_us = (time.perf_counter_ns() - step_started_ns) // 1000
     elapsed = time.perf_counter() - start
     def tensor_bytes(value):
         if isinstance(value, torch.Tensor):
@@ -157,6 +175,28 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
     size = torch.tensor([weight_bytes], dtype=torch.int64)
     gathered = [torch.zeros_like(size) for _ in range(world)]
     dist.all_gather(gathered, size)
+    profiled_ranks = None
+    if profile:
+        try:
+            import psutil
+            rss_sample = psutil.Process().memory_info().rss
+        except (ImportError, OSError):
+            rss_sample = 0
+        record = profile_rank_stats(
+            preflight_us=int(preflight_us),
+            decode_us=int(elapsed * 1_000_000),
+            prefill_us=int(prefill_us),
+            tokens=max_new_tokens,
+            profiler=trace,
+            rss_sample_bytes=int(rss_sample),
+        )
+        local = torch.tensor(record, dtype=torch.int64)
+        observed = [torch.zeros_like(local) for _ in range(world)]
+        # Profiling does not include this final reporting collective.
+        dist.all_gather(observed, local)
+        if rank == 0:
+            profiled_ranks = [interpret_rank_stats(item.tolist())
+                              for item in observed]
     if rank == 0:
         return {
             "engine": "opencompute-qwen2-tp-v0.4.1",
@@ -165,6 +205,12 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
             "tokens_per_second_rank0": round(max_new_tokens / max(1e-9, elapsed), 3),
             "elapsed_seconds_rank0": round(elapsed, 5),
             "weight_bytes_per_rank": [int(x.item()) for x in gathered],
+            **({"profile": {
+                "schema": "opencompute-qwen2-tp-profile-v1",
+                "ranks": profiled_ranks,
+                "scope": "trusted same-host Gloo; tensor bytes not actual network traffic",
+                "decode_includes": "prefill and greedy steps; excludes model preflight",
+            }} if profile else {}),
             **({"step_logits": all_logits} if return_logits else {}),
         }
     return None
@@ -176,6 +222,8 @@ def main():
     parser.add_argument("--prompt-ids", default="1,2,3")
     parser.add_argument("--max-new-tokens", type=int, default=3)
     parser.add_argument("--report-logits", action="store_true")
+    parser.add_argument("--profile", action="store_true",
+                        help="collect per-rank timing and logical collective payload")
     parser.add_argument("--layer-cache-mib", type=int, default=0)
     parser.add_argument("--io-cache-mib", type=int, default=0)
     args = parser.parse_args()
@@ -194,7 +242,8 @@ def main():
         outcome = generate(Path(args.shards), ids, args.max_new_tokens,
                            rank, world, args.report_logits, input_error,
                            layer_cache_mib=args.layer_cache_mib,
-                           io_cache_mib=args.io_cache_mib)
+                           io_cache_mib=args.io_cache_mib,
+                           profile=args.profile)
         if rank == 0:
             print(json.dumps(outcome, ensure_ascii=False), flush=True)
     finally:
