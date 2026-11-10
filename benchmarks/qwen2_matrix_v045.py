@@ -76,6 +76,10 @@ def run_matrix(*, worker_counts=(1, 2), precisions=("float32", "bfloat16"),
             or len(set(dtypes)) != len(dtypes)
             or type(max_new_tokens) is not int or not 1 <= max_new_tokens <= 8):
         raise ValueError("invalid matrix dimensions")
+    if persist_to is not None:
+        report_path = Path(persist_to)
+        if report_path.is_symlink() or report_path.exists():
+            raise ValueError("refusing to overwrite an existing benchmark report")
     torch.set_num_threads(1)
     state, cfg = synthetic_state(hidden=24, heads=6, kv_heads=2, layers=2,
                                  inner=48, vocab=64, positions=64, seed=4180)
