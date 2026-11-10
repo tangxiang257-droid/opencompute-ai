@@ -13,7 +13,7 @@ function New-UrlSafeSecret {
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
     try {
         $rng.GetBytes($bytes)
-        return [Convert]::ToBase64String($bytes).TrimEnd("=").Replace("+", "-").Replace("/", "_")
+        return [Convert]::ToBase64String($bytes).TrimEnd([char[]]@('=')).Replace("+", "-").Replace("/", "_")
     }
     finally { $rng.Dispose() }
 }
@@ -46,7 +46,7 @@ function Get-OrCreateSecrets {
             "OPENCOMPUTE_TP_ROOT=./.opencompute/tp-sessions",
             "OPENCOMPUTE_TP_CHECKPOINTS=./.opencompute/checkpoints"
         )
-        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
         [System.IO.File]::WriteAllLines($envPath, $lines, $utf8NoBom)
         Write-Host "已生成本机 .env 和两组独立密钥。" -ForegroundColor Green
         return @{ Admin = $admin; Join = $join }
