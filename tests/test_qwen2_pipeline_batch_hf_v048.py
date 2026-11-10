@@ -15,7 +15,28 @@ from benchmarks.qwen2_multi_request_v048 import PROMPTS, launch_group
 from compute.qwen2_chunked import export_chunked
 from compute.qwen2_pipeline_v047 import partition_one_rank_v2
 from compute.qwen2_validation import validate_generation_parity
-from tests.test_qwen2_pipeline_hf_v047 import hf_models, reference_greedy
+def hf_models():
+    try:
+        from transformers import Qwen2Config, Qwen2ForCausalLM
+    except Exception as exc:
+        if os.environ.get("OPENCOMPUTE_REQUIRE_HF_TINY") == "1":
+            raise RuntimeError("independent offline Qwen2 reference missing") from exc
+        raise unittest.SkipTest("Transformers not installed in local environment")
+    return Qwen2Config, Qwen2ForCausalLM
+
+
+@torch.inference_mode()
+def reference_greedy(model, ids, new_tokens):
+    generated, logits = [], []
+    current = list(ids)
+    for _ in range(new_tokens):
+        scores = model(input_ids=torch.tensor([current], dtype=torch.long),
+                       use_cache=False, return_dict=True).logits[0, -1].float()
+        token = int(scores.argmax().item())
+        generated.append(token)
+        logits.append(scores.tolist())
+        current.append(token)
+    return {"generated_ids": generated, "step_logits": logits}
 
 
 @unittest.skipUnless(os.name == "posix", "Gloo CPU integration requires Linux/POSIX")
