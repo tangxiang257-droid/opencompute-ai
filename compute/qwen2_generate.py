@@ -110,7 +110,7 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
     if int(ready.item()) != 1:
         raise ValueError(f"Qwen2 rank preflight failed: {error or 'peer rank failed validation'}")
     preflight_us = (time.perf_counter_ns() - preflight_started_ns) // 1000
-    trace = CollectiveProfiler() if profile else None
+    trace = None
 
     def broadcast(tensor):
         if trace is None:
@@ -127,6 +127,8 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
     prompt_length = int(length.item())
     if not 1 <= prompt_length <= m["positions"] - max_new_tokens + 1:
         raise ValueError("invalid synchronized Qwen2 context")
+    # Exclude the one-off prompt-length coordination from decode profiling.
+    trace = CollectiveProfiler() if profile else None
     pending = list(ids) if rank == 0 else []
     caches = [None] * m["layers"]
     generated = []
