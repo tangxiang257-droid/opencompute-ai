@@ -5,6 +5,7 @@
 - [v0.4.4 完整技术文档、命令和验收边界](docs/v0.4.4-bf16-offline-reference.md)
 - [Qwen2 BF16 分块存储和 LRU 缓存](compute/qwen2_chunked.py)
 - [离线官方模型 Tokenizer / HF 参考验证入口](benchmarks/qwen2_offline_reference.py)
+- [本地权重结构、Tokenizer 严格预检查及可选 HF 数值对照](benchmarks/qwen2_offline_validation.py) · [验证边界与命令](docs/v0.4.4-hf-validation.md)
 - [BF16、内存缓存与两 Rank 回归测试](tests/test_qwen2_bf16_v044.py)
 - [GitHub Actions 检查](https://github.com/tangxiang257-droid/opencompute-ai/actions)
 
