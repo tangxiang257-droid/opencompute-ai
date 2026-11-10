@@ -1,3 +1,17 @@
+# OpenCompute AI v0.4.1 — Qwen2/DeepSeek-Qwen 架构适配第一阶段
+
+**真正新增了 Qwen2 CPU Gloo 张量并行计算引擎**：实现 RoPE、RMSNorm、GQA、SwiGLU、Rank 本地 KV Cache、分片权重导出和双 Worker 协同生成。已打通原有注册 Worker、调度器与多模型选择 API。
+
+- [Qwen2 引擎与 DeepSeek 兼容性边界](docs/v0.4.1-qwen2-tp.md)
+- [Qwen2 分片导出模块](compute/qwen2_shards.py) · [Gloo 生成模块](compute/qwen2_generate.py) · [数值一致性测试](tests/test_qwen2_v041.py)
+- [本机真实 HTTP + 两 Worker Qwen2 集成脚本](benchmarks/qwen2_tp_session_demo.py)
+- 模型中心：`http://127.0.0.1:8000/v0.4/console`（本地服务启动后）
+- [GitHub Actions](https://github.com/tangxiang257-droid/opencompute-ai/actions)
+
+**注意**：已经支持 Qwen2 **合成测试权重**和符合本地限额的小型可信检查点，但**尚未将 DeepSeek-R1-Distill-Qwen-1.5B 官方完整权重实际运行和验收**；该模型仍在模型中心显示「待适配」。原有 GPT-2 引擎保持可用。
+
+---
+
 # OpenCompute AI v0.4 — 多模型算力平台（模型中心第一阶段）
 
 OpenCompute AI 不绑定某一家模型厂商。已建立统一模型目录、按架构声明的适配器能力和模型选择页面：**DeepSeek、Qwen、Llama、GPT-2 等模型可以统一管理，但目前只有原 GPT-2 实验引擎真正可运行**。未适配模型不会被误标为可执行。
