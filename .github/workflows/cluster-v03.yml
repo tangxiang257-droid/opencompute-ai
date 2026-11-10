@@ -8,6 +8,8 @@ on:
       - 'compute/qwen2_*.py'
       - 'tests/test_qwen2_safetensors_v042.py'
       - 'tests/test_qwen2_*.py'
+      - 'compute/request_queue_v049.py'
+      - 'tests/test_request_queue_v049.py'
       - 'benchmarks/qwen2_tp_session_demo.py'
       - 'benchmarks/qwen2_chunked_session_demo.py'
       - 'benchmarks/qwen2_offline_reference.py'
@@ -49,6 +51,8 @@ on:
       - 'compute/qwen2_*.py'
       - 'tests/test_qwen2_safetensors_v042.py'
       - 'tests/test_qwen2_*.py'
+      - 'compute/request_queue_v049.py'
+      - 'tests/test_request_queue_v049.py'
       - 'benchmarks/qwen2_tp_session_demo.py'
       - 'benchmarks/qwen2_chunked_session_demo.py'
       - 'benchmarks/qwen2_offline_reference.py'
@@ -180,6 +184,8 @@ jobs:
           retention-days: 7
       - name: v0.4.8 bounded multi-request PP and KV independence
         run: python -m unittest discover -s tests -p 'test_qwen2_pipeline_batch_v048.py' -v
+      - name: v0.4.9 bounded fair request queue, deadlines and lifecycle
+        run: python -m unittest discover -s tests -p 'test_request_queue_v049.py' -v
       - name: v0.4.8 independent HF Qwen2 multi-prompt parity
         env:
           OPENCOMPUTE_REQUIRE_HF_TINY: '1'
