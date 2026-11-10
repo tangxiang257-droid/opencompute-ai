@@ -5,6 +5,7 @@ on:
       - 'cluster_v03/**'
       - 'cluster_v031/**'
       - 'cluster_v04/**'
+      - 'cluster_v05/**'
       - 'compute/qwen2_*.py'
       - 'tests/test_qwen2_safetensors_v042.py'
       - 'tests/test_qwen2_*.py'
@@ -48,6 +49,7 @@ on:
       - 'cluster_v03/**'
       - 'cluster_v031/**'
       - 'cluster_v04/**'
+      - 'cluster_v05/**'
       - 'compute/qwen2_*.py'
       - 'tests/test_qwen2_safetensors_v042.py'
       - 'tests/test_qwen2_*.py'
@@ -105,7 +107,7 @@ jobs:
           OPENCOMPUTE_JOIN_KEY=ci-test-join-placeholder-long-only \
           docker compose -f docker-compose.tp-local.yml config --quiet
       - name: Compile check source and regression tests
-        run: python -m compileall -q backend compute cluster_v03 cluster_v031 cluster_v04 tests benchmarks
+        run: python -m compileall -q backend compute cluster_v03 cluster_v031 cluster_v04 cluster_v05 tests benchmarks
       - name: Test scheduling, auth, leases, concurrent claims and Worker jobs
         run: python -m unittest discover -s tests -p 'test_cluster_v03.py' -v
       - name: Run managed TP session API and Gloo tests
@@ -186,6 +188,10 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_qwen2_pipeline_batch_v048.py' -v
       - name: v0.4.9 bounded fair request queue, deadlines and lifecycle
         run: python -m unittest discover -s tests -p 'test_request_queue_v049.py' -v
+      - name: v0.5.0 dynamic queue to real two-stage Qwen2 Gloo service
+        env:
+          OPENCOMPUTE_REQUIRE_LIVE_PP_V050: '1'
+        run: python -m unittest discover -s tests -p 'test_qwen2_live_service_v050.py' -v
       - name: v0.4.8 independent HF Qwen2 multi-prompt parity
         env:
           OPENCOMPUTE_REQUIRE_HF_TINY: '1'

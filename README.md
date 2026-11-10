@@ -1,3 +1,15 @@
+# OpenCompute AI v0.5.0 — 动态请求队列接入 Qwen2 双阶段推理
+
+新增 FastAPI 推理入口和实时请求服务：动态请求先进入 v0.4.9 公平队列，再组成最多 4 条请求的 microbatch，交给已验证的 Qwen2 两阶段 Gloo 推理引擎。
+
+- [v0.5.0 服务实现](cluster_v05/qwen2_service.py) · [HTTP API](cluster_v05/api.py)
+- [动态队列到真实 Qwen2 双 Rank 的集成测试](tests/test_qwen2_live_service_v050.py)
+- [服务配置、HTTP 用法与限制](docs/v0.5.0-live-qwen2-queue.md)
+
+**实验边界：** 每个 microbatch 暂时启动新的本机双 Rank torchrun 进程组，权重会重复加载；尚未实现常驻推理进程、流式输出、远程设备连接或公网安全。CI 只有在真实 Gloo 集成测试通过后才算验收。
+
+---
+
 # OpenCompute AI v0.4.9 — 有界动态请求队列与公平调度原语
 
 新增模型无关的异步请求队列：全局/客户端队列限额、客户端 Round-Robin 公平调度、客户端内 FIFO、排队截止时间、重复请求 ID 防护和安全关闭。
