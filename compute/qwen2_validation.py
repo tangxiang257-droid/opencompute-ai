@@ -93,8 +93,7 @@ def summarize_profile(output, *, layers, prompt_length):
             or len(ranks) != world):
         raise ValueError("inconsistent profile topology or prompt")
     expected_reduce_calls = tokens * 2 * layers
-    expected_broadcast_calls = tokens + 1
-    hidden = output.get("profile_hidden_size")
+    expected_broadcast_calls = tokens
     totals = []
     for record in ranks:
         if not isinstance(record, dict):
