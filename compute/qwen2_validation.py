@@ -92,8 +92,11 @@ def summarize_profile(output, *, layers, prompt_length):
             or not 1 <= tokens <= 16 or not isinstance(ranks, list)
             or len(ranks) != world):
         raise ValueError("inconsistent profile topology or prompt")
-    expected_reduce_calls = tokens * 2 * layers
-    expected_broadcast_calls = tokens
+    skipped = prof.get("local_single_rank_collectives_skipped", False)
+    if type(skipped) is not bool or (skipped and world != 1):
+        raise ValueError("invalid single-rank fastpath profile")
+    expected_reduce_calls = 0 if skipped else tokens * 2 * layers
+    expected_broadcast_calls = 0 if skipped else tokens
     totals = []
     for record in ranks:
         if not isinstance(record, dict):
@@ -126,6 +129,7 @@ def summarize_profile(output, *, layers, prompt_length):
     return {
         "ranks": totals,
         "workers": world, "steps": tokens,
+        "local_single_rank_collectives_skipped": skipped,
         "slowest_rank_decode_seconds": max(i["decode_seconds"] for i in totals),
         "slowest_rank_collective_seconds": max(
             i["collective_seconds"] for i in totals),
