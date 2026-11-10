@@ -38,14 +38,15 @@ class ModelCatalogTests(unittest.TestCase):
         self.assertEqual(len(items), len(MODELS))
         self.assertGreaterEqual(len({i["family"] for i in items}), 3)
         self.assertEqual({m["id"] for m in items if m["launchable"]},
-                         {"gpt2-synthetic", "gpt2-local-checkpoint"})
+                         {"gpt2-synthetic", "gpt2-local-checkpoint",
+                          "qwen2-synthetic"})
         deepseek = next(m for m in items
                         if m["id"] == "deepseek-r1-distill-qwen-1.5b")
         self.assertEqual(deepseek["architecture"], "qwen2")
         self.assertFalse(deepseek["launchable"])
         self.assertEqual(
             self.client.get("/v0.4/models?family=DeepSeek").json()["count"], 3)
-        self.assertEqual(len(list_models(family="qwen")), 1)
+        self.assertEqual(len(list_models(family="qwen")), 2)
 
     def test_no_arbitrary_unknown_model_or_engine(self):
         self.assertEqual(self.client.get("/v0.4/models/random-model").status_code, 404)
@@ -93,6 +94,19 @@ class ModelCatalogTests(unittest.TestCase):
         self.coordinator.create_synthetic.assert_called_once_with(
             workers=2, hidden=16, heads=4, layers=2,
             prompt_ids=[1, 2, 3], new_tokens=2)
+
+    def test_qwen2_synthetic_routes_to_new_engine_not_gpt2(self):
+        self.coordinator.create_qwen2_synthetic.return_value = {
+            "session_id": "c" * 32, "status": "preparing", "engine": "qwen2-tp"}
+        reply = self.client.post("/v0.4/sessions", headers=self.auth, json={
+            "model_id": "qwen2-synthetic", "workers": 2,
+            "prompt_ids": [1, 2, 3], "max_new_tokens": 2})
+        self.assertEqual(reply.status_code, 200, reply.text)
+        self.assertEqual(reply.json()["engine"], "qwen2-tp")
+        self.coordinator.create_qwen2_synthetic.assert_called_once_with(
+            workers=2, hidden=24, heads=6, layers=2,
+            prompt_ids=[1, 2, 3], new_tokens=2)
+        self.coordinator.create_synthetic.assert_not_called()
 
     def test_checkpoint_uses_manifest_and_cannot_override_shape(self):
         model = {"model_id": "gpt2-local-checkpoint", "prompt_ids": [1, 2],
