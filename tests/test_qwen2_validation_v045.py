@@ -155,9 +155,13 @@ class SyntheticGlooMatrixTests(unittest.TestCase):
             self.assertGreater(case["rank0_decode_seconds"], 0)
             self.assertIn("speedup_vs_same_dtype_one_rank", case)
             for rank in case["profile"]["ranks"]:
-                self.assertEqual(rank["all_reduce_calls"], 8)
-                self.assertEqual(rank["broadcast_calls"], 2)
-                self.assertGreater(rank["all_reduce_tensor_bytes"], 0)
+                expected_calls = 0 if case["workers"] == 1 else 8
+                self.assertEqual(rank["all_reduce_calls"], expected_calls)
+                self.assertEqual(rank["broadcast_calls"], 0 if case["workers"] == 1 else 2)
+                if case["workers"] > 1:
+                    self.assertGreater(rank["all_reduce_tensor_bytes"], 0)
+                else:
+                    self.assertEqual(rank["all_reduce_tensor_bytes"], 0)
         single = next(c for c in result["cases"]
                       if c["workers"] == 1 and c["stored_dtype"] == "float32")
         tiny = next(c for c in result["cases"]
