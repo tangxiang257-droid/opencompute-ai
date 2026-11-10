@@ -129,6 +129,19 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
                 all_logits.append(logits.tolist())
             pending = [next_id]
     elapsed = time.perf_counter() - start
+    def tensor_bytes(value):
+        if isinstance(value, torch.Tensor):
+            return value.numel() * value.element_size()
+        if isinstance(value, dict):
+            return sum(tensor_bytes(v) for v in value.values())
+        if isinstance(value, (list, tuple)):
+            return sum(tensor_bytes(v) for v in value)
+        return 0
+    # The managed Worker expects a per-rank weight metric just as the GPT-2
+    # runner reports. All ranks must join this collective before rank 0 exits.
+    size = torch.tensor([tensor_bytes(layers) + tensor_bytes(io)], dtype=torch.int64)
+    gathered = [torch.zeros_like(size) for _ in range(world)]
+    dist.all_gather(gathered, size)
     if rank == 0:
         return {
             "engine": "opencompute-qwen2-tp-v0.4.1",
@@ -136,6 +149,7 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
             "prompt_ids": ids, "generated_ids": generated,
             "tokens_per_second_rank0": round(max_new_tokens / max(1e-9, elapsed), 3),
             "elapsed_seconds_rank0": round(elapsed, 5),
+            "weight_bytes_per_rank": [int(x.item()) for x in gathered],
             **({"step_logits": all_logits} if return_logits else {}),
         }
     return None
