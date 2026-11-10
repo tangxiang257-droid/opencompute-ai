@@ -10,6 +10,7 @@ class Qwen2ConsolePackagingTests(unittest.TestCase):
     def test_default_backend_mounts_optional_queue_and_lifecycle(self):
         source = (ROOT / "backend" / "app.py").read_text(encoding="utf-8")
         self.assertIn("create_qwen2_queue_router", source)
+        self.assertIn("app.include_router(create_qwen2_queue_router(", source)
         self.assertIn("Qwen2PipelineService.from_env()", source)
         self.assertIn("app.router.on_startup.append(qwen2_queue.start)", source)
         self.assertIn("app.router.on_shutdown.append(qwen2_queue.close)", source)

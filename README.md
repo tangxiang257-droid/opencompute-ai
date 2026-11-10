@@ -3,6 +3,7 @@
 新增 FastAPI 推理入口和实时请求服务：动态请求先进入 v0.4.9 公平队列，再组成最多 4 条请求的 microbatch，交给已验证的 Qwen2 两阶段 Gloo 推理引擎。
 
 - [v0.5.0 服务实现](cluster_v05/qwen2_service.py) · [HTTP API](cluster_v05/api.py)
+- [模型中心浏览器控制台](cluster_v04/console.html)：查看队列状态并提交原始 Token ID 请求
 - [动态队列到真实 Qwen2 双 Rank 的集成测试](tests/test_qwen2_live_service_v050.py)
 - [服务配置、HTTP 用法与限制](docs/v0.5.0-live-qwen2-queue.md)
 

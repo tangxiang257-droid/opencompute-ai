@@ -40,6 +40,12 @@ app.include_router(create_tp_router(tp_sessions,
     admin_key=os.getenv("OPENCOMPUTE_ADMIN_KEY", "")))
 app.include_router(create_model_router(tp_sessions,
     admin_key=os.getenv("OPENCOMPUTE_ADMIN_KEY", "")))
+app.include_router(create_qwen2_queue_router(
+    qwen2_queue, admin_key=os.getenv("OPENCOMPUTE_ADMIN_KEY", "")
+))
+if qwen2_queue is not None:
+    app.router.on_startup.append(qwen2_queue.start)
+    app.router.on_shutdown.append(qwen2_queue.close)
 app.include_router(create_cluster_router(
     cluster_db,
     admin_key=os.getenv("OPENCOMPUTE_ADMIN_KEY", ""),

@@ -66,6 +66,22 @@ footer{margin-top:30px;border-top:1px solid #294059;padding-top:20px}
 </form>
 <p class="small muted" id="feedback" role="status"></p><p class="small muted" id="sessionInfo"></p>
 </section>
+<section class="panel">
+<h2>动态 Qwen2 推理队列 <span class="chip">v0.5.0</span></h2>
+<p class="muted small">通过公平队列向本机双阶段 Qwen2 Gloo 引擎提交请求。此处输入的是 Token ID，不是自然语言；服务尚不提供 Tokenizer、流式输出或远程设备接入。</p>
+<div class="form-grid">
+<label>客户端调度标识<input id="queueClient" value="browser-client" maxlength="64"></label>
+<label>Prompt Token ID（逗号分隔，最多 128 个）<input id="queuePrompt" value="1,2,3"></label>
+</div>
+<div class="row">
+<button type="button" class="secondary" id="refreshQueue">读取队列状态</button>
+<button type="button" id="submitQueue">提交 Qwen2 推理请求</button>
+</div>
+<p id="queueStatus" class="small muted" role="status">请先填写上方管理员密钥，再读取服务状态。</p>
+<p id="queueFeedback" class="small muted" role="status"></p>
+<pre id="queueResult" class="small muted"></pre>
+</section>
+
 <footer class="muted small">仅用于已注册的可信 Worker。目录中的 DeepSeek、Qwen、Llama 和 MoE 条目当前为适配计划；自定义 API 模式不使用本平台的设备算力池。</footer>
 <script>
 const $=id=>document.getElementById(id);
@@ -163,6 +179,65 @@ $('refreshSession').addEventListener('click',async()=>{
       (result.error?'；错误：'+result.error:'');
   }catch(e){$('sessionInfo').textContent='读取会话失败：'+e.message}
 });
+async function refreshQueue(){
+  $('queueStatus').textContent='正在读取队列状态…';
+  $('queueStatus').className='small muted';
+  try{
+    const status=await getJson('/v0.5/status',{
+      headers:{'X-Admin-Key':$('admin').value}
+    });
+    if(!status.enabled){
+      $('queueStatus').textContent='Qwen2 队列尚未启用：请在服务端配置 OPENCOMPUTE_QWEN2_PP_BUNDLE。';
+      $('queueStatus').className='small error';
+    }else{
+      $('queueStatus').textContent=(status.running?'服务运行中':'服务未运行')+
+        ' · 等待请求 '+status.queue_pending+'/'+status.queue_capacity+
+        ' · 活动请求 '+status.active_requests+
+        ' · 已完成 '+status.requests_completed+
+        ' · 失败 '+status.requests_failed;
+      $('queueStatus').className='small success';
+    }
+  }catch(e){
+    $('queueStatus').textContent='读取失败：'+e.message;
+    $('queueStatus').className='small error';
+  }
+}
+async function submitQueue(){
+  $('submitQueue').disabled=true;
+  $('queueFeedback').textContent='请求提交中…';
+  $('queueFeedback').className='small muted';
+  try{
+    const client=$('queueClient').value.trim();
+    const raw=$('queuePrompt').value.trim();
+    const parts=raw?raw.split(',').map(value=>value.trim()):[];
+    if(!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/.test(client))
+      throw Error('客户端标识须为 1–64 位安全 ASCII 字符');
+    if(parts.some(value=>!/^\d+$/.test(value)))
+      throw Error('Token ID 必须是逗号分隔的十进制整数');
+    const prompt=parts.map(Number);
+    if(!prompt.length||prompt.length>128||
+       prompt.some(value=>!Number.isSafeInteger(value)||value<0||value>2147483647))
+      throw Error('请输入 1–128 个有效的非负整数 Token ID');
+    const result=await getJson('/v0.5/requests',{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'X-Admin-Key':$('admin').value,
+        'X-Client-ID':client
+      },
+      body:JSON.stringify({prompt_ids:prompt})
+    });
+    $('queueResult').textContent=JSON.stringify(result,null,2);
+    $('queueFeedback').textContent='推理完成 · 批次包含 '+result.batch_size+' 条请求';
+    $('queueFeedback').className='small success';
+    await refreshQueue();
+  }catch(e){
+    $('queueFeedback').textContent='推理请求失败：'+e.message;
+    $('queueFeedback').className='small error';
+  }finally{$('submitQueue').disabled=false}
+}
+$('refreshQueue').addEventListener('click',refreshQueue);
+$('submitQueue').addEventListener('click',submitQueue);
 loadModels();
 </script>
 </body>
