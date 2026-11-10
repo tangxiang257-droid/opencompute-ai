@@ -28,9 +28,11 @@ def read_manifest(folder):
     return m
 
 
-def load_rank(folder, rank, m):
+def load_rank(folder, rank, m, *, layer_cache_mib=0, io_cache_mib=0):
     if m["format"] == CHUNK_FORMAT:
-        return load_chunked_rank(folder, rank, m)
+        return load_chunked_rank(folder, rank, m,
+                                 layer_cache_mib=layer_cache_mib,
+                                 io_cache_mib=io_cache_mib)
     folder = Path(folder)
     hidden = m["hidden"]
     q_width = m["head_dim"] * m["heads"] // m["workers"]
@@ -80,7 +82,7 @@ def load_rank(folder, rank, m):
 
 @torch.inference_mode()
 def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
-             preflight_error=None):
+             preflight_error=None, layer_cache_mib=0, io_cache_mib=0):
     error = preflight_error
     m, layers, io = None, None, None
     if error is None:
@@ -95,7 +97,9 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
                     raise ValueError("invalid Qwen2 prompt IDs")
                 if len(ids) + max_new_tokens - 1 > m["positions"]:
                     raise ValueError("Qwen2 context length exceeded")
-            layers, io = load_rank(folder, rank, m)
+            layers, io = load_rank(
+                folder, rank, m, layer_cache_mib=layer_cache_mib,
+                io_cache_mib=io_cache_mib)
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
     ready = torch.tensor([0 if error else 1], dtype=torch.int32)
@@ -172,7 +176,11 @@ def main():
     parser.add_argument("--prompt-ids", default="1,2,3")
     parser.add_argument("--max-new-tokens", type=int, default=3)
     parser.add_argument("--report-logits", action="store_true")
+    parser.add_argument("--layer-cache-mib", type=int, default=0)
+    parser.add_argument("--io-cache-mib", type=int, default=0)
     args = parser.parse_args()
+    if not 0 <= args.layer_cache_mib <= 512 or not 0 <= args.io_cache_mib <= 512:
+        parser.error("cache budgets must be in 0..512 MiB")
     torch.set_num_threads(1)
     rank, world = int(os.environ["RANK"]), int(os.environ["WORLD_SIZE"])
     store = init_gloo(timeout_seconds=120)
@@ -184,7 +192,9 @@ def main():
             except Exception as exc:
                 input_error = f"invalid prompt format: {type(exc).__name__}: {exc}"
         outcome = generate(Path(args.shards), ids, args.max_new_tokens,
-                           rank, world, args.report_logits, input_error)
+                           rank, world, args.report_logits, input_error,
+                           layer_cache_mib=args.layer_cache_mib,
+                           io_cache_mib=args.io_cache_mib)
         if rank == 0:
             print(json.dumps(outcome, ensure_ascii=False), flush=True)
     finally:
