@@ -13,8 +13,10 @@ MAX_MANIFEST_BYTES = 16_384
 
 
 def validate_manifest(manifest, *, expected_workers=None):
-    if not isinstance(manifest, dict) or manifest.get("format") != "opencompute-gpt2-tp-v1":
-        raise ValueError("unsupported GPT-2 tensor-parallel manifest")
+    if not isinstance(manifest, dict) or manifest.get("format") not in (
+            "opencompute-gpt2-tp-v1", "opencompute-qwen2-tp-v1"):
+        raise ValueError("unsupported tensor-parallel manifest")
+    qwen2 = manifest["format"] == "opencompute-qwen2-tp-v1"
     limits = {"workers": 4, "hidden": 4096, "heads": 128,
               "layers": 48, "positions": 131072, "inner": 32768,
               "vocab": 262144}
@@ -28,11 +30,31 @@ def validate_manifest(manifest, *, expected_workers=None):
             or manifest["heads"] % manifest["workers"]
             or manifest["inner"] % manifest["workers"]):
         raise ValueError("checkpoint heads/MLP are not divisible")
-    eps = manifest.get("layer_norm_epsilon")
-    if type(eps) not in (float, int) or not math.isfinite(eps) or not 0 < eps <= 0.1:
-        raise ValueError("invalid layer normalization epsilon")
-    if manifest.get("activation") != "gelu_new":
-        raise ValueError("unsupported activation")
+    if qwen2:
+        kv = manifest.get("kv_heads")
+        dim = manifest.get("head_dim")
+        if (type(kv) is not int or type(dim) is not int
+                or not 1 <= kv <= manifest["heads"]
+                or not 1 <= dim <= 256 or dim % 2
+                or manifest["heads"] % kv or kv % manifest["workers"]
+                or dim * manifest["heads"] != manifest["hidden"]):
+            raise ValueError("invalid Qwen2 GQA/TP head dimensions")
+        eps = manifest.get("rms_eps")
+        theta = manifest.get("rope_theta")
+        if (type(eps) not in (float, int) or not math.isfinite(eps)
+                or not 0 < eps <= 0.1):
+            raise ValueError("invalid RMS epsilon")
+        if (type(theta) not in (float, int) or not math.isfinite(theta)
+                or not 1 < theta <= 1e12):
+            raise ValueError("invalid RoPE theta")
+        if type(manifest.get("tied_embeddings")) is not bool:
+            raise ValueError("invalid tied-embedding option")
+    else:
+        eps = manifest.get("layer_norm_epsilon")
+        if type(eps) not in (float, int) or not math.isfinite(eps) or not 0 < eps <= 0.1:
+            raise ValueError("invalid layer normalization epsilon")
+        if manifest.get("activation") != "gelu_new":
+            raise ValueError("unsupported activation")
     source = manifest.get("source")
     if not isinstance(source, str) or not 1 <= len(source) <= 1024:
         raise ValueError("invalid checkpoint source")
