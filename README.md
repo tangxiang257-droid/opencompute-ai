@@ -1,3 +1,15 @@
+# OpenCompute AI v0.4.9 — 有界动态请求队列与公平调度原语
+
+新增模型无关的异步请求队列：全局/客户端队列限额、客户端 Round-Robin 公平调度、客户端内 FIFO、排队截止时间、重复请求 ID 防护和安全关闭。
+
+- [v0.4.9 请求队列实现](compute/request_queue_v049.py)
+- [v0.4.9 队列公平性、超时与生命周期测试](tests/test_request_queue_v049.py)
+- [v0.4.9 设计、接口示例与集成边界](docs/v0.4.9-fair-request-queue.md)
+
+**重要边界：** 这是独立调度原语，尚未接入 v0.4.8 Qwen2 双 Rank Gloo 推理进程、FastAPI 或网站控制台。CI 测试通过只证明队列契约，不代表动态多用户模型服务已经上线。
+
+---
+
 # OpenCompute AI v0.4.8 — 多请求 Qwen2 PP 流水线调度与 KV 预算
 
 基于 v0.4.7 已通过测试的双阶段 Gloo PP，本版新增最多 **4 个独立请求**的交错计算与 **非阻塞 P2P**：Rank 0 可以提交请求 A 的前半层并继续计算请求 B，而 Rank 1 处理已收到的其他请求。每条请求拥有独立的 KV Cache，支持不同 Prompt 长度与 FP32/BF16 盘上权重；受请求数量、Token 上限及每 Rank 的理论 KV 内存预算限制。
