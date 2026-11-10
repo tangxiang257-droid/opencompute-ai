@@ -5,6 +5,8 @@ on:
       - 'cluster_v03/**'
       - 'cluster_v031/**'
       - 'cluster_v04/**'
+      - 'compute/qwen2_*.py'
+      - 'tests/test_qwen2_*.py'
       - 'tests/test_model_registry_v04.py'
       - 'compute/rendezvous.py'
       - 'compute/gpt2_generate.py'
@@ -32,6 +34,8 @@ on:
       - 'cluster_v03/**'
       - 'cluster_v031/**'
       - 'cluster_v04/**'
+      - 'compute/qwen2_*.py'
+      - 'tests/test_qwen2_*.py'
       - 'tests/test_model_registry_v04.py'
       - 'compute/rendezvous.py'
       - 'compute/gpt2_generate.py'
@@ -90,6 +94,8 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_preflight_v035.py' -v
       - name: v0.4 multi-model catalogue and adapter routing checks
         run: python -m unittest discover -s tests -p 'test_model_registry_v04.py' -v
+      - name: Qwen2 numerical parity and corrupted rank preflight tests
+        run: python -m unittest discover -s tests -p 'test_qwen2_parity_v041.py' -v
       - name: Run full localhost HTTP and two-agent TP demo
         run: python -m benchmarks.tp_session_demo
       - name: Simulate 3 heterogeneous devices without a cloud server
