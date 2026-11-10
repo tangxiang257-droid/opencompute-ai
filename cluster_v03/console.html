@@ -20,6 +20,7 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto}t
 <header><div><h1>◈ OpenCompute AI</h1><p class="muted">v0.3 异构算力池 · 仅限私有测试</p></div>
 <div class="row"><input id="key" type="password" autocomplete="off" aria-label="管理员 API Key" placeholder="管理员 API Key"><button id="refresh">刷新集群状态</button></div></header>
 <section><div class="grid" id="stats"><div class="tile">请填写管理员密钥并刷新</div></div><p id="message" class="muted" role="status"></p></section>
+<section><div class="row" style="justify-content:space-between"><div><h2>多模型中心</h2><p class="muted">浏览 DeepSeek、Qwen、Llama 和 GPT-2 模型的适配状态；仅已实现引擎可启动。</p></div><a href="/v0.4/console">进入模型中心</a></div></section>
 <section><h2>提交测试任务</h2><div class="row"><select id="kind"><option value="sum">数组求和</option><option value="sha256">文本 SHA256</option><option value="matmul_checksum">矩阵校验和</option></select><input id="value" value="1,2,3" aria-label="任务输入"><button id="submit">提交任务</button></div>
 <p class="muted">求和填写 1,2,3；SHA256 填写文本；矩阵填写 1–64 的整数。任务仅在已注册 Worker 中运行。</p></section>
 <section><h2>在线 Worker</h2><div class="table-wrap"><table><thead><tr><th>名称</th><th>状态</th><th>CPU 核心</th><th>可用内存</th><th>负载</th><th>算力评分</th></tr></thead><tbody id="nodes"></tbody></table></div></section>
