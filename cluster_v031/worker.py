@@ -243,6 +243,18 @@ def execute_rank(folder, assignment, timeout=150, cancellation_check=None,
         "--prompt-ids", ",".join(map(str, assignment["prompt_ids"])),
         "--max-new-tokens", str(assignment["max_new_tokens"]),
     ]
+    if engine == "qwen2-tp":
+        # Trusted local Worker knobs. Do not consume cache controls from a
+        # remote assignment; the administrator chooses the memory tradeoff.
+        for flag, variable in (
+            ("--layer-cache-mib", "OPENCOMPUTE_TP_LAYER_CACHE_MIB"),
+            ("--io-cache-mib", "OPENCOMPUTE_TP_IO_CACHE_MIB"),
+        ):
+            amount = os.getenv(variable, "0")
+            if (not amount.isascii() or not amount.isdecimal()
+                    or not 0 <= int(amount) <= 512):
+                raise ValueError(f"invalid local cache budget: {variable}")
+            command.extend((flag, amount))
     process = subprocess.Popen(command, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, env=env,
                                start_new_session=(os.name == "posix"))
