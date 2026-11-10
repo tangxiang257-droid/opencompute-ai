@@ -167,7 +167,7 @@ def main():
     parser = argparse.ArgumentParser(description="Export trusted Qwen2 CPU TP shards")
     parser.add_argument("--output", required=True)
     parser.add_argument("--workers", type=int, default=2)
-    parser.add_argument("--model", help="Trusted locally cached Qwen2 checkpoint")
+    parser.add_argument("--model", help="Trusted local Qwen2 Safetensors directory (no pickle)")
     parser.add_argument("--synthetic", action="store_true")
     args = parser.parse_args()
     if bool(args.model) == args.synthetic:
@@ -175,20 +175,12 @@ def main():
     if args.synthetic:
         state, config = synthetic_state()
         source = "synthetic-qwen2-fixture"
+        result = export_state(state, config, args.output, args.workers, source)
     else:
-        try:
-            from transformers import AutoModelForCausalLM
-        except ImportError as exc:
-            raise SystemExit("optional dependency required: transformers") from exc
-        # The trusted caller must have checked licensing and provenance.
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model, local_files_only=True, trust_remote_code=False,
-            low_cpu_mem_usage=True, torch_dtype="auto")
-        if model.config.model_type != "qwen2":
-            parser.error("only stock Qwen2 checkpoints supported")
-        model.eval()
-        state, config, source = model.state_dict(), model.config.to_dict(), args.model
-    result = export_state(state, config, args.output, args.workers, source)
+        # Fail closed: never instantiate a Hugging Face model or load
+        # optional .bin/pickle files merely to inspect offline weights.
+        from compute.qwen2_safetensors import export_local
+        result = export_local(args.model, args.output, args.workers)
     print(json.dumps(result, ensure_ascii=False))
 
 
