@@ -1,3 +1,16 @@
+# OpenCompute AI v0.4.6 — 更可靠的并行性能判断
+
+在原有 Qwen2/DeepSeek-Qwen 多模型实验架构上，本版加入 **单 Rank 无效通信快路径**、可对照旧实现的 A/B 开关、三模式重复 Gloo 计时及张量并行／流水线并行的权重内存和通信成本筛选。
+
+- [v0.4.6 完整技术说明、复现命令与局限](docs/v0.4.6-repeated-benchmark-and-parallel-screen.md)
+- [重复性能测量脚本](benchmarks/qwen2_repeat_v046.py) · [TP/PP 理论成本筛选器](compute/parallel_screen_v046.py)
+- [Qwen2 推理代码（单 Rank 快路径）](compute/qwen2_generate.py) · [统计/内存筛选单元测试](tests/test_qwen2_repeat_v046.py)
+- [GitHub Actions 测试及可下载的 JSON 基准报告](https://github.com/tangxiang257-droid/opencompute-ai/actions)
+
+**边界**：这里的 PP 仅为数学筛选，尚无实际 PP 推理引擎。重复 Gloo 性能数据来自单机随机权重，不代表公网多设备能加速或官方 DeepSeek 预训练模型已获验收。绝不会为此阶段购买云服务器或自动下载大型模型。
+
+---
+
 # OpenCompute AI v0.4.5 — 独立 Qwen2 数值验证与真实 Gloo 通信性能报告
 
 本版继续保持多模型架构，新增 Qwen2 每 Rank 的 Gloo All-Reduce/广播计时、可验证的逐 Token Logits 正确性标准、Linux 单进程峰值 RSS 样本，并运行了 **1/2 Rank × FP32/BF16** 的本机合成权重基准。独立 Hugging Face Qwen2 微型随机模型也已纳入必须运行的 CI 数值对照（不下载模型权重）。
