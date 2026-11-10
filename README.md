@@ -1,3 +1,16 @@
+# OpenCompute AI v0.5.0 — 动态请求队列接入 Qwen2 双阶段推理
+
+新增 FastAPI 推理入口和实时请求服务：动态请求先进入 v0.4.9 公平队列，再组成最多 4 条请求的 microbatch，交给已验证的 Qwen2 两阶段 Gloo 推理引擎。
+
+- [v0.5.0 服务实现](cluster_v05/qwen2_service.py) · [HTTP API](cluster_v05/api.py)
+- [模型中心浏览器控制台](cluster_v04/console.html)：查看队列状态并提交原始 Token ID 请求
+- [动态队列到真实 Qwen2 双 Rank 的集成测试](tests/test_qwen2_live_service_v050.py)
+- [服务配置、HTTP 用法与限制](docs/v0.5.0-live-qwen2-queue.md)
+
+**实验边界：** 每个 microbatch 暂时启动新的本机双 Rank torchrun 进程组，权重会重复加载；尚未实现常驻推理进程、流式输出、远程设备连接或公网安全。CI 只有在真实 Gloo 集成测试通过后才算验收。
+
+---
+
 # OpenCompute AI v0.4.9 — 有界动态请求队列与公平调度原语
 
 新增模型无关的异步请求队列：全局/客户端队列限额、客户端 Round-Robin 公平调度、客户端内 FIFO、排队截止时间、重复请求 ID 防护和安全关闭。
@@ -6,7 +19,7 @@
 - [v0.4.9 队列公平性、超时与生命周期测试](tests/test_request_queue_v049.py)
 - [v0.4.9 设计、接口示例与集成边界](docs/v0.4.9-fair-request-queue.md)
 
-**重要边界：** 这是独立调度原语，尚未接入 v0.4.8 Qwen2 双 Rank Gloo 推理进程、FastAPI 或网站控制台。CI 测试通过只证明队列契约，不代表动态多用户模型服务已经上线。
+**版本边界：** v0.4.9 本身交付的是独立调度原语；其与 Qwen2 PP/FastAPI 的第一版整合见上方 v0.5.0。v0.5.0 仍是本机 CPU 实验服务，尚非公网多租户或远程算力池。
 
 ---
 
@@ -21,7 +34,7 @@
 - [v0.4.8 方案、执行示例与安全边界](docs/v0.4.8-multi-request-pipeline.md)
 - [GitHub Actions CI 和 JSON 性能报告](https://github.com/tangxiang257-droid/opencompute-ai/actions)
 
-**实验限定：** 仍是可信本机 CPU Gloo 双进程，不是公网算力池或已接入网站的动态多用户推理。支持多请求交错不等于已证明真实 CPU 计算同时运行；是否提升 Token/s 以重复基准测试结果为准。理论 KV 限额不是完整进程 RSS 的硬上限，未运行官方 DeepSeek 完整预训练权重。
+**实验限定：** v0.4.8 引擎本身仍是可信本机 CPU Gloo 双进程；v0.5.0 在其上新增了首版本地 HTTP 请求服务。两者都不是公网算力池或真实跨设备加速。支持多请求交错不等于已证明真实 CPU 计算同时运行；是否提升 Token/s 以重复基准测试结果为准。理论 KV 限额不是完整进程 RSS 的硬上限，未运行官方 DeepSeek 完整预训练权重。
 
 ---
 

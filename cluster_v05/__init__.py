@@ -1,0 +1,1 @@
+"""OpenCompute AI v0.5 live inference services."""
