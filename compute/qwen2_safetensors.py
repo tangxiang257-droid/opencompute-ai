@@ -81,8 +81,11 @@ def _optional_bias_shapes(m):
     return expected
 
 
-def storage_plan(meta):
-    """Conservative float32 serialized-weight estimates, before any I/O."""
+def storage_plan(meta, storage_dtype="float32"):
+    """Bounded v1 FP32 / v2 selectable-precision file estimates."""
+    if storage_dtype not in ("float32", "bfloat16"):
+        raise ValueError("storage dtype must be float32 or bfloat16")
+    output_bytes = 2 if storage_dtype == "bfloat16" else 4
     h, d, w = meta["hidden"], meta["head_dim"], meta["workers"]
     q = meta["heads"] * d // w
     kv = meta["kv_heads"] * d // w
@@ -94,16 +97,20 @@ def storage_plan(meta):
     rank_bytes = 4 * meta["layers"] * per_layer_elements
     limit = MAX_FILE_BYTES - OUTPUT_HEADROOM
     can_export = io_bytes <= limit and rank_bytes <= limit
-    chunk_rows = min(meta["vocab"], max(1, (64 * 1024 * 1024) // (4 * h)))
+    chunk_rows = min(meta["vocab"], max(
+        1, (64 * 1024 * 1024) // (output_bytes * h)))
     chunk_count = (meta["vocab"] + chunk_rows - 1) // chunk_rows
     chunk_file_count = (2 + w * meta["layers"]
                         + chunk_count * (1 if meta["tied_embeddings"] else 2))
-    chunked_possible = (4 * per_layer_elements + OUTPUT_HEADROOM <= MAX_FILE_BYTES
-                        and 4 * chunk_rows * h + OUTPUT_HEADROOM <= MAX_FILE_BYTES
+    chunked_possible = (
+        output_bytes * per_layer_elements + OUTPUT_HEADROOM <= MAX_FILE_BYTES
+        and output_bytes * chunk_rows * h + OUTPUT_HEADROOM <= MAX_FILE_BYTES
                         and chunk_count <= 128 and chunk_file_count <= 512)
     return {
         "architecture": "qwen2",
         "source": meta["source"],
+        "v2_storage_dtype": storage_dtype,
+        "chunked_v2_largest_layer_estimated_bytes": output_bytes * per_layer_elements,
         "workers": w,
         "rank0_io_estimated_bytes_fp32": io_bytes,
         "rank_shard_estimated_bytes_fp32": rank_bytes,
@@ -112,16 +119,18 @@ def storage_plan(meta):
         "chunked_v2_exportable_by_size": chunked_possible,
         "chunked_v2_chunk_rows": chunk_rows,
         "chunked_v2_file_count": chunk_file_count,
-        "chunked_v2_estimated_largest_layer_bytes": 4 * per_layer_elements,
+        "chunked_v2_estimated_largest_layer_bytes": output_bytes * per_layer_elements,
         "reason": ("within current FP32 rank file envelope" if can_export else
                    "rank0_io.pt or a rank_N.pt is projected to exceed "
                    "the 512 MB file limit; requires chunked IO and memory-aware loading"),
     }
 
 
-def plan_config(config, workers, *, source="trusted-offline-config"):
+def plan_config(config, workers, *, source="trusted-offline-config",
+                storage_dtype="float32"):
     meta = manifest_from_config(config, workers, source=source)
-    return {"manifest": meta, "plan": storage_plan(meta)}
+    return {"manifest": meta,
+            "plan": storage_plan(meta, storage_dtype=storage_dtype)}
 
 
 class LazySafetensors(Mapping):
@@ -169,7 +178,7 @@ class LazySafetensors(Mapping):
 
 
 def inspect_directory(model_dir, workers, *, verify_headers=True,
-                      expected_sha256=None):
+                      expected_sha256=None, storage_dtype="float32"):
     """Preflight trusted local Qwen2 weights; no model download or eager HF load."""
     root = Path(model_dir).resolve(strict=True)
     if not root.is_dir():
@@ -178,7 +187,7 @@ def inspect_directory(model_dir, workers, *, verify_headers=True,
     if not isinstance(config, dict):
         raise ValueError("model config must be a JSON object")
     meta = manifest_from_config(config, workers, source=root.name)
-    plan = storage_plan(meta)
+    plan = storage_plan(meta, storage_dtype=storage_dtype)
 
     index_path = root / "model.safetensors.index.json"
     direct_path = root / "model.safetensors"
@@ -254,10 +263,13 @@ def inspect_directory(model_dir, workers, *, verify_headers=True,
 
 
 def export_local(model_dir, output, workers, *, expected_sha256=None,
-                 chunked=False):
+                 chunked=False, storage_dtype="float32"):
     """Export a trusted model in v1, or v2 chunked layout when requested."""
+    if storage_dtype == "bfloat16" and not chunked:
+        raise ValueError("BF16 output requires chunked Safetensors v2 format")
     inspected = inspect_directory(model_dir, workers,
-                                  expected_sha256=expected_sha256)
+                                  expected_sha256=expected_sha256,
+                                  storage_dtype=storage_dtype)
     if chunked:
         if not inspected["plan"]["chunked_v2_exportable_by_size"]:
             raise ValueError("v2 rank layer or chunk exceeds safe 512MB/file envelope")
@@ -279,7 +291,7 @@ def export_local(model_dir, output, workers, *, expected_sha256=None,
             from compute.qwen2_chunked import export_chunked
             manifest = export_chunked(
                 inspected["weights"], config, target, workers,
-                source=source.name)
+                source=source.name, storage_dtype=storage_dtype)
         else:
             manifest = export_state(inspected["weights"], config, target, workers,
                                     source=source.name)
@@ -303,6 +315,8 @@ def main():
     parser.add_argument("--export-to", help="export compatible trusted Qwen2 shards")
     parser.add_argument("--chunked", action="store_true",
                         help="use v2 streaming Safetensors layer/chunk format")
+    parser.add_argument("--storage-dtype", choices=["float32", "bfloat16"],
+                        default="float32", help="v2 Safetensors disk precision")
     parser.add_argument("--expected-sha256",
                         help="trusted SHA-256 for a single local Safetensors weight file")
     args = parser.parse_args()
@@ -312,15 +326,19 @@ def main():
         if args.export_to:
             parser.error("export requires --model-dir")
         config = _json_file(args.config, MAX_CONFIG_BYTES)
-        result = plan_config(config, args.workers)
+        result = plan_config(config, args.workers,
+                             storage_dtype=args.storage_dtype)
     elif args.export_to:
         manifest = export_local(args.model_dir, args.export_to, args.workers,
                                 expected_sha256=args.expected_sha256,
-                                chunked=args.chunked)
+                                chunked=args.chunked,
+                                storage_dtype=args.storage_dtype)
         result = {"exported": True, "manifest": manifest}
     else:
         inspected = inspect_directory(
-            args.model_dir, args.workers, expected_sha256=args.expected_sha256)
+            args.model_dir, args.workers,
+            expected_sha256=args.expected_sha256,
+            storage_dtype=args.storage_dtype)
         result = {k: v for k, v in inspected.items() if k != "weights"}
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
