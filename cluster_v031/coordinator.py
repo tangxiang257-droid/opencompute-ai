@@ -22,6 +22,7 @@ from compute.gpt2_shards import export_state, synthetic_state
 from compute.qwen2_shards import (
     export_state as export_qwen2_state, synthetic_state as qwen2_synthetic_state)
 from compute.gpt2_generate import read_manifest
+from compute.qwen2_chunked import rank_files as v2_rank_files
 from cluster_v031.checkpoints import inspect_bundle, inspect_file, validate_manifest, expected_files
 from cluster_v03.store import LeaseConflict
 
@@ -225,7 +226,7 @@ class SessionCoordinator:
         except (FileNotFoundError, KeyError, json.JSONDecodeError) as exc:
             raise ValueError("checkpoint manifest missing or invalid") from exc
         validate_manifest(manifest)
-        engine = ("qwen2-tp" if manifest["format"] == "opencompute-qwen2-tp-v1"
+        engine = ("qwen2-tp" if manifest["format"].startswith("opencompute-qwen2-")
                   else "gpt2-tp")
         if expected_engine is not None and engine != expected_engine:
             raise ValueError("checkpoint architecture does not match selected model")
@@ -240,8 +241,7 @@ class SessionCoordinator:
         folder = self.root / session_id
         folder.mkdir(parents=True, exist_ok=False)
         try:
-            names = (["manifest.json", "rank0_io.pt"]
-                     + [f"rank_{rank}.pt" for rank in range(world)])
+            names = expected_files(manifest)
             for name in names:
                 candidate = source / name
                 src = candidate.resolve()
@@ -285,7 +285,7 @@ class SessionCoordinator:
             old_pins = {entry["name"]: dict(entry) for entry in db.execute(
                 "SELECT name,size,sha256 FROM tp_files WHERE session_id=?",
                 (old_session_id,))}
-            if set(old_pins) != set(expected_files(workers)):
+            if set(old_pins) != set(expected_files(expected)):
                 raise ValueError("old session lacks complete persisted file digests")
         source = (self.root / old_session_id).resolve()
         if not source.is_relative_to(self.root) or not source.is_dir():
@@ -294,8 +294,7 @@ class SessionCoordinator:
         dest = self.root / new_id
         dest.mkdir(parents=True, exist_ok=False)
         try:
-            filenames = ["manifest.json", "rank0_io.pt"] + [
-                f"rank_{i}.pt" for i in range(workers)]
+            filenames = expected_files(expected)
             for name in filenames:
                 candidate = source / name
                 original = candidate.resolve()
@@ -323,15 +322,30 @@ class SessionCoordinator:
         validate_manifest(manifest, expected_workers=workers)
         if engine not in ("gpt2-tp", "qwen2-tp"):
             raise ValueError("unsupported session engine")
-        correct_format = {
-            "gpt2-tp": "opencompute-gpt2-tp-v1",
-            "qwen2-tp": "opencompute-qwen2-tp-v1"}[engine]
-        if manifest.get("format") != correct_format:
+        allowed_formats = {
+            "gpt2-tp": ("opencompute-gpt2-tp-v1",),
+            "qwen2-tp": ("opencompute-qwen2-tp-v1",
+                         "opencompute-qwen2-tp-v2")}[engine]
+        if manifest.get("format") not in allowed_formats:
             raise ValueError("model architecture and session engine mismatch")
         pinned = inspect_bundle(folder, manifest)
-        sizes = [pinned[f"rank_{rank}.pt"]["size"]
-                 + (pinned["rank0_io.pt"]["size"] if rank == 0 else 0)
-                 for rank in range(workers)]
+        if manifest["format"] == "opencompute-qwen2-tp-v2":
+            # A streaming rank need not hold its entire on-disk shard set
+            # resident; reserve two full layer loads plus two vocab chunks
+            # for Rank 0. These remain heuristic, not cgroup enforcement.
+            sizes = []
+            for rank in range(workers):
+                names = v2_rank_files(manifest, rank)
+                layers = [pinned[name]["size"] for name in names
+                          if "_layer_" in name]
+                io = [pinned[name]["size"] for name in names
+                      if "rank0_embed_" in name or "rank0_head_" in name]
+                sizes.append(2 * max(layers, default=0)
+                             + (2 * max(io, default=0) if rank == 0 else 0))
+        else:
+            sizes = [pinned[f"rank_{rank}.pt"]["size"]
+                     + (pinned["rank0_io.pt"]["size"] if rank == 0 else 0)
+                     for rank in range(workers)]
         now = self.clock()
         store = None
         try:
@@ -432,9 +446,13 @@ class SessionCoordinator:
             return {"assignment": None}
         session_id = row["id"]
         rank = row["rank"]
-        names = ["manifest.json", f"rank_{rank}.pt"]
-        if rank == 0:
-            names.append("rank0_io.pt")
+        manifest = json.loads(row["config_json"])
+        if manifest["format"] == "opencompute-qwen2-tp-v2":
+            names = v2_rank_files(manifest, rank)
+        else:
+            names = ["manifest.json", f"rank_{rank}.pt"]
+            if rank == 0:
+                names.append("rank0_io.pt")
         index = self._indexed_files(session_id)
         files = [index[name] for name in names]
         return {"assignment": {
@@ -455,9 +473,13 @@ class SessionCoordinator:
         with self.cluster._tx() as db:
             self._expire(db, self.clock())
             row = self._assignment_for(db, node_id, token, session_id)
-            allowed = {"manifest.json", f"rank_{row['rank']}.pt"}
-            if row["rank"] == 0:
-                allowed.add("rank0_io.pt")
+            manifest = json.loads(row["config_json"])
+            if manifest["format"] == "opencompute-qwen2-tp-v2":
+                allowed = set(v2_rank_files(manifest, row["rank"]))
+            else:
+                allowed = {"manifest.json", f"rank_{row['rank']}.pt"}
+                if row["rank"] == 0:
+                    allowed.add("rank0_io.pt")
             if row["state"] not in ("preparing", "running") or filename not in allowed:
                 raise PermissionError("file not assigned to this node")
         pinned = self._indexed_files(session_id).get(filename)
