@@ -33,9 +33,10 @@ SIZES = {
 }
 
 
-def sample_summary(values):
+def sample_summary(values, *, nonnegative=False):
     if (not isinstance(values, (list, tuple)) or not 2 <= len(values) <= 30
-            or any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0
+            or any(type(v) not in (int, float) or not math.isfinite(v)
+                   or v < 0 or (not nonnegative and v == 0)
                    for v in values)):
         raise ValueError("need 2..30 finite positive trial samples")
     ordered = sorted(float(v) for v in values)
@@ -162,8 +163,8 @@ def repeated_benchmark(*, model_size="tiny", storage_dtype="float32",
                 "tokens_per_second": sample_summary(
                     [i["tokens_per_second"] for i in samples[mode]]),
                 "collective_fraction_max": sample_summary([
-                    max(i["all_rank_collective_fraction"]) + 1e-9
-                    for i in samples[mode]]),
+                    max(i["all_rank_collective_fraction"])
+                    for i in samples[mode]], nonnegative=True),
             }
         baseline = record["summaries"]["legacy_collective"]["decode_seconds"]["median"]
         fast = record["summaries"]["local_fastpath"]["decode_seconds"]["median"]
@@ -178,9 +179,10 @@ def repeated_benchmark(*, model_size="tiny", storage_dtype="float32",
         # with explicitly hypothetical local and low-bandwidth network inputs.
         # Do not pass measured CI timings as if they were real WAN timings.
         layer_bytes = sum(
-            p.stat().st_size for p in folders[1][0].glob("rank_0_layer_*.safetensors"))
+            p.stat().st_size for p in folders[2][0].glob("rank_*_layer_*.safetensors"))
         io_bytes = sum(
-            p.stat().st_size for p in folders[1][0].glob("rank0_*.safetensors"))
+            p.stat().st_size for p in folders[2][0].glob("rank0_*.safetensors")
+            if "_layer_" not in p.name)
         record["parallel_options_illustrative_only"] = screening(
             hidden=params["hidden"], heads=params["heads"],
             kv_heads=params["kv_heads"], layers=params["layers"], workers=2,
