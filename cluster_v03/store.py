@@ -279,6 +279,50 @@ class ClusterStore:
                           error, status, now, task_id))
             return {"ok": True, "status": status}
 
+    @staticmethod
+    def _task_detail(conn, task_id):
+        row = conn.execute("""SELECT id,kind,payload_json,status,required_cpu,
+            required_memory_mb,assigned_node,attempts,max_attempts,
+            result_json,error,created,updated FROM tasks WHERE id=?""",
+            (task_id,)).fetchone()
+        if row is None:
+            raise KeyError(task_id)
+        task = dict(row)
+        task["payload"] = json.loads(task.pop("payload_json"))
+        result = task.pop("result_json")
+        task["result"] = json.loads(result) if result is not None else None
+        return task
+
+    def task_detail(self, task_id):
+        with self._tx() as conn:
+            self._reap(conn, self.clock())
+            return self._task_detail(conn, task_id)
+
+    def cancel(self, task_id):
+        """Invalidate a lease; the worker may finish CPU work but cannot commit it."""
+        with self._tx() as conn:
+            now = self.clock()
+            self._reap(conn, now)
+            task = self._task_detail(conn, task_id)
+            if task["status"] not in ("queued", "leased"):
+                raise LeaseConflict("only queued or leased tasks can be cancelled")
+            conn.execute("""UPDATE tasks SET status='cancelled',assigned_node=NULL,
+                lease_token=NULL,lease_until=NULL,result_json=NULL,
+                error='cancelled by administrator',updated=? WHERE id=?""", (now, task_id))
+            return self._task_detail(conn, task_id)
+
+    def retry(self, task_id):
+        """Reset only failed/cancelled work, serialized against claims/completions."""
+        with self._tx() as conn:
+            self._reap(conn, self.clock())
+            task = self._task_detail(conn, task_id)
+            if task["status"] not in ("failed", "cancelled"):
+                raise LeaseConflict("only failed or cancelled tasks can be retried")
+            conn.execute("""UPDATE tasks SET status='queued',assigned_node=NULL,
+                lease_token=NULL,lease_until=NULL,result_json=NULL,error=NULL,
+                attempts=0,updated=? WHERE id=?""", (self.clock(), task_id))
+            return self._task_detail(conn, task_id)
+
     def status(self):
         with self._tx() as conn:
             now = self.clock()
@@ -299,6 +343,6 @@ class ClusterStore:
                 "SELECT status,COUNT(*) AS n FROM tasks GROUP BY status")}
         return {"nodes": nodes, "tasks": tasks,
                 "counts": {kind: counts.get(kind, 0) for kind in (
-                    "queued", "leased", "completed", "failed")},
+                    "queued", "leased", "completed", "failed", "cancelled")},
                 "heartbeat_ttl_seconds": self.heartbeat_ttl,
                 "lease_seconds": self.lease_seconds}

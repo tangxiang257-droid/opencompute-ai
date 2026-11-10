@@ -1,0 +1,40 @@
+name: Web operations and deployment configuration
+on:
+  push:
+  pull_request:
+jobs:
+  dashboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: web
+      - run: npm test
+        working-directory: web
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install -r requirements-dev.txt playwright
+      - run: python -m playwright install --with-deps chromium
+      - name: Authenticated browser and worker round-trip
+        run: python web/tests/browser-smoke.py
+      - name: Preserve desktop and mobile evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: operations-browser-screenshots
+          path: .opencompute/screenshots/*.png
+          if-no-files-found: ignore
+      - name: Validate optional public Compose overlay
+        env:
+          OPENCOMPUTE_DOMAIN: compute.example.com
+        run: docker compose -f compose.yaml -f compose.public.yaml config --quiet
+      - name: Validate Caddy configuration
+        run: docker run --rm -e OPENCOMPUTE_DOMAIN=compute.example.com -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.10.2-alpine caddy validate --config /etc/caddy/Caddyfile

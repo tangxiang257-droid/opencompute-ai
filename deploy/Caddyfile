@@ -1,0 +1,22 @@
+{$OPENCOMPUTE_DOMAIN} {
+    encode gzip
+    request_body {
+        max_size 1MB
+    }
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        Referrer-Policy no-referrer
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        -Server
+    }
+    # Experimental rank/coordinator APIs stay on the private loopback endpoint.
+    @research path /benchmarks /v0.3.1/* /v0.4/sessions /v0.4/sessions/*
+    respond @research "Use the private research endpoint for this operation." 403
+    reverse_proxy opencompute:8000 {
+        transport http {
+            dial_timeout 5s
+            response_header_timeout 135s
+        }
+    }
+}

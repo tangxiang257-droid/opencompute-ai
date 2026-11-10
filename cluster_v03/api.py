@@ -100,4 +100,27 @@ def create_router(store: ClusterStore, *, admin_key: str, join_key: str):
         check(admin_key, x_admin_key)
         return store.status()
 
+    def task_operation(operation, task_id):
+        try:
+            return operation(task_id)
+        except KeyError as exc:
+            raise HTTPException(404, "task not found") from exc
+        except LeaseConflict as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @router.get("/tasks/{task_id}")
+    def detail(task_id: str, x_admin_key: str = Header(default="")):
+        check(admin_key, x_admin_key)
+        return task_operation(store.task_detail, task_id)
+
+    @router.post("/tasks/{task_id}/cancel")
+    def cancel(task_id: str, x_admin_key: str = Header(default="")):
+        check(admin_key, x_admin_key)
+        return task_operation(store.cancel, task_id)
+
+    @router.post("/tasks/{task_id}/retry")
+    def retry(task_id: str, x_admin_key: str = Header(default="")):
+        check(admin_key, x_admin_key)
+        return task_operation(store.retry, task_id)
+
     return router

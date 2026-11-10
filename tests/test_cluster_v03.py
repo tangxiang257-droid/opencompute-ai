@@ -99,7 +99,7 @@ class ClusterTests(unittest.TestCase):
         self.assertEqual(done.status_code, 200)
         status = self.api.get("/v0.3/status", headers={"X-Admin-Key": ADMIN}).json()
         self.assertEqual(status["counts"], {"queued": 0, "leased": 1,
-                                             "completed": 1, "failed": 0})
+                                             "completed": 1, "failed": 0, "cancelled": 0})
         self.assertEqual(next(x for x in status["tasks"] if x["id"] == first["id"])["assigned_node"], fast["id"])
         self.assertEqual(self.api.post(f"/v0.3/tasks/{first['id']}/complete", json={
             "node_id": fast["id"], "lease_token": first["lease_token"],

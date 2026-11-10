@@ -8,6 +8,8 @@ from cluster_v031.coordinator import SessionCoordinator
 from cluster_v04.api import create_model_router
 from cluster_v05.api import create_router as create_qwen2_queue_router
 from cluster_v05.qwen2_service import Qwen2PipelineService
+from backend.operations import create_router as create_operations_router
+from backend.version import VERSION
 from pydantic import BaseModel, Field
 import json
 import hmac
@@ -20,8 +22,17 @@ import tempfile
 from compute.shards import prepare
 from compute.topology_planner import plan
 
-app = FastAPI(title="OpenCompute AI v0.5.0 CPU research API")
+app = FastAPI(title="OpenCompute AI operations & CPU research API", version=VERSION)
 qwen2_queue = Qwen2PipelineService.from_env()
+
+@app.middleware("http")
+async def private_response_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
 
 
 def require_admin(x_admin_key: str = Header(default="", alias="X-Admin-Key")):
@@ -33,6 +44,8 @@ def require_admin(x_admin_key: str = Header(default="", alias="X-Admin-Key")):
         raise HTTPException(status_code=401, detail="invalid admin credentials")
 
 cluster_db = ClusterStore(os.getenv("OPENCOMPUTE_DB_PATH", "./.opencompute/cluster.sqlite"))
+app.include_router(create_operations_router(cluster_db, qwen2_queue,
+    admin_key=os.getenv("OPENCOMPUTE_ADMIN_KEY", "")))
 tp_sessions = SessionCoordinator(
     cluster_db, os.getenv("OPENCOMPUTE_TP_ROOT", "./.opencompute/tp-models"),
     checkpoint_root=os.getenv("OPENCOMPUTE_TP_CHECKPOINTS", "./.opencompute/checkpoints"))
@@ -81,7 +94,7 @@ class Benchmark(BaseModel):
 def health():
     return {
         "status": "ok",
-        "version": "0.5.1",
+        "version": VERSION,
         "qwen2_pp_queue_enabled": qwen2_queue is not None,
     }
 
@@ -144,6 +157,10 @@ def plan_topology(payload: PlanRequest, _: None = Depends(require_admin)):
 
 # Browser dashboard (v0.5.1). The API remains same-origin; secrets stay in the browser session.
 WEB_INDEX = Path(__file__).resolve().parent.parent / "web" / "index.html"
+
+@app.get("/assets/dashboard.js", include_in_schema=False)
+def dashboard_script():
+    return FileResponse(WEB_INDEX.with_name("dashboard.js"), media_type="text/javascript")
 
 @app.get("/", include_in_schema=False)
 def dashboard():

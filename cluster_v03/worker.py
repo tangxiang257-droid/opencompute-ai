@@ -53,9 +53,11 @@ def run(*, base_url, join_key, name, score=None, poll_seconds=2.0, once=False):
         print("WARNING: use a trusted private network, ideally HTTPS with TLS", flush=True)
     session = requests.Session()
 
-    def post(path, data=None, headers=None):
+    def post(path, data=None, headers=None, *, allow_stale_completion=False):
         response = session.post(base_url.rstrip("/") + path,
                                 json=data, headers=headers or {}, timeout=15)
+        if allow_stale_completion and response.status_code == 409:
+            return {"status": "discarded"}
         response.raise_for_status()
         return response.json()
 
@@ -83,11 +85,11 @@ def run(*, base_url, join_key, name, score=None, poll_seconds=2.0, once=False):
                 error = None
             except Exception as exc:
                 result, error = {}, f"execution failed: {type(exc).__name__}"
-            post(f"/v0.3/tasks/{job['id']}/complete", {
+            completion = post(f"/v0.3/tasks/{job['id']}/complete", {
                 "node_id": node_id, "lease_token": job["lease_token"],
                 "result": result, "error": error,
-            }, key)
-            print(f"processed {job['id'][:8]}: {error or 'completed'}", flush=True)
+            }, key, allow_stale_completion=True)
+            print(f"processed {job['id'][:8]}: {completion.get('status') or error or 'completed'}", flush=True)
         if once:
             return
         time.sleep(poll_seconds)
