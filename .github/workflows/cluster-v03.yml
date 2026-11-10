@@ -6,6 +6,7 @@ on:
       - 'cluster_v031/**'
       - 'cluster_v04/**'
       - 'compute/qwen2_*.py'
+      - 'tests/test_qwen2_safetensors_v042.py'
       - 'tests/test_qwen2_*.py'
       - 'benchmarks/qwen2_tp_session_demo.py'
       - 'tests/test_model_registry_v04.py'
@@ -36,6 +37,7 @@ on:
       - 'cluster_v031/**'
       - 'cluster_v04/**'
       - 'compute/qwen2_*.py'
+      - 'tests/test_qwen2_safetensors_v042.py'
       - 'tests/test_qwen2_*.py'
       - 'benchmarks/qwen2_tp_session_demo.py'
       - 'tests/test_model_registry_v04.py'
@@ -100,6 +102,8 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_qwen2_parity_v041.py' -v
       - name: Qwen2 Gloo rank parity and managed pool routing
         run: python -m unittest discover -s tests -p 'test_qwen2_v041.py' -v
+      - name: v0.4.2 offline Safetensors import, safety and DeepSeek capacity planning
+        run: python -m unittest discover -s tests -p 'test_qwen2_safetensors_v042.py' -v
       - name: Run full localhost HTTP with two Qwen2 TP Workers
         run: python -m benchmarks.qwen2_tp_session_demo
       - name: Run full localhost HTTP and two-agent TP demo
