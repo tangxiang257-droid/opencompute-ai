@@ -52,16 +52,16 @@ function Get-OrCreateSecrets {
         )
         $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
         [System.IO.File]::WriteAllLines($envPath, $lines, $utf8NoBom)
-        Write-Host "已生成本机 .env 和两组独立密钥。" -ForegroundColor Green
+        Write-Host "Generated .env with two independent local secrets." -ForegroundColor Green
         return @{ Admin = $admin; Join = $join }
     }
     $existingLines = Get-Content -LiteralPath $envPath
     $admin = Read-DotEnvValue "OPENCOMPUTE_ADMIN_KEY" $existingLines
     $join = Read-DotEnvValue "OPENCOMPUTE_JOIN_KEY" $existingLines
     if ($admin.Length -lt 16 -or $join.Length -lt 16 -or
-        $admin -match "replace-with|替换|your-" -or
-        $join -match "replace-with|替换|your-" -or $admin -eq $join) {
-        throw ".env 中的 OPENCOMPUTE_ADMIN_KEY / OPENCOMPUTE_JOIN_KEY 无效。请编辑 .env 设置两组不同且至少 16 位的随机密钥；如果只是首次试运行且没有重要配置，也可以先备份后删除 .env，再重新运行本脚本自动生成。"
+        $admin -match "replace-with|your-" -or
+        $join -match "replace-with|your-" -or $admin -eq $join) {
+        throw "Invalid OPENCOMPUTE_ADMIN_KEY / OPENCOMPUTE_JOIN_KEY in .env. Set two different random secrets of at least 16 characters, or back up and remove .env to let this launcher generate them."
     }
     return @{ Admin = $admin; Join = $join }
 }
@@ -69,31 +69,31 @@ function Get-OrCreateSecrets {
 Push-Location $repoRoot
 try {
     Write-Host ""
-    Write-Host "=== OpenCompute AI 本地启动器 ===" -ForegroundColor Cyan
+    Write-Host "=== OpenCompute AI Local Launcher ===" -ForegroundColor Cyan
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-        throw "没有找到 Docker CLI。请先安装并启动 Docker Desktop：https://www.docker.com/products/docker-desktop/"
+        throw "Docker CLI not found. Install and start Docker Desktop: https://www.docker.com/products/docker-desktop/"
     }
-    Write-Host "检查 Docker Engine..."
+    Write-Host "Checking Docker Engine..."
     & docker info --format "{{.ServerVersion}}" | Out-Host
     if ($LASTEXITCODE -ne 0) {
-        throw "Docker Engine 尚未启动。请打开 Docker Desktop，等待状态变为 Running 后重试。"
+        throw "Docker Engine is not running. Open Docker Desktop, wait until it shows Running, then retry."
     }
     $secrets = Get-OrCreateSecrets
-    Write-Host "检查 Compose 配置..."
+    Write-Host "Validating Docker Compose configuration..."
     & docker compose config --quiet
-    if ($LASTEXITCODE -ne 0) { throw "docker compose config 校验失败，请检查 .env 和 Compose 配置。" }
+    if ($LASTEXITCODE -ne 0) { throw "docker compose config validation failed. Check .env and the Compose files." }
 
     if ($SimulateWorkers) {
-        Write-Host "构建并启动 API + 3 个模拟 CPU Worker..." -ForegroundColor Cyan
+        Write-Host "Building and starting the API plus 3 simulated CPU Workers..." -ForegroundColor Cyan
         & docker compose --profile sim up --build -d --scale worker=3
     }
     else {
-        Write-Host "构建并启动 OpenCompute API..." -ForegroundColor Cyan
+        Write-Host "Building and starting the OpenCompute API..." -ForegroundColor Cyan
         & docker compose up --build -d
     }
-    if ($LASTEXITCODE -ne 0) { throw "Docker Compose 启动失败。可运行 .\scripts\status-local.ps1 查看容器状态。" }
+    if ($LASTEXITCODE -ne 0) { throw "Docker Compose failed. Run .\scripts\status-local.ps1 to inspect container status." }
 
-    Write-Host "等待 API 就绪..."
+    Write-Host "Waiting for the API to become healthy..."
     $ready = $false
     for ($i = 0; $i -lt 45; $i++) {
         try {
@@ -103,12 +103,12 @@ try {
         catch { Start-Sleep -Seconds 2 }
     }
     if (-not $ready) {
-        Write-Warning "容器已启动，但 API 在 90 秒内尚未就绪。请运行 .\scripts\status-local.ps1 查看日志。"
+        Write-Warning "Containers started, but the API did not become healthy within 90 seconds. Run .\scripts\status-local.ps1 to inspect logs."
     }
-    else { Write-Host "API 已就绪：$apiUrl" -ForegroundColor Green }
+    else { Write-Host "API is ready: $apiUrl" -ForegroundColor Green }
 
     if ($SimulateWorkers -and $ready) {
-        Write-Host "等待模拟 Worker 注册..."
+        Write-Host "Waiting for simulated Workers to register..."
         $onlineCount = 0
         for ($i = 0; $i -lt 30; $i++) {
             try {
@@ -119,21 +119,21 @@ try {
             catch { }
             Start-Sleep -Seconds 2
         }
-        if ($onlineCount -ge 3) { Write-Host "已检测到 $onlineCount 台在线 Worker。" -ForegroundColor Green }
-        else { Write-Warning "当前检测到 $onlineCount 台在线 Worker（目标 3 台）。稍后可运行 .\scripts\status-local.ps1 检查。" }
+        if ($onlineCount -ge 3) { Write-Host "Detected $onlineCount online Workers." -ForegroundColor Green }
+        else { Write-Warning "Detected $onlineCount online Workers (target: 3). Run .\scripts\status-local.ps1 to inspect." }
     }
 
     Write-Host ""
-    Write-Host "网站地址：$apiUrl/" -ForegroundColor Cyan
+    Write-Host "Website: $apiUrl/" -ForegroundColor Cyan
     $displayAdminKey = $secrets.Admin
-    Write-Host ("管理员密钥（仅在本机使用，请勿分享）：" + $displayAdminKey) -ForegroundColor Yellow
-    Write-Host "在网页顶部粘贴管理员密钥即可连接控制台。密钥保存在 .env 中，不要提交到 GitHub。"
+    Write-Host ("Admin key (keep it private): " + $displayAdminKey) -ForegroundColor Yellow
+    Write-Host "Paste the admin key into the dashboard header. It is stored in .env; never commit that file to GitHub."
     if (-not $NoBrowser -and $ready) { Start-Process $apiUrl }
 }
 catch {
     Write-Host ""
     $errorMessage = $_.Exception.Message
-    Write-Host ("启动未完成：" + $errorMessage) -ForegroundColor Red
+    Write-Host ("Startup failed: " + $errorMessage) -ForegroundColor Red
     exit 1
 }
 finally { Pop-Location }
