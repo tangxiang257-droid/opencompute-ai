@@ -36,13 +36,66 @@ class RequestTicket:
     request: Request
 
     async def result(self, timeout: float | None = None) -> Any:
-        """Wait for the result; caller timeout never cancels shared work."""
-        waiter = asyncio.shield(self.request.future)
-        if timeout is None:
-            return await waiter
-        if timeout <= 0:
+        """Wait for completion, respecting queue expiry without cancelling work.
+
+        A queued request's admission deadline ends when a consumer dispatches
+        it. If it remains queued until that deadline, this waiter raises even
+        when no consumer is currently polling the queue. Once in flight, the
+        queue deadline no longer limits execution; an optional caller timeout
+        still does. Shielding keeps waiter cancellation from cancelling the
+        shared result Future.
+        """
+        if timeout is not None and (
+            isinstance(timeout, bool) or not isinstance(timeout, (int, float))
+            or timeout <= 0
+        ):
             raise ValueError("timeout must be positive")
-        return await asyncio.wait_for(waiter, timeout=timeout)
+        caller_deadline = None if timeout is None else time.monotonic() + float(timeout)
+
+        while True:
+            if self.request.future.done():
+                return self.request.future.result()
+
+            if self.request.state != "queued":
+                if caller_deadline is None:
+                    return await asyncio.shield(self.request.future)
+                remaining = caller_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                return await asyncio.wait_for(
+                    asyncio.shield(self.request.future), timeout=remaining
+                )
+
+            queue_remaining = self.request.deadline - time.monotonic()
+            if queue_remaining <= 0:
+                if self.request.state == "queued":
+                    raise TimeoutError(
+                        f"request {self.request.request_id} expired in queue"
+                    )
+                continue
+
+            if caller_deadline is None:
+                wait_time = queue_remaining
+            else:
+                caller_remaining = caller_deadline - time.monotonic()
+                if caller_remaining <= 0:
+                    raise asyncio.TimeoutError
+                wait_time = min(queue_remaining, caller_remaining)
+
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(self.request.future), timeout=wait_time
+                )
+            except asyncio.TimeoutError:
+                # Dispatch may have won the race with the queue deadline.
+                if self.request.state != "queued":
+                    continue
+                if time.monotonic() >= self.request.deadline:
+                    raise TimeoutError(
+                        f"request {self.request.request_id} expired in queue"
+                    )
+                # The caller's independent wait timeout elapsed first.
+                raise
 
 
 class FairRequestQueue:

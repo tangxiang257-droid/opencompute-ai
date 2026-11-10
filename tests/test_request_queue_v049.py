@@ -60,6 +60,14 @@ class FairRequestQueueTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(queue.get(), timeout=0.02)
         self.assertEqual(queue.pending_count, 0)
 
+    async def test_result_deadline_does_not_abort_dispatched_work(self):
+        queue = FairRequestQueue()
+        ticket = await queue.put("inflight", "A", "payload", timeout=0.02)
+        request = await queue.get()
+        await asyncio.sleep(0.04)
+        await queue.complete(request, "finished")
+        self.assertEqual(await ticket.result(), "finished")
+
     async def test_expired_client_does_not_block_other_clients(self):
         queue = FairRequestQueue()
         expired = await queue.put("old", "A", "old", timeout=0.02)
