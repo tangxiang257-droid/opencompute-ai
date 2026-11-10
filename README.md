@@ -1,3 +1,18 @@
+# OpenCompute AI v0.4.7 — 首个真实 Qwen2 流水线并行（PP）原型
+
+本版新增与原有 TP 张量并行**完全独立**的双 Rank Qwen2 PP 推理路径：Rank 0 运行前半 Transformer 层并持有 Embedding/LM Head，Rank 1 运行后半 Transformer 层，两端通过真实 Gloo send/recv 传递隐藏状态，KV Cache 按层分别保存在两个进程中。
+
+- [PP 推理引擎与按层拆分、校验代码](compute/qwen2_pipeline_v047.py)
+- [TP1 / TP2 / PP2 真实执行对比脚本](benchmarks/qwen2_pp_compare_v047.py)
+- [合成模型文件安全与双 Rank 数值测试](tests/test_qwen2_pipeline_v047.py)
+- [独立 HF Qwen2 模型与 PP 数值对照](tests/test_qwen2_pipeline_hf_v047.py)
+- [v0.4.7 技术架构、使用方法与限制](docs/v0.4.7-qwen2-pipeline.md)
+- [GitHub Actions：独立 HF / PP 测试与 JSON 对比报告](https://github.com/tangxiang257-droid/opencompute-ai/actions)
+
+**实验范围：** 可信单机 CPU Gloo 双进程，不是两个真实设备的联网测试。PP 尚未接入现有网站调度器、Worker 身份系统或正式模型目录，也没有独立跑通官方 DeepSeek 完整预训练权重。单条自回归请求需要在两个阶段之间往返传递激活，**不能保证提高 Token/s**。现有 GPT-2/Qwen2 TP 功能保持可用。
+
+---
+
 # OpenCompute AI v0.4.6 — 更可靠的并行性能判断
 
 在原有 Qwen2/DeepSeek-Qwen 多模型实验架构上，本版加入 **单 Rank 无效通信快路径**、可对照旧实现的 A/B 开关、三模式重复 Gloo 计时及张量并行／流水线并行的权重内存和通信成本筛选。
