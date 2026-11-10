@@ -7,6 +7,7 @@
 <style>
 :root{font:15px system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:dark;background:#0b1120;color:#e8effd}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{max-width:1140px;margin:0 auto;padding:28px 20px 72px}
 a{color:#9bc1ff;text-decoration:none}a:hover{text-decoration:underline}
 h1{font-size:clamp(28px,4vw,42px);letter-spacing:-1px;margin:0}
@@ -130,7 +131,8 @@ $('launchForm').addEventListener('submit',async e=>{
   $('launch').disabled=true;
   $('feedback').textContent='提交中…';$('feedback').className='small muted';
   const selected=models.find(m=>m.id===selectedId);
-  const prompt=$('prompt').value.split(',').map(x=>Number(x.trim()));
+  const promptText=$('prompt').value.trim();
+  const prompt=promptText?promptText.split(',').map(x=>Number(x.trim())):[];
   if(prompt.some(x=>!Number.isSafeInteger(x)||x<0)||!prompt.length){
     $('feedback').textContent='请输入有效的非负整数 Token ID';$('launch').disabled=false;return;
   }
