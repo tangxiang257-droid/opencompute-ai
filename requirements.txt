@@ -4,3 +4,7 @@ requests>=2.31,<3
 pydantic>=2,<3
 torch>=2.4,<3
 psutil>=5.9,<8
+
+# Safetensors-only Qwen2 v2 weights; no pickle model ingress.
+safetensors>=0.4.5,<1
+numpy>=1.24,<3
