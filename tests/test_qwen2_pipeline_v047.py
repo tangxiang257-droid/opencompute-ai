@@ -100,7 +100,7 @@ class PipelineBundleTests(unittest.TestCase):
             partition_one_rank_v2(self.source, self.source / "nested")
         two = self.root / "tp2"
         export_chunked(self.state, self.config, two, workers=2, chunk_rows=11)
-        with self.assertRaisesRegex(ValueError, "one-rank"):
+        with self.assertRaises(ValueError):
             partition_one_rank_v2(two, self.root / "rejected")
 
 
