@@ -140,7 +140,8 @@ class LazySafetensors(Mapping):
         return value
 
 
-def inspect_directory(model_dir, workers, *, verify_headers=True):
+def inspect_directory(model_dir, workers, *, verify_headers=True,
+                      expected_sha256=None):
     """Preflight trusted local Qwen2 weights; no model download or eager HF load."""
     root = Path(model_dir).resolve(strict=True)
     if not root.is_dir():
@@ -179,6 +180,18 @@ def inspect_directory(model_dir, workers, *, verify_headers=True):
                 or "/" in name or "\\" in name):
             raise ValueError("unsafe Safetensors filename in index")
         _regular(root / name, MAX_WEIGHT_FILE_BYTES)
+    if expected_sha256 is not None:
+        # Single-weight-file provenance pin only; for sharded models each
+        # source shard would need its own trusted hash / signed manifest.
+        if (len(files) != 1 or len(expected_sha256) != 64
+                or any(ch not in "0123456789abcdef" for ch in expected_sha256)):
+            raise ValueError("expected_sha256 requires one file and 64 lowercase hex digits")
+        digest = hashlib.sha256()
+        with (root / files[0]).open("rb") as stream:
+            for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+                digest.update(block)
+        if digest.hexdigest() != expected_sha256:
+            raise ValueError("source Safetensors SHA-256 mismatch")
 
     required = _expected_shapes(meta)
     biases = _optional_bias_shapes(meta)
@@ -212,9 +225,10 @@ def inspect_directory(model_dir, workers, *, verify_headers=True):
             "weights": LazySafetensors(root, mapping, shapes)}
 
 
-def export_local(model_dir, output, workers, *, allow_existing=False):
+def export_local(model_dir, output, workers, *, expected_sha256=None):
     """Export only small checked models compatible with the current TP file caps."""
-    inspected = inspect_directory(model_dir, workers)
+    inspected = inspect_directory(model_dir, workers,
+                                  expected_sha256=expected_sha256)
     if not inspected["plan"]["exportable_under_current_limit"]:
         raise ValueError(inspected["plan"]["reason"])
     target = Path(output)
@@ -222,7 +236,7 @@ def export_local(model_dir, output, workers, *, allow_existing=False):
     resolved = target.resolve()
     if resolved == source or source in resolved.parents:
         raise ValueError("cannot export inside the source model directory")
-    if target.exists() and not allow_existing:
+    if target.exists():
         raise ValueError("destination already exists; select an empty new folder")
     if target.is_symlink():
         raise ValueError("destination cannot be a symlink")
@@ -236,7 +250,7 @@ def export_local(model_dir, output, workers, *, allow_existing=False):
         return manifest
     except BaseException:
         # Never automatically erase preexisting user files.
-        if not target.exists() or allow_existing:
+        if not target.exists():
             raise
         import shutil
         shutil.rmtree(target, ignore_errors=True)
@@ -249,6 +263,8 @@ def main():
     parser.add_argument("--config", help="config.json for size planning only")
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--export-to", help="export currently supported small weights")
+    parser.add_argument("--expected-sha256",
+                        help="trusted SHA-256 for a single local Safetensors weight file")
     args = parser.parse_args()
     if bool(args.config) == bool(args.model_dir):
         parser.error("choose exactly one of --model-dir or --config")
@@ -258,10 +274,12 @@ def main():
         config = _json_file(args.config, MAX_CONFIG_BYTES)
         result = plan_config(config, args.workers)
     elif args.export_to:
-        manifest = export_local(args.model_dir, args.export_to, args.workers)
+        manifest = export_local(args.model_dir, args.export_to, args.workers,
+                                expected_sha256=args.expected_sha256)
         result = {"exported": True, "manifest": manifest}
     else:
-        inspected = inspect_directory(args.model_dir, args.workers)
+        inspected = inspect_directory(
+            args.model_dir, args.workers, expected_sha256=args.expected_sha256)
         result = {k: v for k, v in inspected.items() if k != "weights"}
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
