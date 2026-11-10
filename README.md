@@ -1,3 +1,16 @@
+# OpenCompute AI v0.4.2 — Safetensors 本地模型检查与容量规划
+
+新增 Qwen2 / DeepSeek-Qwen **本地、安全、只读的 Safetensors 预检查器**，支持单文件和索引式分片权重、按需读取张量、参数形状和数据类型检查、可选 SHA-256 指纹验证。模型目录仍保持多架构扩展设计。
+
+- [v0.4.2 安全导入与 DeepSeek 1.5B 容量评估](docs/v0.4.2-safetensors-ingest.md)
+- [Safetensors 导入器与容量估算代码](compute/qwen2_safetensors.py)
+- [导入安全与兼容性回归测试](tests/test_qwen2_safetensors_v042.py)
+- [GitHub Actions 验证状态](https://github.com/tangxiang257-droid/opencompute-ai/actions)
+
+**限制**：目前仅限于符合 512 MB 单文件上限的小型 Qwen2 检查点。官方 DeepSeek-R1-Distill-Qwen-1.5B 的 Rank 0 FP32 IO 文件预计约 1.87 GB，尚不能直接完成分片部署；没有下载或实际运行该完整官方权重。
+
+---
+
 # OpenCompute AI v0.4.1 — Qwen2/DeepSeek-Qwen 架构适配第一阶段
 
 **真正新增了 Qwen2 CPU Gloo 张量并行计算引擎**：实现 RoPE、RMSNorm、GQA、SwiGLU、Rank 本地 KV Cache、分片权重导出和双 Worker 协同生成。已打通原有注册 Worker、调度器与多模型选择 API。
