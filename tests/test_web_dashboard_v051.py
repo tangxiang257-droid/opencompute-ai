@@ -16,6 +16,14 @@ class WebDashboardTests(unittest.TestCase):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("COPY web/ web/", dockerfile)
 
+    def test_default_compose_file_uses_the_current_dashboard_backend(self):
+        for name in ("compose.yaml", "docker-compose.yml"):
+            content = (ROOT / name).read_text(encoding="utf-8")
+            self.assertIn('OPENCOMPUTE_ADMIN_KEY: "${OPENCOMPUTE_ADMIN_KEY:-}"', content)
+            self.assertIn('OPENCOMPUTE_JOIN_KEY: "${OPENCOMPUTE_JOIN_KEY:-}"', content)
+            self.assertIn("dockerfile: Dockerfile.worker", content)
+            self.assertNotIn("python -m app.worker", content)
+
     def test_dashboard_exposes_real_cluster_workflows(self):
         html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
         for expected in (

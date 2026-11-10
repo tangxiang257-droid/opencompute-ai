@@ -43,6 +43,7 @@ on:
       - 'Dockerfile.tp-worker'
       - 'Dockerfile'
       - 'docker-compose.yml'
+      - 'compose.yaml'
       - 'docker-compose.tp-local.yml'
       - 'requirements-dev.txt'
       - '.github/workflows/cluster-v03.yml'
@@ -89,6 +90,7 @@ on:
       - 'Dockerfile.tp-worker'
       - 'Dockerfile'
       - 'docker-compose.yml'
+      - 'compose.yaml'
       - 'docker-compose.tp-local.yml'
       - 'requirements-dev.txt'
       - '.github/workflows/cluster-v03.yml'
@@ -110,6 +112,11 @@ jobs:
           OPENCOMPUTE_ADMIN_KEY=ci-test-admin-placeholder-long-only \
           OPENCOMPUTE_JOIN_KEY=ci-test-join-placeholder-long-only \
           docker compose -f docker-compose.tp-local.yml config --quiet
+      - name: Validate default dashboard Compose configuration
+        run: |
+          OPENCOMPUTE_ADMIN_KEY=ci-test-admin-placeholder-long-only \
+          OPENCOMPUTE_JOIN_KEY=ci-test-join-placeholder-long-only \
+          docker compose config --quiet
       - name: Compile check source and regression tests
         run: python -m compileall -q backend compute cluster_v03 cluster_v031 cluster_v04 cluster_v05 tests benchmarks
       - name: v0.5.1 browser dashboard packaging regression

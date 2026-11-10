@@ -1,20 +1,35 @@
 services:
-  api:
+  opencompute:
     build: .
-    ports: ["127.0.0.1:8000:8000"]
+    ports:
+      - "127.0.0.1:8000:8000"
     environment:
-      DATABASE_PATH: /data/opencompute.db
-      ADMIN_KEY: ${ADMIN_KEY:?Set ADMIN_KEY in .env}
-    volumes: ["db:/data"]
+      OMP_NUM_THREADS: "1"
+      OPENCOMPUTE_DB_PATH: "/data/cluster-v03.sqlite"
+      OPENCOMPUTE_TP_ROOT: "/data/tp-sessions"
+      OPENCOMPUTE_TP_CHECKPOINTS: "/data/checkpoints"
+      OPENCOMPUTE_ADMIN_KEY: "${OPENCOMPUTE_ADMIN_KEY:-}"
+      OPENCOMPUTE_JOIN_KEY: "${OPENCOMPUTE_JOIN_KEY:-}"
+    volumes:
+      - cluster_data:/data
+    mem_limit: 4g
+    cpus: 2
     restart: unless-stopped
+
+  # Opt-in local demonstration; run with --profile sim --scale worker=3.
   worker:
-    build: .
-    command: python -m app.worker
+    profiles: ["sim"]
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    depends_on:
+      - opencompute
     environment:
-      API_URL: http://api:8000
-      ADMIN_KEY: ${ADMIN_KEY:?Set ADMIN_KEY in .env}
-      WORKER_NAME: simulated-worker
-    depends_on: [api]
+      OPENCOMPUTE_API_URL: "http://opencompute:8000"
+      OPENCOMPUTE_JOIN_KEY: "${OPENCOMPUTE_JOIN_KEY:-}"
+    mem_limit: 512m
+    cpus: 1
     restart: unless-stopped
+
 volumes:
-  db:
+  cluster_data:
