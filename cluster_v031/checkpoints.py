@@ -14,9 +14,11 @@ MAX_MANIFEST_BYTES = 16_384
 
 def validate_manifest(manifest, *, expected_workers=None):
     if not isinstance(manifest, dict) or manifest.get("format") not in (
-            "opencompute-gpt2-tp-v1", "opencompute-qwen2-tp-v1"):
+            "opencompute-gpt2-tp-v1", "opencompute-qwen2-tp-v1",
+            "opencompute-qwen2-tp-v2"):
         raise ValueError("unsupported tensor-parallel manifest")
-    qwen2 = manifest["format"] == "opencompute-qwen2-tp-v1"
+    qwen2 = manifest["format"] in ("opencompute-qwen2-tp-v1",
+                                     "opencompute-qwen2-tp-v2")
     limits = {"workers": 4, "hidden": 4096, "heads": 128,
               "layers": 48, "positions": 131072, "inner": 32768,
               "vocab": 262144}
@@ -49,6 +51,15 @@ def validate_manifest(manifest, *, expected_workers=None):
             raise ValueError("invalid RoPE theta")
         if type(manifest.get("tied_embeddings")) is not bool:
             raise ValueError("invalid tied-embedding option")
+        if manifest["format"] == "opencompute-qwen2-tp-v2":
+            rows = manifest.get("io_chunk_rows")
+            if type(rows) is not int or not 1 <= rows <= manifest["vocab"]:
+                raise ValueError("invalid Qwen2 vocabulary chunk rows")
+            count = (manifest["vocab"] + rows - 1) // rows
+            file_count = (2 + manifest["workers"] * manifest["layers"]
+                          + count * (1 if manifest["tied_embeddings"] else 2))
+            if count > 128 or file_count > 512:
+                raise ValueError("too many Qwen2 vocabulary/rank chunk files")
     else:
         eps = manifest.get("layer_norm_epsilon")
         if type(eps) not in (float, int) or not math.isfinite(eps) or not 0 < eps <= 0.1:
@@ -62,6 +73,12 @@ def validate_manifest(manifest, *, expected_workers=None):
 
 
 def expected_files(workers):
+    if isinstance(workers, dict):
+        validate_manifest(workers)
+        if workers["format"] == "opencompute-qwen2-tp-v2":
+            from compute.qwen2_chunked import all_files
+            return all_files(workers)
+        workers = workers["workers"]
     if type(workers) is not int or not 1 <= workers <= 4:
         raise ValueError("invalid checkpoint rank count")
     return ["manifest.json", "rank0_io.pt"] + [
@@ -87,7 +104,7 @@ def inspect_file(path, *, max_size=MAX_FILE_BYTES):
 def inspect_bundle(folder, manifest, *, expected=None):
     validate_manifest(manifest)
     folder = Path(folder)
-    names = expected_files(manifest["workers"])
+    names = expected_files(manifest)
     indexes = {}
     for name in names:
         cap = MAX_MANIFEST_BYTES if name == "manifest.json" else MAX_FILE_BYTES
