@@ -66,8 +66,13 @@ def _file_digest(path):
 
 def download_and_verify(base, assignment, node_id, token, data_root):
     """Download only assigned rank files; check SHA256 and tensor shapes."""
-    from compute.gpt2_generate import load_rank, read_manifest
-
+    engine = assignment.get("engine", "gpt2-tp")
+    if engine == "gpt2-tp":
+        from compute.gpt2_generate import load_rank, read_manifest
+    elif engine == "qwen2-tp":
+        from compute.qwen2_generate import load_rank, read_manifest
+    else:
+        raise ValueError("unrecognized TP inference engine")
     session_id, rank = assignment["session_id"], assignment["rank"]
     if not isinstance(session_id, str) or not re.fullmatch(r"[0-9a-f]{32}", session_id):
         raise ValueError("invalid session identifier")
@@ -177,6 +182,9 @@ def execute_rank(folder, assignment, timeout=150, cancellation_check=None,
     The parent agent continues heartbeat/control polling while the model runs.
     """
     rank, world = assignment["rank"], assignment["workers"]
+    engine = assignment.get("engine", "gpt2-tp")
+    if engine not in ("gpt2-tp", "qwen2-tp"):
+        raise ValueError("unrecognized TP inference engine")
     if os.name != "posix":
         raise RuntimeError("v0.3.4 CPU time isolation requires POSIX")
     if not 1 <= timeout <= 3600:
@@ -200,6 +208,7 @@ def execute_rank(folder, assignment, timeout=150, cancellation_check=None,
     # preexec_fn is used while the agent heartbeat thread is running.
     command = [
         sys.executable, "-m", "cluster_v031.limits",
+        "--engine", engine,
         "--cpu-seconds", str(min(3600, math.ceil(timeout) + 30)),
     ]
     if vmem:
@@ -287,7 +296,8 @@ def run(*, base_url, join_key, name, cache_root, once=False, poll_seconds=0.5):
             "platform": platform.system().lower(),
             "cpu_cores": max(1, min(128, os.cpu_count() or 1)),
             "ram_mb": total_ram_mb,
-            "compute_score": compute_score, "slots": 1, "capabilities": ["tp_gpt2"],
+            "compute_score": compute_score, "slots": 1,
+            "capabilities": ["tp_gpt2", "tp_qwen2"],
         },
     ).json()
     node_id, token = register["id"], register["node_token"]
