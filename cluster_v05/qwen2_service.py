@@ -96,6 +96,42 @@ class Qwen2PipelineService:
         self._requests_failed = 0
         self._last_error: str | None = None
 
+    @classmethod
+    def from_env(cls) -> "Qwen2PipelineService | None":
+        """Build the optional local service from deployment environment.
+
+        An unset bundle keeps the route mounted but disabled. A configured
+        invalid bundle fails fast instead of silently falling back to a
+        synthetic model or another execution engine.
+        """
+        bundle = os.getenv("OPENCOMPUTE_QWEN2_PP_BUNDLE", "").strip()
+        if not bundle:
+            return None
+
+        def integer(name: str, default: int) -> int:
+            return int(os.getenv(name, str(default)))
+
+        return cls(
+            bundle,
+            max_pending=integer("OPENCOMPUTE_QWEN2_PP_MAX_PENDING", 128),
+            max_pending_per_client=integer(
+                "OPENCOMPUTE_QWEN2_PP_MAX_PENDING_PER_CLIENT", 16
+            ),
+            max_batch_size=integer("OPENCOMPUTE_QWEN2_PP_MAX_BATCH_SIZE", 4),
+            batch_wait_ms=integer("OPENCOMPUTE_QWEN2_PP_BATCH_WAIT_MS", 12),
+            max_new_tokens=integer("OPENCOMPUTE_QWEN2_PP_MAX_NEW_TOKENS", 3),
+            max_kv_mib=integer("OPENCOMPUTE_QWEN2_PP_MAX_KV_MIB", 64),
+            request_timeout_seconds=float(
+                os.getenv("OPENCOMPUTE_QWEN2_PP_REQUEST_TIMEOUT_SECONDS", "120")
+            ),
+            execution_timeout_seconds=float(
+                os.getenv("OPENCOMPUTE_QWEN2_PP_EXECUTION_TIMEOUT_SECONDS", "120")
+            ),
+            shutdown_grace_seconds=float(
+                os.getenv("OPENCOMPUTE_QWEN2_PP_SHUTDOWN_GRACE_SECONDS", "10")
+            ),
+        )
+
     @property
     def running(self) -> bool:
         return self._task is not None and not self._task.done() and not self._closing

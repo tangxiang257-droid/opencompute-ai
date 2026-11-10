@@ -6,6 +6,8 @@ from cluster_v03.store import ClusterStore
 from cluster_v031.api import create_router as create_tp_router
 from cluster_v031.coordinator import SessionCoordinator
 from cluster_v04.api import create_model_router
+from cluster_v05.api import create_router as create_qwen2_queue_router
+from cluster_v05.qwen2_service import Qwen2PipelineService
 from pydantic import BaseModel, Field
 import json
 import hmac
@@ -18,7 +20,8 @@ import tempfile
 from compute.shards import prepare
 from compute.topology_planner import plan
 
-app = FastAPI(title="OpenCompute AI CPU research API")
+app = FastAPI(title="OpenCompute AI v0.5.0 CPU research API")
+qwen2_queue = Qwen2PipelineService.from_env()
 
 
 def require_admin(x_admin_key: str = Header(default="", alias="X-Admin-Key")):
@@ -70,7 +73,11 @@ class Benchmark(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "version": "0.3.1"}
+    return {
+        "status": "ok",
+        "version": "0.5.0",
+        "qwen2_pp_queue_enabled": qwen2_queue is not None,
+    }
 
 
 @app.post("/benchmarks")

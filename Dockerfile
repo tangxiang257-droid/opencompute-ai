@@ -8,6 +8,7 @@ COPY compute/ compute/
 COPY cluster_v03/ cluster_v03/
 COPY cluster_v031/ cluster_v031/
 COPY cluster_v04/ cluster_v04/
+COPY cluster_v05/ cluster_v05/
 # The optional trusted TP Compose stack starts the coordinator as UID 10001.
 # Keep default image UID unchanged for backward compatibility with existing volumes.
 RUN mkdir -p /data && chown 10001:10001 /data
