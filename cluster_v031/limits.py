@@ -69,6 +69,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Apply local CPU quotas before loading trusted GPT-2 inference")
     parser.add_argument("--cpu-seconds", type=int, default=180)
+    parser.add_argument("--engine", choices=("gpt2-tp", "qwen2-tp"),
+                        default="gpt2-tp")
     parser.add_argument("--max-vmem-mib", type=int)
     parser.add_argument("model_arguments", nargs=argparse.REMAINDER)
     opts = parser.parse_args(argv)
@@ -76,10 +78,11 @@ def main(argv=None):
     if not args or args.pop(0) != "--":
         parser.error("expected '--' before the fixed inference arguments")
     apply_kernel_limits(opts.cpu_seconds, opts.max_vmem_mib)
-    # There is intentionally no arbitrary module, executable or shell command:
-    # this launcher only runs the existing allowlisted GPT-2 inference entrypoint.
-    sys.argv = ["compute.gpt2_generate", *args]
-    runpy.run_module("compute.gpt2_generate", run_name="__main__", alter_sys=False)
+    # A fixed, auditable engine table; never accept arbitrary module names.
+    engine_module = {"gpt2-tp": "compute.gpt2_generate",
+                     "qwen2-tp": "compute.qwen2_generate"}[opts.engine]
+    sys.argv = [engine_module, *args]
+    runpy.run_module(engine_module, run_name="__main__", alter_sys=False)
 
 
 if __name__ == "__main__":
