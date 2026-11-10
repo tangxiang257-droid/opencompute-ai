@@ -47,6 +47,13 @@ MODELS = (
         requires_local_checkpoint=True,
     ),
     ModelSpec(
+        id="qwen2-synthetic", display_name="Qwen2 GQA 合成测试模型",
+        family="Qwen", architecture="qwen2", engine="qwen2-tp",
+        provider="OpenCompute AI", official_source=None,
+        capability="experimental", modes=("tensor_parallel",),
+        description="已实现 Qwen2 的 RoPE/GQA/RMSNorm/SwiGLU CPU 张量并行；目前使用随机合成权重，不具备真实聊天能力。",
+    ),
+    ModelSpec(
         id="deepseek-r1-distill-qwen-1.5b",
         display_name="DeepSeek-R1-Distill-Qwen-1.5B",
         family="DeepSeek", architecture="qwen2",
@@ -119,6 +126,6 @@ def require_runtime(model_id: str, mode: str) -> ModelSpec:
     if model.capability != "experimental" or model.engine is None:
         raise ModelUnavailable(
             f"{model.id} is catalogued but has no implemented inference adapter")
-    if model.engine != "gpt2-tp" or mode != "tensor_parallel":
+    if model.engine not in ("gpt2-tp", "qwen2-tp") or mode != "tensor_parallel":
         raise ModelUnavailable("inference adapter not installed")
     return model
