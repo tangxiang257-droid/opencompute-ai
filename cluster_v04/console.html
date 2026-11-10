@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenCompute AI · 模型中心</title>
+<style>
+:root{font:15px system-ui,-apple-system,"Segoe UI",sans-serif;color-scheme:dark;background:#0b1120;color:#e8effd}
+*{box-sizing:border-box}
+body{max-width:1140px;margin:0 auto;padding:28px 20px 72px}
+a{color:#9bc1ff;text-decoration:none}a:hover{text-decoration:underline}
+h1{font-size:clamp(28px,4vw,42px);letter-spacing:-1px;margin:0}
+h2{font-size:20px;margin:0}
+header{display:flex;justify-content:space-between;gap:20px;align-items:center;flex-wrap:wrap;margin-bottom:28px}
+.muted{color:#9bb0ce}.small{font-size:13px;line-height:1.6}
+section{margin:22px 0}
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:15px 0 20px}
+input,select,button{font:inherit;border:1px solid #354b6e;border-radius:10px;padding:11px 12px;background:#15243a;color:#edf4ff}
+input:focus-visible,select:focus-visible,button:focus-visible,.model:focus-visible{outline:2px solid #86adff;outline-offset:2px}
+button{cursor:pointer;border-color:#427fdd;background:#275cbb}
+button:hover:not(:disabled){background:#3476df}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.secondary{border:1px solid #314661;background:#1a2a43}
+#search{flex:1;min-width:220px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}
+.model{background:#14233a;border:1px solid #2d405d;border-radius:16px;padding:17px;min-height:195px;text-align:left}
+.model.selected{border-color:#80abff;box-shadow:0 0 0 1px #80abff}
+.model h3{font-size:17px;margin:8px 0}.model p{font-size:13px;color:#a7b8d2;line-height:1.5}
+.chip{font-size:11px;display:inline-flex;padding:4px 8px;background:#283a58;border-radius:40px;color:#b9c9e8;margin-right:4px;margin-bottom:4px}
+.chip.ready{background:#143d36;color:#81ebba}
+.chip.waiting{background:#463827;color:#f7cc8b}
+.panel{border:1px solid #314660;background:#122035;border-radius:18px;padding:20px}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+label{display:grid;gap:7px;font-size:13px;color:#bfd0eb;margin-bottom:14px}
+label>input{width:100%}
+.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:0 15px}
+#feedback{margin:12px 0;min-height:22px}
+.error{color:#ffb6a3}.success{color:#7cf1b3}
+code{color:#c1d9ff;overflow-wrap:anywhere}
+footer{margin-top:30px;border-top:1px solid #294059;padding-top:20px}
+</style>
+</head>
+<body>
+<header>
+<div><div class="muted small">OPENCOMPUTE AI / MODEL REGISTRY</div><h1>模型中心</h1><p class="muted">选择模型，查看架构与适配状态。模型目录不等于已完成推理适配。</p></div>
+<a href="/v0.3/console">返回算力池控制台</a>
+</header>
+<section>
+<div class="row" style="justify-content:space-between"><h2>模型目录</h2><span class="muted small" id="total">读取中…</span></div>
+<div class="toolbar"><input id="search" aria-label="搜索模型" placeholder="搜索 DeepSeek、Qwen、Llama、GPT-2…"><select id="family" aria-label="模型家族"><option value="">全部家族</option></select><select id="capability" aria-label="适配状态"><option value="">全部状态</option><option value="experimental">已接入实验引擎</option><option value="planned">待适配</option><option value="research">研究目标</option></select></div>
+<div id="models" class="cards" aria-live="polite"></div>
+</section>
+<section class="panel">
+<h2>创建推理会话 <span class="chip">可信本机测试</span></h2>
+<p class="muted small" id="selected">请选择一个已接入引擎的模型。计划模型暂不可启动。</p>
+<form id="launchForm">
+<div class="form-grid">
+<label>管理员密钥<input id="admin" type="password" autocomplete="off" placeholder="X-Admin-Key" required></label>
+<label>提示词 Token ID（逗号分隔）<input id="prompt" value="1,2,3" required></label>
+<label>生成 Token 数<input id="tokens" type="number" min="1" max="16" value="3" required></label>
+<label id="workersLabel">张量并行 Worker 数<input id="workers" type="number" min="1" max="4" value="2"></label>
+<label id="checkpointLabel" hidden>本地已导出检查点名称<input id="checkpoint" placeholder="例如 gpt2-small-trusted"></label>
+</div>
+<div class="row"><button type="submit" id="launch" disabled>创建实验会话</button><button type="button" class="secondary" id="refreshSession" disabled>刷新会话状态</button></div>
+</form>
+<p class="small muted" id="feedback" role="status"></p><p class="small muted" id="sessionInfo"></p>
+</section>
+<footer class="muted small">仅用于已注册的可信 Worker。目录中的 DeepSeek、Qwen、Llama 和 MoE 条目当前为适配计划；自定义 API 模式不使用本平台的设备算力池。</footer>
+<script>
+const $=id=>document.getElementById(id);
+let models=[], selectedId=null, sessionId=null;
+const stateText={experimental:'实验引擎已实现',planned:'待适配',research:'研究阶段'};
+const element=(tag,cls,text)=>{const el=document.createElement(tag);if(cls)el.className=cls;if(text!==undefined)el.textContent=text;return el};
+async function getJson(path,options={}){
+  const res=await fetch(path,{...options,headers:{...(options.headers||{})}});
+  const data=await res.json().catch(()=>({detail:res.statusText}));
+  if(!res.ok)throw Error(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail));
+  return data;
+}
+function selectModel(id){
+  const model=models.find(m=>m.id===id);
+  if(!model||model.capability!=='experimental')return;
+  selectedId=id;
+  $('selected').textContent=model.display_name+' · '+model.architecture+' · 张量并行（实验引擎）';
+  $('checkpointLabel').hidden=!model.requires_local_checkpoint;
+  $('workersLabel').hidden=!!model.requires_local_checkpoint;
+  $('launch').disabled=false;
+  render();
+}
+function render(){
+  const q=$('search').value.trim().toLowerCase(), family=$('family').value, cap=$('capability').value;
+  $('models').replaceChildren();
+  const visible=models.filter(m=>(!family||m.family===family)&&(!cap||m.capability===cap)&&
+    (!q||[m.display_name,m.id,m.architecture,m.family].join(' ').toLowerCase().includes(q)));
+  $('total').textContent=visible.length+' / '+models.length+' 个模型';
+  for(const m of visible){
+    const card=element('article','model'+(selectedId===m.id?' selected':''));
+    card.append(element('span','chip '+(m.capability==='experimental'?'ready':'waiting'),stateText[m.capability]||m.capability));
+    card.append(element('span','chip',m.architecture));
+    card.append(element('h3','',m.display_name));
+    card.append(element('p','',m.description));
+    card.append(element('div','small muted','执行方式：'+m.modes.join(' / ')));
+    const actions=element('div','row');
+    if(m.capability==='experimental'){
+      const btn=element('button','secondary',selectedId===m.id?'已选择':'选择模型');
+      btn.type='button';btn.addEventListener('click',()=>selectModel(m.id));actions.append(btn);
+    }else actions.append(element('span','small muted','尚未接入推理引擎，暂不可运行'));
+    if(m.official_source){
+      const link=element('a','small','官方模型来源');link.href=m.official_source;
+      link.target='_blank';link.rel='noopener noreferrer';actions.append(link);
+    }
+    card.append(actions);$('models').append(card);
+  }
+  if(!visible.length)$('models').append(element('p','muted','没有找到匹配的模型'));
+}
+async function loadModels(){
+  try{
+    const r=await getJson('/v0.4/models');
+    models=r.models;
+    const families=[...new Set(models.map(m=>m.family))].sort();
+    for(const family of families){const opt=element('option','',family);opt.value=family;$('family').append(opt)}
+    render();
+  }catch(e){$('total').textContent='模型目录读取失败';$('models').textContent=e.message}
+}
+$('search').addEventListener('input',render);$('family').addEventListener('change',render);
+$('capability').addEventListener('change',render);
+$('launchForm').addEventListener('submit',async e=>{
+  e.preventDefault();
+  if(!selectedId)return;
+  $('launch').disabled=true;
+  $('feedback').textContent='提交中…';$('feedback').className='small muted';
+  const selected=models.find(m=>m.id===selectedId);
+  const prompt=$('prompt').value.split(',').map(x=>Number(x.trim()));
+  if(prompt.some(x=>!Number.isSafeInteger(x)||x<0)||!prompt.length){
+    $('feedback').textContent='请输入有效的非负整数 Token ID';$('launch').disabled=false;return;
+  }
+  const body={model_id:selectedId,mode:'tensor_parallel',prompt_ids:prompt,
+              max_new_tokens:Number($('tokens').value)};
+  if(selected.requires_local_checkpoint)body.checkpoint=$('checkpoint').value.trim();
+  else body.workers=Number($('workers').value);
+  try{
+    const result=await getJson('/v0.4/sessions',{
+      method:'POST',headers:{'Content-Type':'application/json','X-Admin-Key':$('admin').value},
+      body:JSON.stringify(body)});
+    sessionId=result.session.session_id;
+    $('feedback').textContent='会话已创建；等待已注册 Worker 领取并运行。';
+    $('feedback').className='small success';
+    $('sessionInfo').textContent='会话 ID：'+sessionId+'；状态：'+result.session.status;
+    $('refreshSession').disabled=false;
+  }catch(err){
+    $('feedback').textContent='创建失败：'+err.message+'（请确认已注册足够数量的 tp_gpt2 Worker）';
+    $('feedback').className='small error';
+  }finally{$('launch').disabled=false}
+});
+$('refreshSession').addEventListener('click',async()=>{
+  if(!sessionId)return;
+  try{
+    const result=await getJson('/v0.3.1/sessions/'+sessionId,{
+      headers:{'X-Admin-Key':$('admin').value}});
+    $('sessionInfo').textContent='会话 ID：'+sessionId+'；状态：'+result.status+
+      (result.error?'；错误：'+result.error:'');
+  }catch(e){$('sessionInfo').textContent='读取会话失败：'+e.message}
+});
+loadModels();
+</script>
+</body>
+</html>
