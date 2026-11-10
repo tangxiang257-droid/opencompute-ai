@@ -2,6 +2,7 @@
 
 All test checkpoints are locally synthesized: no internet or download needed.
 """
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -70,6 +71,17 @@ class TrustedSafetensorsImport(unittest.TestCase):
         self.assertTrue(torch.equal(io["embed"], self.state["model.embed_tokens.weight"]))
         with self.assertRaisesRegex(ValueError, "already exists"):
             export_local(self.src, dest, 2)
+
+    def test_single_file_sha256_pin_rejects_modified_weights(self):
+        self.make_single()
+        source = self.src / "model.safetensors"
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        accepted = inspect_directory(self.src, 2, expected_sha256=digest)
+        self.assertEqual(accepted["tensor_count"], len(self.state))
+        with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
+            inspect_directory(self.src, 2, expected_sha256="0" * 64)
+        with self.assertRaisesRegex(ValueError, "lowercase hex"):
+            inspect_directory(self.src, 2, expected_sha256="malformed")
 
     def test_sharded_index_import_checks_all_keys(self):
         self.make_sharded()
