@@ -19,6 +19,8 @@ import torch.distributed as dist
 import uuid
 
 from compute.gpt2_shards import export_state, synthetic_state
+from compute.qwen2_shards import (
+    export_state as export_qwen2_state, synthetic_state as qwen2_synthetic_state)
 from compute.gpt2_generate import read_manifest
 from cluster_v031.checkpoints import inspect_bundle, inspect_file, validate_manifest, expected_files
 from cluster_v03.store import LeaseConflict
@@ -44,7 +46,8 @@ class SessionCoordinator:
                   workers INTEGER NOT NULL, prompt_json TEXT NOT NULL,
                   new_tokens INTEGER NOT NULL, master_host TEXT NOT NULL,
                   master_port INTEGER NOT NULL, config_json TEXT NOT NULL,
-                  error TEXT, retry_of TEXT
+                  error TEXT, retry_of TEXT,
+                  engine TEXT NOT NULL DEFAULT 'gpt2-tp'
                 );
                 CREATE TABLE IF NOT EXISTS tp_assignments (
                   session_id TEXT NOT NULL, rank INTEGER NOT NULL,
@@ -73,6 +76,9 @@ class SessionCoordinator:
                 "PRAGMA table_info(tp_sessions)")}
             if "retry_of" not in session_columns:
                 db.execute("ALTER TABLE tp_sessions ADD COLUMN retry_of TEXT")
+            if "engine" not in session_columns:
+                db.execute("""ALTER TABLE tp_sessions ADD COLUMN engine TEXT
+                              NOT NULL DEFAULT 'gpt2-tp'""")
             # A new coordinator cannot recover an old process's TCP listener.
             db.execute("""UPDATE tp_sessions SET state='failed',updated=?,
                           error='coordinator restarted; previous rendezvous lost'
@@ -117,7 +123,7 @@ class SessionCoordinator:
                        (now, row["id"]))
         self._sweep_stores(db, now)
 
-    def _select_nodes(self, db, workers, file_sizes, now):
+    def _select_nodes(self, db, workers, file_sizes, now, capability="tp_gpt2"):
         nodes = db.execute("SELECT * FROM nodes WHERE last_seen>=?",
                            (now - self.cluster.heartbeat_ttl,)).fetchall()
         active = self.cluster._active_reservations(db, now)
@@ -125,7 +131,7 @@ class SessionCoordinator:
         for node in nodes:
             caps = json.loads(node["capabilities"])
             reservation = active.get(node["id"], {"slots": 0, "ram": 0, "cpu": 0})
-            if ("tp_gpt2" not in caps or reservation["slots"] >= node["slots"]
+            if (capability not in caps or reservation["slots"] >= node["slots"]
                     or node["cpu_cores"] - reservation["cpu"] < 1):
                 continue
             free_ram = node["free_ram_mb"] - reservation["ram"]
@@ -181,10 +187,12 @@ class SessionCoordinator:
         # unbounded memory on the coordinator.
         inspect_file(source / "manifest.json", max_size=16_384)
         try:
-            manifest = read_manifest(source)
+            manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
         except (FileNotFoundError, KeyError, json.JSONDecodeError) as exc:
             raise ValueError("checkpoint manifest missing or invalid") from exc
         validate_manifest(manifest)
+        engine = ("qwen2-tp" if manifest["format"] == "opencompute-qwen2-tp-v1"
+                  else "gpt2-tp")
         world = manifest["workers"]
         if (not 1 <= world <= 4 or not 1 <= new_tokens <= 16
                 or not 1 <= len(prompt_ids) <= 32
@@ -206,7 +214,7 @@ class SessionCoordinator:
                     raise ValueError("checkpoint file missing, unsafe or too large")
                 shutil.copyfile(src, folder / name)
             return self._register_session(session_id, folder, manifest,
-                                          world, prompt_ids, new_tokens)
+                                          world, prompt_ids, new_tokens, engine=engine)
         except BaseException:
             shutil.rmtree(folder, ignore_errors=True)
             raise
@@ -237,6 +245,7 @@ class SessionCoordinator:
             prompt_ids = json.loads(row["prompt_json"])
             new_tokens = row["new_tokens"]
             expected = json.loads(row["config_json"])
+            engine = row["engine"]
             old_pins = {entry["name"]: dict(entry) for entry in db.execute(
                 "SELECT name,size,sha256 FROM tp_files WHERE session_id=?",
                 (old_session_id,))}
@@ -259,13 +268,13 @@ class SessionCoordinator:
                     raise ValueError("original shard missing or too large")
                 shutil.copyfile(original, dest / name)
             inspect_file(dest / "manifest.json", max_size=16_384)
-            manifest = read_manifest(dest)
+            manifest = json.loads((dest / "manifest.json").read_text(encoding="utf-8"))
             if manifest != expected:
                 raise ValueError("original checkpoint manifest changed")
             inspect_bundle(dest, manifest, expected=old_pins)
             response = self._register_session(new_id, dest, manifest, workers,
                                               prompt_ids, new_tokens,
-                                              retry_of=old_session_id)
+                                              retry_of=old_session_id, engine=engine)
             response["resume_mode"] = "fresh_group_from_original_prompt_no_kv_recovery"
             return response
         except BaseException:
@@ -273,8 +282,16 @@ class SessionCoordinator:
             raise
 
     def _register_session(self, session_id, folder, manifest,
-                          workers, prompt_ids, new_tokens, retry_of=None):
+                          workers, prompt_ids, new_tokens, retry_of=None,
+                          engine="gpt2-tp"):
         validate_manifest(manifest, expected_workers=workers)
+        if engine not in ("gpt2-tp", "qwen2-tp"):
+            raise ValueError("unsupported session engine")
+        correct_format = {
+            "gpt2-tp": "opencompute-gpt2-tp-v1",
+            "qwen2-tp": "opencompute-qwen2-tp-v1"}[engine]
+        if manifest.get("format") != correct_format:
+            raise ValueError("model architecture and session engine mismatch")
         pinned = inspect_bundle(folder, manifest)
         sizes = [pinned[f"rank_{rank}.pt"]["size"]
                  + (pinned["rank0_io.pt"]["size"] if rank == 0 else 0)
@@ -288,18 +305,20 @@ class SessionCoordinator:
                                      WHERE state IN ('preparing','running') LIMIT 1""").fetchone()
                 if exists:
                     raise LeaseConflict("only one active TP session is supported")
-                nodes = self._select_nodes(db, workers, sizes, now)
+                capability = ("tp_qwen2" if engine == "qwen2-tp" else "tp_gpt2")
+                nodes = self._select_nodes(db, workers, sizes, now,
+                                           capability=capability)
                 store = self._open_rendezvous()
                 port = int(store.port)
                 if not 1 <= port <= 65535:
                     raise RuntimeError("TCPStore did not acquire a valid port")
                 db.execute("""INSERT INTO tp_sessions(
                                id,state,created,updated,deadline,workers,prompt_json,
-                               new_tokens,master_host,master_port,config_json,error,retry_of)
-                               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                               new_tokens,master_host,master_port,config_json,error,retry_of,engine)
+                               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                            (session_id, "preparing", now, now, now + self.prepare_ttl,
                             workers, json.dumps(prompt_ids), new_tokens, "127.0.0.1",
-                            port, json.dumps(manifest), None, retry_of))
+                            port, json.dumps(manifest), None, retry_of, engine))
                 for item in pinned.values():
                     db.execute("""INSERT INTO tp_files(session_id,name,size,sha256)
                                   VALUES(?,?,?,?)""",
@@ -343,6 +362,7 @@ class SessionCoordinator:
             "prompt_ids": json.loads(row["prompt_json"]),
             "max_new_tokens": row["new_tokens"],
             "model": json.loads(row["config_json"]),
+            "engine": row["engine"],
             "retry_of": row["retry_of"],
             "error": row["error"],
         }
@@ -383,6 +403,7 @@ class SessionCoordinator:
         files = [index[name] for name in names]
         return {"assignment": {
             "session_id": session_id, "rank": rank,
+            "engine": row["engine"],
             "workers": row["workers"],
             "phase": row["assignment_state"],
             "run": row["state"] == "running",
