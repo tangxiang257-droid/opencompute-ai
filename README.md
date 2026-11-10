@@ -1,3 +1,18 @@
+# OpenCompute AI v0.4.8 — 多请求 Qwen2 PP 流水线调度与 KV 预算
+
+基于 v0.4.7 已通过测试的双阶段 Gloo PP，本版新增最多 **4 个独立请求**的交错计算与 **非阻塞 P2P**：Rank 0 可以提交请求 A 的前半层并继续计算请求 B，而 Rank 1 处理已收到的其他请求。每条请求拥有独立的 KV Cache，支持不同 Prompt 长度与 FP32/BF16 盘上权重；受请求数量、Token 上限及每 Rank 的理论 KV 内存预算限制。
+
+- [v0.4.8 多请求 PP 计算入口](compute/qwen2_pipeline_batch_v048.py)
+- [同一模型的顺序/异步执行重复基准](benchmarks/qwen2_multi_request_v048.py)
+- [模型文件、安全约束与多请求隔离测试](tests/test_qwen2_pipeline_batch_v048.py)
+- [独立 Hugging Face Qwen2 三 Prompt 数值验证](tests/test_qwen2_pipeline_batch_hf_v048.py)
+- [v0.4.8 方案、执行示例与安全边界](docs/v0.4.8-multi-request-pipeline.md)
+- [GitHub Actions CI 和 JSON 性能报告](https://github.com/tangxiang257-droid/opencompute-ai/actions)
+
+**实验限定：** 仍是可信本机 CPU Gloo 双进程，不是公网算力池或已接入网站的动态多用户推理。支持多请求交错不等于已证明真实 CPU 计算同时运行；是否提升 Token/s 以重复基准测试结果为准。理论 KV 限额不是完整进程 RSS 的硬上限，未运行官方 DeepSeek 完整预训练权重。
+
+---
+
 # OpenCompute AI v0.4.7 — 首个真实 Qwen2 流水线并行（PP）原型
 
 本版新增与原有 TP 张量并行**完全独立**的双 Rank Qwen2 PP 推理路径：Rank 0 运行前半 Transformer 层并持有 Embedding/LM Head，Rank 1 运行后半 Transformer 层，两端通过真实 Gloo send/recv 传递隐藏状态，KV Cache 按层分别保存在两个进程中。
