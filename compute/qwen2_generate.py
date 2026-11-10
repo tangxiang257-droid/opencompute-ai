@@ -6,6 +6,7 @@ rank 0 owns the full vocabulary head. For trusted localhost research only.
 import argparse
 import json
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -184,6 +185,16 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
             rss_sample = psutil.Process().memory_info().rss
         except (ImportError, OSError):
             rss_sample = 0
+        # Linux resource.ru_maxrss is KiB; this is a per-process peak,
+        # not a combined Worker tree or GPU peak. Other OSes report 0.
+        peak_rss = 0
+        if sys.platform.startswith("linux"):
+            try:
+                import resource
+                peak_rss = int(resource.getrusage(
+                    resource.RUSAGE_SELF).ru_maxrss * 1024)
+            except (ImportError, OSError):
+                pass
         record = profile_rank_stats(
             preflight_us=int(preflight_us),
             decode_us=int(elapsed * 1_000_000),
@@ -191,6 +202,7 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
             tokens=max_new_tokens,
             profiler=trace,
             rss_sample_bytes=int(rss_sample),
+            peak_rss_bytes_linux=peak_rss,
         )
         local = torch.tensor(record, dtype=torch.int64)
         observed = [torch.zeros_like(local) for _ in range(world)]
