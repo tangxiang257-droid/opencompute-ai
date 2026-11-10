@@ -235,3 +235,29 @@ jobs:
         run: python -m benchmarks.tp_session_demo
       - name: Simulate 3 heterogeneous devices without a cloud server
         run: python -m benchmarks.cluster_sim
+
+  windows-launcher-syntax:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse PowerShell launcher scripts on Windows
+        shell: powershell
+        run: |
+          $scripts = @(
+            "scripts/start-local.ps1",
+            "scripts/status-local.ps1",
+            "scripts/stop-local.ps1"
+          )
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | Format-List
+              throw "PowerShell syntax validation failed: $script"
+            }
+          }
