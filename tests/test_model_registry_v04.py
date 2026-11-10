@@ -39,14 +39,14 @@ class ModelCatalogTests(unittest.TestCase):
         self.assertGreaterEqual(len({i["family"] for i in items}), 3)
         self.assertEqual({m["id"] for m in items if m["launchable"]},
                          {"gpt2-synthetic", "gpt2-local-checkpoint",
-                          "qwen2-synthetic"})
+                          "qwen2-synthetic", "qwen2-local-checkpoint"})
         deepseek = next(m for m in items
                         if m["id"] == "deepseek-r1-distill-qwen-1.5b")
         self.assertEqual(deepseek["architecture"], "qwen2")
         self.assertFalse(deepseek["launchable"])
         self.assertEqual(
             self.client.get("/v0.4/models?family=DeepSeek").json()["count"], 3)
-        self.assertEqual(len(list_models(family="qwen")), 2)
+        self.assertEqual(len(list_models(family="qwen")), 3)
 
     def test_no_arbitrary_unknown_model_or_engine(self):
         self.assertEqual(self.client.get("/v0.4/models/random-model").status_code, 404)
@@ -121,7 +121,19 @@ class ModelCatalogTests(unittest.TestCase):
                                   json={**model, "checkpoint": "trusted"})
         self.assertEqual(result.status_code, 200, result.text)
         self.coordinator.create_checkpoint.assert_called_once_with(
-            checkpoint="trusted", prompt_ids=[1, 2], new_tokens=3)
+            checkpoint="trusted", prompt_ids=[1, 2], new_tokens=3,
+            expected_engine="gpt2-tp")
+
+    def test_qwen2_checkpoint_uses_explicit_architecture_guard(self):
+        request = {"model_id": "qwen2-local-checkpoint",
+                   "checkpoint": "trusted-qwen", "prompt_ids": [1, 2],
+                   "max_new_tokens": 2}
+        reply = self.client.post("/v0.4/sessions",
+                                 headers=self.auth, json=request)
+        self.assertEqual(reply.status_code, 200, reply.text)
+        self.coordinator.create_checkpoint.assert_called_once_with(
+            checkpoint="trusted-qwen", prompt_ids=[1, 2], new_tokens=2,
+            expected_engine="qwen2-tp")
 
     def test_invalid_mode_rejected_before_compute(self):
         response = self.client.post("/v0.4/sessions", headers=self.auth,
