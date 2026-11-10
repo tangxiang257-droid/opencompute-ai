@@ -85,7 +85,7 @@ def load_rank(folder, rank, m, *, layer_cache_mib=0, io_cache_mib=0):
 @torch.inference_mode()
 def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
              preflight_error=None, layer_cache_mib=0, io_cache_mib=0,
-             profile=False):
+             profile=False, single_rank_fastpath=True):
     preflight_started_ns = time.perf_counter_ns()
     error = preflight_error
     m, layers, io = None, None, None
@@ -106,19 +106,25 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
                 io_cache_mib=io_cache_mib)
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
+    local_only = world == 1 and single_rank_fastpath
     ready = torch.tensor([0 if error else 1], dtype=torch.int32)
-    dist.all_reduce(ready, op=dist.ReduceOp.MIN)
+    if not local_only:
+        dist.all_reduce(ready, op=dist.ReduceOp.MIN)
     if int(ready.item()) != 1:
         raise ValueError(f"Qwen2 rank preflight failed: {error or 'peer rank failed validation'}")
     preflight_us = (time.perf_counter_ns() - preflight_started_ns) // 1000
     trace = None
 
     def broadcast(tensor):
+        if local_only:
+            return None
         if trace is None:
             return dist.broadcast(tensor, src=0)
         return trace.broadcast(tensor, src=0)
 
     def reduce_sum(tensor):
+        if local_only:
+            return None
         if trace is None:
             return dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
         return trace.all_reduce(tensor, op=dist.ReduceOp.SUM)
@@ -176,8 +182,9 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
                     if m["format"] == CHUNK_FORMAT
                     else tensor_bytes(layers) + tensor_bytes(io))
     size = torch.tensor([weight_bytes], dtype=torch.int64)
-    gathered = [torch.zeros_like(size) for _ in range(world)]
-    dist.all_gather(gathered, size)
+    gathered = [size] if local_only else [torch.zeros_like(size) for _ in range(world)]
+    if not local_only:
+        dist.all_gather(gathered, size)
     profiled_ranks = None
     if profile:
         try:
@@ -205,9 +212,10 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
             peak_rss_bytes_linux=peak_rss,
         )
         local = torch.tensor(record, dtype=torch.int64)
-        observed = [torch.zeros_like(local) for _ in range(world)]
+        observed = [local] if local_only else [torch.zeros_like(local) for _ in range(world)]
         # Profiling does not include this final reporting collective.
-        dist.all_gather(observed, local)
+        if not local_only:
+            dist.all_gather(observed, local)
         if rank == 0:
             profiled_ranks = [interpret_rank_stats(item.tolist())
                               for item in observed]
@@ -221,6 +229,7 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
             "weight_bytes_per_rank": [int(x.item()) for x in gathered],
             **({"profile": {
                 "schema": "opencompute-qwen2-tp-profile-v1",
+                "local_single_rank_collectives_skipped": bool(local_only),
                 "ranks": profiled_ranks,
                 "scope": "trusted same-host Gloo; tensor bytes not actual network traffic",
                 "decode_includes": "prefill and greedy steps; excludes model preflight",
@@ -238,6 +247,8 @@ def main():
     parser.add_argument("--report-logits", action="store_true")
     parser.add_argument("--profile", action="store_true",
                         help="collect per-rank timing and logical collective payload")
+    parser.add_argument("--no-single-rank-fastpath", action="store_true",
+                        help="A/B baseline: execute redundant Gloo calls even with one rank")
     parser.add_argument("--layer-cache-mib", type=int, default=0)
     parser.add_argument("--io-cache-mib", type=int, default=0)
     args = parser.parse_args()
@@ -257,7 +268,8 @@ def main():
                            rank, world, args.report_logits, input_error,
                            layer_cache_mib=args.layer_cache_mib,
                            io_cache_mib=args.io_cache_mib,
-                           profile=args.profile)
+                           profile=args.profile,
+                           single_rank_fastpath=not args.no_single_rank_fastpath)
         if rank == 0:
             print(json.dumps(outcome, ensure_ascii=False), flush=True)
     finally:
