@@ -1,4 +1,16 @@
-# OpenCompute AI v0.5.0 — 动态请求队列接入 Qwen2 双阶段推理
+# OpenCompute AI v0.5.1 — Web Dashboard + v0.5.0 live Qwen2 queue
+
+**浏览器控制台：** 启动 API 后访问 `http://127.0.0.1:8000/`。控制台使用管理员密钥连接现有集群 API，提供算力总览、Worker 设备清单、CPU 任务提交、模型目录、Qwen2 队列状态和设备接入说明。
+
+- [Web 控制台](web/index.html)
+- [控制台打包回归测试](tests/test_web_dashboard_v051.py)
+- [Qwen2 实时推理服务](cluster_v05/qwen2_service.py) · [HTTP API](cluster_v05/api.py)
+- [v0.5.0 服务配置和部署说明](docs/v0.5.0-live-qwen2-queue.md)
+
+**当前边界：** 这是管理员密钥控制台，不是多用户账号注册系统。通用 Worker 目前在可信私有网络中执行白名单 CPU 示例任务；Qwen2 PP 是本机 CPU 推理实验，尚未分布到远程个人设备。不要将默认 HTTP API 直接暴露到公网。
+
+---
+
 
 新增 FastAPI 推理入口和实时请求服务：动态请求先进入 v0.4.9 公平队列，再组成最多 4 条请求的 microbatch，交给已验证的 Qwen2 两阶段 Gloo 推理引擎。
 
