@@ -58,6 +58,10 @@ class FairRequestQueueTests(unittest.IsolatedAsyncioTestCase):
             await ticket.result()
         with self.assertRaises(asyncio.TimeoutError):
             await asyncio.wait_for(queue.get(), timeout=0.02)
+        # Retrieve the queue's terminal Future exception as well; the first
+        # waiter observed its deadline directly before the consumer pruned it.
+        with self.assertRaisesRegex(TimeoutError, "expired in queue"):
+            await ticket.result()
         self.assertEqual(queue.pending_count, 0)
 
     async def test_result_deadline_does_not_abort_dispatched_work(self):
