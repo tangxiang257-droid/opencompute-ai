@@ -1,3 +1,17 @@
+# OpenCompute AI v0.4 — 多模型算力平台（模型中心第一阶段）
+
+OpenCompute AI 不绑定某一家模型厂商。已建立统一模型目录、按架构声明的适配器能力和模型选择页面：**DeepSeek、Qwen、Llama、GPT-2 等模型可以统一管理，但目前只有原 GPT-2 实验引擎真正可运行**。未适配模型不会被误标为可执行。
+
+- **[模型选择网页](cluster_v04/console.html)**：启动后访问 `http://127.0.0.1:8000/v0.4/console`
+- **[多模型架构、真实支持状态和开发顺序](docs/v0.4-multi-model-architecture.md)**
+- **[模型目录及后端能力表](cluster_v04/models.py)**
+- **[模型分发接口及单元测试](tests/test_model_registry_v04.py)**
+- **[GitHub Actions 测试](https://github.com/tangxiang257-droid/opencompute-ai/actions)**
+
+此阶段不自动下载模型，也没有实现 DeepSeek/Qwen/Llama 分布式权重执行，仍以可信本机研究环境为边界。
+
+---
+
 # OpenCompute AI — v0.3.5 多 Rank 安全预检查
 
 新增**分布式启动前错误同步**：如果 Rank 0 的 Prompt 解析失败、Token 越界，或任一 Rank 的检查点加载异常，所有仍存活的 Rank 都将在开始正式推理前通过 Gloo 预检查一致退出。避免已知异常导致其他 Rank 卡在下一次 Broadcast。
