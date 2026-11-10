@@ -1,3 +1,17 @@
+# OpenCompute AI v0.4.4 — BF16 权重与可信离线模型验证
+
+支持 **Qwen2/DeepSeek-Qwen 架构的 BF16 Safetensors 分块存储**、可选择的 byte-bounded LRU 权重缓存，并提供 Tokenizer 与 Hugging Face 完整模型的 **离线、显式授权的数值对照**流程。GPU/MoE/公网陌生节点仍未支持。
+
+- [v0.4.4 完整技术文档、命令和验收边界](docs/v0.4.4-bf16-offline-reference.md)
+- [Qwen2 BF16 分块存储和 LRU 缓存](compute/qwen2_chunked.py)
+- [离线官方模型 Tokenizer / HF 参考验证入口](benchmarks/qwen2_offline_reference.py)
+- [BF16、内存缓存与两 Rank 回归测试](tests/test_qwen2_bf16_v044.py)
+- [GitHub Actions 检查](https://github.com/tangxiang257-droid/opencompute-ai/actions)
+
+**重要限制**：BF16 仅改变分片的**磁盘存储精度**，参与计算的权重按需转换为 FP32，不能宣称推理内存直接减半。当前尚未下载或实际运行官方完整 DeepSeek-R1-Distill-Qwen-1.5B 检查点；在模型中心仍显示「待适配」，直到真实权重的数值/性能测试通过。
+
+---
+
 # OpenCompute AI v0.4.3 — Qwen2 大词表分块与逐层权重加载
 
 新增 **Qwen2 TP v2** 数据格式：Safetensors 词表行分块、逐 Rank/逐层分片、按需读取和独立 SHA-256 / 权限校验。支持可信本地模型文件按 v2 格式导出，并用现有算力池调度两个 Worker 协作推理。原 GPT-2 与 Qwen2 v1 推理代码保持兼容。
