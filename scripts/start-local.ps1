@@ -18,14 +18,18 @@ function New-UrlSafeSecret {
     finally { $rng.Dispose() }
 }
 function Read-DotEnvValue([string]$Name, [string[]]$Lines) {
+    $prefix = $Name + "="
     foreach ($line in $Lines) {
-        $pattern = '^\s*' + [regex]::Escape($Name) + '\s*=\s*(.*?)\s*
-        if ($match.Success) {
-            $value = $match.Groups[1].Value.Trim()
-            if ($value.Length -ge 2 -and
-                (($value.StartsWith('"') -and $value.EndsWith('"')) -or
-                 ($value.StartsWith("'") -and $value.EndsWith("'")))) {
-                $value = $value.Substring(1, $value.Length - 2)
+        $trimmed = $line.Trim()
+        if ($trimmed.StartsWith($prefix)) {
+            $value = $trimmed.Substring($prefix.Length).Trim()
+            if ($value.Length -ge 2) {
+                $first = [int][char]$value[0]
+                $last = [int][char]$value[$value.Length - 1]
+                if (($first -eq 34 -and $last -eq 34) -or
+                    ($first -eq 39 -and $last -eq 39)) {
+                    $value = $value.Substring(1, $value.Length - 2)
+                }
             }
             return $value
         }
