@@ -18,7 +18,7 @@
 - [v0.4.9 队列公平性、超时与生命周期测试](tests/test_request_queue_v049.py)
 - [v0.4.9 设计、接口示例与集成边界](docs/v0.4.9-fair-request-queue.md)
 
-**重要边界：** 这是独立调度原语，尚未接入 v0.4.8 Qwen2 双 Rank Gloo 推理进程、FastAPI 或网站控制台。CI 测试通过只证明队列契约，不代表动态多用户模型服务已经上线。
+**版本边界：** v0.4.9 本身交付的是独立调度原语；其与 Qwen2 PP/FastAPI 的第一版整合见上方 v0.5.0。v0.5.0 仍是本机 CPU 实验服务，尚非公网多租户或远程算力池。
 
 ---
 
@@ -33,7 +33,7 @@
 - [v0.4.8 方案、执行示例与安全边界](docs/v0.4.8-multi-request-pipeline.md)
 - [GitHub Actions CI 和 JSON 性能报告](https://github.com/tangxiang257-droid/opencompute-ai/actions)
 
-**实验限定：** 仍是可信本机 CPU Gloo 双进程，不是公网算力池或已接入网站的动态多用户推理。支持多请求交错不等于已证明真实 CPU 计算同时运行；是否提升 Token/s 以重复基准测试结果为准。理论 KV 限额不是完整进程 RSS 的硬上限，未运行官方 DeepSeek 完整预训练权重。
+**实验限定：** v0.4.8 引擎本身仍是可信本机 CPU Gloo 双进程；v0.5.0 在其上新增了首版本地 HTTP 请求服务。两者都不是公网算力池或真实跨设备加速。支持多请求交错不等于已证明真实 CPU 计算同时运行；是否提升 Token/s 以重复基准测试结果为准。理论 KV 限额不是完整进程 RSS 的硬上限，未运行官方 DeepSeek 完整预训练权重。
 
 ---
 
