@@ -85,3 +85,52 @@ test('transient connection failure can retry without retyping the active key',as
     assert.equal(d.doc.getElementById('connectionText').textContent,'集群在线');
   }finally{d.close()}
 });
+
+test('older model status cannot overwrite a newer disabled status',async()=>{
+  let qcount=0,release;
+  const d=setup({handler:async p=>{
+    if(p==='/v0.3/status')return {ok:true,status:200,json:async()=>cluster};
+    if(p==='/v0.5/status'){
+      if(++qcount===2)return new Promise(r=>release=r);
+      return {ok:true,status:200,json:async()=>({enabled:qcount===1,running:qcount===1})};
+    }
+    return {ok:true,status:200,json:async()=>({models:[]})};
+  }});
+  try {
+    connect(d.doc);await tick();d.doc.getElementById('refreshInference').click();await tick();
+    d.doc.getElementById('refreshInference').click();await tick();
+    release({ok:true,status:200,json:async()=>({enabled:true,running:true})});await tick();
+    assert.equal(d.doc.getElementById('submitInference').disabled,true);
+    assert.equal(d.doc.getElementById('qwenBadge').textContent,'未配置模型包');
+  }finally{d.close()}
+});
+
+test('older system diagnostics cannot replace newer degraded state',async()=>{
+  let n=0,release;
+  const report=state=>({version:'0.6.0',uptime_seconds:10,state,database:'ok',workers:{online:1,registered:1,cpu_cores:2},tasks:{queued:0},qwen2:{enabled:false,running:false}});
+  const d=setup({handler:async p=>{
+    if(p==='/v0.6/system'){if(++n===1)return new Promise(r=>release=r);return {ok:true,status:200,json:async()=>report('degraded')}}
+    return {ok:true,status:200,json:async()=>p==='/v0.3/status'?cluster:{models:[],enabled:false,running:false}};
+  }});
+  try {
+    connect(d.doc);await tick();d.doc.getElementById('refreshSystem').click();await tick();
+    d.doc.getElementById('refreshSystem').click();await tick();
+    release({ok:true,status:200,json:async()=>report('ready')});await tick();
+    assert.equal(d.doc.getElementById('systemState').textContent,'需要处理');
+  }finally{d.close()}
+});
+
+test('old inference cleanup cannot unlock a newer in-flight request',async()=>{
+  const pending=[];
+  const d=setup({handler:async p=>{
+    if(p==='/v0.5/requests')return new Promise(r=>pending.push(r));
+    return {ok:true,status:200,json:async()=>p==='/v0.3/status'?cluster:{models:[],enabled:true,running:true}};
+  }});
+  const submit=()=>d.doc.getElementById('inferenceForm').dispatchEvent(new d.w.Event('submit',{cancelable:true}));
+  try {
+    connect(d.doc);await tick();submit();await tick();d.doc.getElementById('disconnectBtn').click();
+    connect(d.doc);await tick();submit();await tick();
+    pending[0]({ok:true,status:200,json:async()=>({generated_ids:[1]})});await tick();
+    assert.equal(d.doc.getElementById('submitInference').disabled,true);
+  }finally{d.close()}
+});
