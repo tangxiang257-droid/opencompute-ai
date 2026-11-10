@@ -10,6 +10,8 @@ import sys
 import tempfile
 import unittest
 from collections.abc import Mapping
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 from safetensors.torch import save_file
@@ -20,6 +22,8 @@ from compute.qwen2_generate import read_manifest, load_rank
 from compute.qwen2_reference import generate_dense
 from compute.qwen2_safetensors import export_local, plan_config
 from cluster_v031.checkpoints import inspect_bundle
+from cluster_v03.store import ClusterStore
+from cluster_v031.coordinator import SessionCoordinator
 
 
 class StreamingFormatTests(unittest.TestCase):
@@ -100,6 +104,61 @@ class StreamingFormatTests(unittest.TestCase):
             output.write(b"changed")
         with self.assertRaisesRegex(ValueError, "integrity mismatch"):
             inspect_bundle(self.root/"bundle", meta, expected=pinned)
+
+    def test_header_shape_mismatch_rejected_before_compute(self):
+        output = self.root / "bad-header"
+        meta = export_chunked(self.state, self.config, output, 2, chunk_rows=13)
+        bad = output / "rank0_head_000.safetensors"
+        save_file({"weight": torch.zeros(1, meta["hidden"])}, str(bad))
+        with self.assertRaisesRegex(ValueError, "invalid Safetensors header tensor"):
+            load_rank(output, 0, meta)
+
+    def test_managed_coordinator_pins_rank_scoped_v2_files_and_safe_retry(self):
+        checkpoint_root = self.root / "trusted"
+        checkpoint_root.mkdir()
+        source = checkpoint_root / "chunked"
+        meta = export_chunked(self.state, self.config, source, 2, chunk_rows=13)
+        store = ClusterStore(self.root / "cluster.sqlite")
+        agents = []
+        for label in ("rank-a", "rank-b"):
+            node = store.register(name=label, platform="linux",
+                                  cpu_cores=4, ram_mb=4096,
+                                  compute_score=100, slots=1,
+                                  capabilities=["tp_qwen2"])
+            store.heartbeat(node["id"],node["node_token"],
+                            free_ram_mb=3072,cpu_load_pct=0)
+            agents.append(node)
+        coordinator = SessionCoordinator(
+            store,self.root/"sessions",checkpoint_root=checkpoint_root)
+        with patch.object(coordinator, "_open_rendezvous",
+                          return_value=SimpleNamespace(port=29642)):
+            created = coordinator.create_checkpoint(
+                checkpoint="chunked",prompt_ids=[1,2,3],
+                new_tokens=3,expected_engine="qwen2-tp")
+            sid=created["session_id"]
+            byrank={}
+            for agent in agents:
+                assignment=coordinator.poll(agent["id"],agent["node_token"])["assignment"]
+                self.assertEqual(assignment["engine"],"qwen2-tp")
+                byrank[assignment["rank"]]=(agent,assignment)
+                self.assertEqual(
+                    {entry["name"] for entry in assignment["files"]},
+                    set(rank_files(meta,assignment["rank"])))
+            a0=byrank[0][0]
+            with self.assertRaises(PermissionError):
+                coordinator.authorize_file(
+                    a0["id"],a0["node_token"],sid,
+                    "rank_1_layer_000.safetensors")
+            coordinator.cancel(sid)
+            for agent in agents:
+                coordinator.stopped(agent["id"],agent["node_token"],sid)
+            retry=coordinator.retry(sid)
+            self.assertNotEqual(retry["session_id"],sid)
+            self.assertEqual(retry["engine"],"qwen2-tp")
+            self.assertEqual(retry["retry_of"],sid)
+            self.assertEqual(set(inspect_bundle(
+                self.root/"sessions"/retry["session_id"],meta)),
+                set(all_files(meta)))
 
     def test_source_rows_loaded_without_whole_vocab_getitem(self):
         state=self.state
