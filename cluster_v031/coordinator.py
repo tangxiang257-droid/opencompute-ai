@@ -205,7 +205,8 @@ class SessionCoordinator:
             shutil.rmtree(folder, ignore_errors=True)
             raise
 
-    def create_checkpoint(self, *, checkpoint, prompt_ids, new_tokens):
+    def create_checkpoint(self, *, checkpoint, prompt_ids, new_tokens,
+                          expected_engine=None):
         """Use locally trusted, already exported GPT-2 shards; no model downloads."""
         if (not isinstance(checkpoint, str)
                 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", checkpoint)
@@ -226,6 +227,8 @@ class SessionCoordinator:
         validate_manifest(manifest)
         engine = ("qwen2-tp" if manifest["format"] == "opencompute-qwen2-tp-v1"
                   else "gpt2-tp")
+        if expected_engine is not None and engine != expected_engine:
+            raise ValueError("checkpoint architecture does not match selected model")
         world = manifest["workers"]
         if (not 1 <= world <= 4 or not 1 <= new_tokens <= 16
                 or not 1 <= len(prompt_ids) <= 32
