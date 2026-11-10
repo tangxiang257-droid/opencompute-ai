@@ -9,3 +9,6 @@ uvicorn>=0.30,<1
 
 # Offline Qwen2 local weight inspection; no model downloads.
 safetensors>=0.4.5,<1
+
+# Required by safetensors.torch.save_file during offline import fixtures.
+numpy>=1.24,<3
