@@ -19,7 +19,7 @@ class LeaseConflict(Exception):
     pass
 
 
-ALLOWED_KINDS = {"sum", "sha256", "matmul_checksum", "tp_gpt2"}
+ALLOWED_KINDS = {"sum", "sha256", "matmul_checksum", "tp_gpt2", "tp_qwen2"}
 
 
 def validate_payload(kind, payload):
