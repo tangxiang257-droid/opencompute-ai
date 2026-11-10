@@ -94,6 +94,13 @@ def storage_plan(meta):
     rank_bytes = 4 * meta["layers"] * per_layer_elements
     limit = MAX_FILE_BYTES - OUTPUT_HEADROOM
     can_export = io_bytes <= limit and rank_bytes <= limit
+    chunk_rows = min(meta["vocab"], max(1, (64 * 1024 * 1024) // (4 * h)))
+    chunk_count = (meta["vocab"] + chunk_rows - 1) // chunk_rows
+    chunk_file_count = (2 + w * meta["layers"]
+                        + chunk_count * (1 if meta["tied_embeddings"] else 2))
+    chunked_possible = (4 * per_layer_elements + OUTPUT_HEADROOM <= MAX_FILE_BYTES
+                        and 4 * chunk_rows * h + OUTPUT_HEADROOM <= MAX_FILE_BYTES
+                        and chunk_count <= 128 and chunk_file_count <= 512)
     return {
         "architecture": "qwen2",
         "source": meta["source"],
@@ -102,6 +109,10 @@ def storage_plan(meta):
         "rank_shard_estimated_bytes_fp32": rank_bytes,
         "current_per_file_limit_bytes": MAX_FILE_BYTES,
         "exportable_under_current_limit": can_export,
+        "chunked_v2_exportable_by_size": chunked_possible,
+        "chunked_v2_chunk_rows": chunk_rows,
+        "chunked_v2_file_count": chunk_file_count,
+        "chunked_v2_estimated_largest_layer_bytes": 4 * per_layer_elements,
         "reason": ("within current FP32 rank file envelope" if can_export else
                    "rank0_io.pt or a rank_N.pt is projected to exceed "
                    "the 512 MB file limit; requires chunked IO and memory-aware loading"),
@@ -137,6 +148,23 @@ class LazySafetensors(Mapping):
             value = data.get_tensor(key)
         if tuple(value.shape) != self.expected[key]:
             raise ValueError("tensor shape changed after metadata inspection")
+        return value
+
+    def get_rows(self, key, first, last):
+        """Return just the indexed Safetensors rows, not a whole vocab matrix."""
+        if key not in self.mapping or len(self.expected[key]) != 2:
+            raise ValueError("not a known matrix for row slices")
+        shape = self.expected[key]
+        if (type(first) is not int or type(last) is not int
+                or not 0 <= first < last <= shape[0]):
+            raise ValueError("invalid source tensor row range")
+        from safetensors import safe_open
+        file = self.root / self.mapping[key]
+        _regular(file, MAX_WEIGHT_FILE_BYTES)
+        with safe_open(str(file), framework="pt", device="cpu") as data:
+            value = data.get_slice(key)[first:last]
+        if tuple(value.shape) != (last-first, shape[1]):
+            raise ValueError("source weight shape changed during row slicing")
         return value
 
 
@@ -225,11 +253,15 @@ def inspect_directory(model_dir, workers, *, verify_headers=True,
             "weights": LazySafetensors(root, mapping, shapes)}
 
 
-def export_local(model_dir, output, workers, *, expected_sha256=None):
-    """Export only small checked models compatible with the current TP file caps."""
+def export_local(model_dir, output, workers, *, expected_sha256=None,
+                 chunked=False):
+    """Export a trusted model in v1, or v2 chunked layout when requested."""
     inspected = inspect_directory(model_dir, workers,
                                   expected_sha256=expected_sha256)
-    if not inspected["plan"]["exportable_under_current_limit"]:
+    if chunked:
+        if not inspected["plan"]["chunked_v2_exportable_by_size"]:
+            raise ValueError("v2 rank layer or chunk exceeds safe 512MB/file envelope")
+    elif not inspected["plan"]["exportable_under_current_limit"]:
         raise ValueError(inspected["plan"]["reason"])
     target = Path(output)
     source = Path(model_dir).resolve(strict=True)
@@ -243,8 +275,14 @@ def export_local(model_dir, output, workers, *, expected_sha256=None):
     # validate input *before* invoking torch.save via the existing exporter
     config = _json_file(source / "config.json", MAX_CONFIG_BYTES)
     try:
-        manifest = export_state(inspected["weights"], config, target, workers,
-                                source=source.name)
+        if chunked:
+            from compute.qwen2_chunked import export_chunked
+            manifest = export_chunked(
+                inspected["weights"], config, target, workers,
+                source=source.name)
+        else:
+            manifest = export_state(inspected["weights"], config, target, workers,
+                                    source=source.name)
         from cluster_v031.checkpoints import inspect_bundle
         inspect_bundle(target, manifest)
         return manifest
@@ -262,7 +300,9 @@ def main():
     parser.add_argument("--model-dir", help="directory with config.json and safetensors")
     parser.add_argument("--config", help="config.json for size planning only")
     parser.add_argument("--workers", type=int, default=2)
-    parser.add_argument("--export-to", help="export currently supported small weights")
+    parser.add_argument("--export-to", help="export compatible trusted Qwen2 shards")
+    parser.add_argument("--chunked", action="store_true",
+                        help="use v2 streaming Safetensors layer/chunk format")
     parser.add_argument("--expected-sha256",
                         help="trusted SHA-256 for a single local Safetensors weight file")
     args = parser.parse_args()
@@ -275,7 +315,8 @@ def main():
         result = plan_config(config, args.workers)
     elif args.export_to:
         manifest = export_local(args.model_dir, args.export_to, args.workers,
-                                expected_sha256=args.expected_sha256)
+                                expected_sha256=args.expected_sha256,
+                                chunked=args.chunked)
         result = {"exported": True, "manifest": manifest}
     else:
         inspected = inspect_directory(
