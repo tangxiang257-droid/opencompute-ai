@@ -84,17 +84,36 @@ def download_and_verify(base, assignment, node_id, token, data_root):
     if folder.is_symlink():
         raise ValueError("unsafe cached model directory symlink")
     folder.mkdir(parents=True, exist_ok=True)
-    required = {"manifest.json", f"rank_{rank}.pt"}
-    if rank == 0:
-        required.add("rank0_io.pt")
     entries = assignment.get("files")
-    if (not isinstance(entries, list) or len(entries) != len(required)
+    if (not isinstance(entries, list) or not 2 <= len(entries) <= 512
             or any(not isinstance(entry, dict) for entry in entries)):
         raise ValueError("unexpected manifest files")
     names = [entry.get("name") for entry in entries]
-    if (any(not isinstance(name, str) for name in names)
-            or set(names) != required or len(set(names)) != len(names)):
+    if any(not isinstance(name, str) for name in names) or len(set(names)) != len(names):
         raise ValueError("unexpected or duplicate manifest files")
+    v2 = engine == "qwen2-tp" and any(
+        name.endswith(".safetensors") for name in names)
+    if v2:
+        def assigned_name(name):
+            return (name == "manifest.json" or
+                    re.fullmatch(r"rank_" + str(rank)
+                                 + r"_layer_[0-9]{3}\.safetensors", name)
+                    is not None or
+                    (rank == 0 and (name == "rank0_norm.safetensors"
+                      or re.fullmatch(r"rank0_(embed|head)_[0-9]{3}\.safetensors",
+                                      name) is not None)))
+        if "manifest.json" not in names or not all(map(assigned_name, names)):
+            raise ValueError("unsafe v2 assigned chunk names")
+        required = set(names)
+    else:
+        required = {"manifest.json", f"rank_{rank}.pt"}
+        if rank == 0:
+            required.add("rank0_io.pt")
+        if set(names) != required or len(entries) != len(required):
+            raise ValueError("unexpected or duplicate manifest files")
+    if sum(entry.get("size", 0) for entry in entries
+           if type(entry.get("size")) is int) > 8_000_000_000:
+        raise ValueError("assigned rank exceeds 8 GB disk budget")
     # Validate all descriptors before issuing any network request.
     for entry in entries:
         name = entry["name"]
@@ -146,6 +165,12 @@ def download_and_verify(base, assignment, node_id, token, data_root):
 
     config = read_manifest(folder)
     validate_manifest(config, expected_workers=assignment["workers"])
+    if v2:
+        from compute.qwen2_chunked import FORMAT as CHUNK_FORMAT, rank_files
+        if config["format"] != CHUNK_FORMAT or set(rank_files(config, rank)) != required:
+            raise ValueError("manifest chunk layout does not match assigned files")
+    elif config["format"] == "opencompute-qwen2-tp-v2":
+        raise ValueError("v2 checkpoint requires its complete chunk file list")
     # Warm disk cache and validate tensor shapes. Inference process reloads its
     # own shard later; weights are NOT kept resident across this boundary.
     layers, io = load_rank(folder, rank, config)
