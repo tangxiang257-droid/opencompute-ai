@@ -5,6 +5,7 @@ from cluster_v03.api import create_router as create_cluster_router
 from cluster_v03.store import ClusterStore
 from cluster_v031.api import create_router as create_tp_router
 from cluster_v031.coordinator import SessionCoordinator
+from cluster_v04.api import create_model_router
 from pydantic import BaseModel, Field
 import json
 import hmac
@@ -34,11 +35,22 @@ tp_sessions = SessionCoordinator(
     checkpoint_root=os.getenv("OPENCOMPUTE_TP_CHECKPOINTS", "./.opencompute/checkpoints"))
 app.include_router(create_tp_router(tp_sessions,
     admin_key=os.getenv("OPENCOMPUTE_ADMIN_KEY", "")))
+app.include_router(create_model_router(tp_sessions,
+    admin_key=os.getenv("OPENCOMPUTE_ADMIN_KEY", "")))
 app.include_router(create_cluster_router(
     cluster_db,
     admin_key=os.getenv("OPENCOMPUTE_ADMIN_KEY", ""),
     join_key=os.getenv("OPENCOMPUTE_JOIN_KEY", ""),
 ))
+
+@app.get("/v0.4/console", include_in_schema=False)
+def model_console():
+    """Model directory / experimental runner selection for trusted localhost."""
+    return FileResponse(
+        Path(__file__).resolve().parent.parent / "cluster_v04" / "console.html",
+        media_type="text/html"
+    )
+
 
 @app.get("/v0.3/console", include_in_schema=False)
 def cluster_console():
