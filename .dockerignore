@@ -1,0 +1,12 @@
+.git
+.venv
+.opencompute
+.env
+.env.*
+!.env.example
+**/__pycache__
+**/node_modules
+web/tests
+*.sqlite
+*.sqlite-*
+*.log

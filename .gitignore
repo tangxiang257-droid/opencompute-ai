@@ -2,6 +2,8 @@
 *.db
 __pycache__/
 .pytest_cache/
+.venv/
+node_modules/
 
 # Generated model checkpoints and temporary profiling data
 generated/

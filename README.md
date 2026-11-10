@@ -1,3 +1,15 @@
+# OpenCompute AI v0.6.0 — 可恢复任务与连接诊断
+
+新增任务详情、取消/重试与筛选，连接诊断页、可主动断开的管理员会话、正确的跨平台 Worker 接入命令，以及可选 HTTPS 入口。沿用现有数据库和模型引擎。
+
+- [v0.6 更新、迁移与部署检查](docs/v0.6-operations.md)
+- [只读部署检查脚本](scripts/check-deployment.py) · [可选 HTTPS Compose](compose.public.yaml)
+- [网页交互回归](web/tests/dashboard.test.cjs) · [真实浏览器/API/Worker 集成检查](web/tests/browser-smoke.py)
+
+这是单管理员研究控制台，尚非陌生设备、多用户公开算力服务。普通 CPU 白名单任务可操作；Qwen2 仍是本机 CPU 实验，未实现远程设备大模型加速。
+
+---
+
 # OpenCompute AI v0.5.1 — Web Dashboard + v0.5.0 live Qwen2 queue
 
 **浏览器控制台：** 启动 API 后访问 `http://127.0.0.1:8000/`。控制台使用管理员密钥连接现有集群 API，提供算力总览、Worker 设备清单、CPU 任务提交、模型目录、Qwen2 队列状态和设备接入说明。

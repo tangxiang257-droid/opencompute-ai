@@ -25,7 +25,7 @@ class WebDashboardTests(unittest.TestCase):
             self.assertNotIn("python -m app.worker", content)
 
     def test_dashboard_exposes_real_cluster_workflows(self):
-        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+        html = (ROOT / "web" / "index.html").read_text(encoding="utf-8") + (ROOT / "web" / "dashboard.js").read_text(encoding="utf-8")
         for expected in (
             "算力总览", "设备节点", "任务队列", "模型中心", "推理实验",
             "设备接入与 API", "/v0.3/status", "/v0.3/tasks",
