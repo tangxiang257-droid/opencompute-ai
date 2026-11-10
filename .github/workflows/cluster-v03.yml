@@ -257,7 +257,7 @@ jobs:
               [ref]$errors
             ) | Out-Null
             if ($errors.Count -gt 0) {
-              $errors | Format-List
+              $errors | Select-Object Message, Extent, ErrorId, StartLineNumber, StartColumnNumber | Format-List
               throw "PowerShell syntax validation failed: $script"
             }
           }
