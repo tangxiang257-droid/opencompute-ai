@@ -1,3 +1,16 @@
+# OpenCompute AI v0.4.3 — Qwen2 大词表分块与逐层权重加载
+
+新增 **Qwen2 TP v2** 数据格式：Safetensors 词表行分块、逐 Rank/逐层分片、按需读取和独立 SHA-256 / 权限校验。支持可信本地模型文件按 v2 格式导出，并用现有算力池调度两个 Worker 协作推理。原 GPT-2 与 Qwen2 v1 推理代码保持兼容。
+
+- [v0.4.3 方案、导出命令、测试与边界](docs/v0.4.3-chunked-qwen2.md)
+- [核心分块实现](compute/qwen2_chunked.py) · [本地 Safetensors 导入器](compute/qwen2_safetensors.py)
+- [逐 Token 数值一致性测试](tests/test_qwen2_chunked_v043.py) · [双 Worker HTTP + Gloo 分块集成测试](benchmarks/qwen2_chunked_session_demo.py)
+- [GitHub Actions CI](https://github.com/tangxiang257-droid/opencompute-ai/actions)
+
+**注意**：本版不会下载或运行 DeepSeek-R1-Distill-Qwen-1.5B 官方完整权重。其配置可以进行文件大小规划，但分块加载的内存峰值和运行速度仍待真实模型验证。当前仍是可信本机 CPU 研究原型，不是公网算力市场。
+
+---
+
 # OpenCompute AI v0.4.2 — Safetensors 本地模型检查与容量规划
 
 新增 Qwen2 / DeepSeek-Qwen **本地、安全、只读的 Safetensors 预检查器**，支持单文件和索引式分片权重、按需读取张量、参数形状和数据类型检查、可选 SHA-256 指纹验证。模型目录仍保持多架构扩展设计。
