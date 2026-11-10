@@ -257,7 +257,10 @@ jobs:
               [ref]$errors
             ) | Out-Null
             if ($errors.Count -gt 0) {
-              $errors | Select-Object Message, Extent, ErrorId, StartLineNumber, StartColumnNumber | Format-List
+              foreach ($parseError in $errors) {
+                Write-Host ("Line {0}, Column {1}: {2}" -f $parseError.Extent.StartLineNumber, $parseError.Extent.StartColumnNumber, $parseError.Message)
+                Write-Host ("Extent: " + $parseError.Extent.Text)
+              }
               throw "PowerShell syntax validation failed: $script"
             }
           }
