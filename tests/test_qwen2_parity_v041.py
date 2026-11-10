@@ -64,6 +64,8 @@ class Qwen2Parity(unittest.TestCase):
             self.assertEqual(len(records), 1, proc.stdout)
             result = records[0]
             self.assertEqual(result["generated_ids"], expected["generated_ids"])
+            self.assertEqual(len(result["weight_bytes_per_rank"]), 2)
+            self.assertTrue(all(x > 0 for x in result["weight_bytes_per_rank"]))
             actual = torch.tensor(result["step_logits"])
             target = expected["step_logits"]
             self.assertTrue(torch.allclose(actual, target, rtol=2e-4, atol=1e-5),
