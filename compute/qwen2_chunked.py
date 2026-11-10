@@ -251,11 +251,28 @@ def load_chunked_rank(folder, rank, meta):
         if name == "manifest.json":
             continue
         path = Path(folder) / name
-        if path.is_symlink() or not path.is_file():
-            raise ValueError(f"missing or unsafe rank file: {name}")
+        if (path.is_symlink() or not path.is_file()
+                or not 0 < path.stat().st_size <= MAX_FILE_BYTES):
+            raise ValueError(f"missing, oversized or unsafe rank file: {name}")
         with safe_open(str(path), framework="pt", device="cpu") as obj:
-            if not obj.keys():
-                raise ValueError(f"empty rank file: {name}")
+            if "_layer_" in name:
+                expected_shapes = _layer_shapes(meta)
+            elif name == "rank0_norm.safetensors":
+                expected_shapes = {"weight": (meta["hidden"],)}
+            else:
+                kind, slot = name.replace("rank0_", "").split("_")
+                index = int(slot.split(".")[0])
+                slices = chunks(meta)
+                if index >= len(slices) or kind not in ("embed", "head"):
+                    raise ValueError("unexpected vocabulary chunk name")
+                start, stop = slices[index]
+                expected_shapes = {"weight": (stop-start, meta["hidden"])}
+            if set(obj.keys()) != set(expected_shapes):
+                raise ValueError(f"invalid Safetensors header keys: {name}")
+            for key, shape in expected_shapes.items():
+                part = obj.get_slice(key)
+                if tuple(part.get_shape()) != tuple(shape) or part.get_dtype() != "F32":
+                    raise ValueError(f"invalid Safetensors header tensor: {name}:{key}")
     stream = LayerStream(folder, rank, meta)
     for _ in stream:  # Full validation, at most one loaded layer at a time.
         pass
