@@ -8,6 +8,7 @@ security guarantees. Legacy v1 .pt checkpoints remain separately supported.
 import json
 import math
 import shutil
+from collections import OrderedDict
 from pathlib import Path
 
 import torch
@@ -54,10 +55,17 @@ def all_files(meta):
     return names
 
 
-def _write_tensor(file, tensor):
-    # Safetensors is a data-only format. No torch.load/pickle for v2.
+def weight_dtype(meta):
+    name = meta.get("weight_dtype", "float32")
+    if name not in ("float32", "bfloat16"):
+        raise ValueError("unsupported Qwen2 storage precision")
+    return torch.float32 if name == "float32" else torch.bfloat16
+
+
+def _write_tensor(file, tensor, storage_type=torch.float32):
+    # Safetensors is data-only. Compute always promotes BF16 weights to FP32.
     save_file({"weight": tensor.detach().to(
-        device="cpu", dtype=torch.float32).contiguous()}, str(file))
+        device="cpu", dtype=storage_type).contiguous()}, str(file))
     if file.stat().st_size > MAX_FILE_BYTES:
         raise ValueError(f"individual output exceeds safe file cap: {file.name}")
 
@@ -75,28 +83,33 @@ def _get_rows(state, key, first, last, shape):
 
 def export_chunked(state, config, destination, workers=2, *,
                    chunk_target_bytes=64 * 1024 * 1024, chunk_rows=None,
-                   source="trusted-local"):
+                   source="trusted-local", storage_dtype="float32"):
     """Write one trusted layer shard at a time; never accumulate whole ranks.
 
     For on-demand source input, a Mapping with get_rows() avoids reading the
     full 0.9GB embedding/LM head tensor even in the exporter.
     """
     meta = manifest_from_config(config, workers, source)
+    if storage_dtype not in ("float32", "bfloat16"):
+        raise ValueError("storage_dtype must be float32 or bfloat16")
+    bytes_per_weight = 2 if storage_dtype == "bfloat16" else 4
+    storage_type = torch.bfloat16 if storage_dtype == "bfloat16" else torch.float32
     if chunk_rows is None:
         chunk_rows = max(1, min(meta["vocab"],
-                         chunk_target_bytes // (4 * meta["hidden"])))
+                         chunk_target_bytes // (bytes_per_weight * meta["hidden"])))
     if type(chunk_rows) is not int or not 1 <= chunk_rows <= meta["vocab"]:
         raise ValueError("invalid vocabulary chunk size")
-    meta.update({"format": FORMAT, "io_chunk_rows": chunk_rows})
+    meta.update({"format": FORMAT, "io_chunk_rows": chunk_rows,
+                 "weight_dtype": storage_dtype})
     names = all_files(meta)
     output = Path(destination)
     output.mkdir(parents=True, exist_ok=False)
     try:
         # Perform the output-size check from dimensions before allocating weights.
-        head_bytes = 4 * chunk_rows * meta["hidden"] + 4096
+        head_bytes = bytes_per_weight * chunk_rows * meta["hidden"] + 4096
         h, q, kv, d, f = (meta["hidden"], meta["heads"], meta["kv_heads"],
                           meta["head_dim"], meta["inner"])
-        rank_layer_bytes = 4 * (2*h + (q*d//workers + 2*kv*d//workers)*h
+        rank_layer_bytes = bytes_per_weight * (2*h + (q*d//workers + 2*kv*d//workers)*h
                                 + (q*d//workers + 2*kv*d//workers)
                                 + h*(q*d//workers) + 3*h*(f//workers)) + 16384
         if head_bytes > MAX_FILE_BYTES or rank_layer_bytes > MAX_FILE_BYTES:
@@ -118,10 +131,11 @@ def export_chunked(state, config, destination, workers=2, *,
             for i, (start, stop) in enumerate(chunks(meta)):
                 value = _get_rows(state, original, start, stop,
                                   (meta["vocab"], h))
-                _write_tensor(output / f"rank0_{kind}_{i:03d}.safetensors", value)
+                _write_tensor(output / f"rank0_{kind}_{i:03d}.safetensors",
+                              value, storage_type)
                 del value
         _write_tensor(output / "rank0_norm.safetensors",
-                      weight("model.norm.weight", (h,)))
+                      weight("model.norm.weight", (h,)), storage_type)
 
         local_q, local_kv, local_f = q*d//workers, kv*d//workers, f//workers
         for layer_id in range(meta["layers"]):
@@ -155,7 +169,8 @@ def export_chunked(state, config, destination, workers=2, *,
                     "down_w": down[:,fs].contiguous(),
                 }
                 dest = output / f"rank_{rank}_layer_{layer_id:03d}.safetensors"
-                save_file(shard, str(dest))
+                save_file({key: value.to(dtype=storage_type).contiguous()
+                           for key, value in shard.items()}, str(dest))
                 if dest.stat().st_size > MAX_FILE_BYTES:
                     raise ValueError("layer shard exceeds safe file cap")
         (output / "manifest.json").write_text(
