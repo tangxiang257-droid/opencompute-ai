@@ -125,13 +125,15 @@ try {
 
     Write-Host ""
     Write-Host "网站地址：$apiUrl/" -ForegroundColor Cyan
-    Write-Host "管理员密钥（仅在本机使用，请勿分享）：$($secrets.Admin)" -ForegroundColor Yellow
+    $displayAdminKey = $secrets.Admin
+    Write-Host ("管理员密钥（仅在本机使用，请勿分享）：" + $displayAdminKey) -ForegroundColor Yellow
     Write-Host "在网页顶部粘贴管理员密钥即可连接控制台。密钥保存在 .env 中，不要提交到 GitHub。"
     if (-not $NoBrowser -and $ready) { Start-Process $apiUrl }
 }
 catch {
     Write-Host ""
-    Write-Host "启动未完成：$($_.Exception.Message)" -ForegroundColor Red
+    $errorMessage = $_.Exception.Message
+    Write-Host ("启动未完成：" + $errorMessage) -ForegroundColor Red
     exit 1
 }
 finally { Pop-Location }
