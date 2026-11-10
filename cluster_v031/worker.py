@@ -67,11 +67,7 @@ def _file_digest(path):
 def download_and_verify(base, assignment, node_id, token, data_root):
     """Download only assigned rank files; check SHA256 and tensor shapes."""
     engine = assignment.get("engine", "gpt2-tp")
-    if engine == "gpt2-tp":
-        from compute.gpt2_generate import load_rank, read_manifest
-    elif engine == "qwen2-tp":
-        from compute.qwen2_generate import load_rank, read_manifest
-    else:
+    if engine not in ("gpt2-tp", "qwen2-tp"):
         raise ValueError("unrecognized TP inference engine")
     session_id, rank = assignment["session_id"], assignment["rank"]
     if not isinstance(session_id, str) or not re.fullmatch(r"[0-9a-f]{32}", session_id):
@@ -80,10 +76,6 @@ def download_and_verify(base, assignment, node_id, token, data_root):
             or not 1 <= assignment["workers"] <= 4
             or not 0 <= rank < assignment["workers"]):
         raise ValueError("invalid shard rank assignment")
-    folder = Path(data_root).resolve() / session_id
-    if folder.is_symlink():
-        raise ValueError("unsafe cached model directory symlink")
-    folder.mkdir(parents=True, exist_ok=True)
     entries = assignment.get("files")
     if (not isinstance(entries, list) or not 2 <= len(entries) <= 512
             or any(not isinstance(entry, dict) for entry in entries)):
@@ -125,6 +117,18 @@ def download_and_verify(base, assignment, node_id, token, data_root):
                 or not isinstance(checksum, str)
                 or re.fullmatch(r"[0-9a-f]{64}", checksum) is None):
             raise ValueError("unsafe model shard name, size or digest")
+    # Reject untrusted assignments before model imports or filesystem writes.
+    folder = Path(data_root).resolve() / session_id
+    if folder.is_symlink():
+        raise ValueError("unsafe cached model directory symlink")
+    for entry in entries:
+        if (folder / entry["name"]).is_symlink():
+            raise ValueError("unsafe cached model shard symlink")
+    if engine == "gpt2-tp":
+        from compute.gpt2_generate import load_rank, read_manifest
+    else:
+        from compute.qwen2_generate import load_rank, read_manifest
+    folder.mkdir(parents=True, exist_ok=True)
     for entry in entries:
         name = entry["name"]
         target = folder / name
