@@ -101,7 +101,7 @@ def summarize_profile(output, *, layers, prompt_length):
         for name in ("decode_us", "collective_wall_us", "preflight_us",
                      "all_reduce_calls", "all_reduce_tensor_bytes",
                      "broadcast_calls", "broadcast_tensor_bytes",
-                     "rss_sample_bytes"):
+                     "rss_sample_bytes", "peak_rss_bytes_linux"):
             value = record.get(name)
             if type(value) is not int or value < 0:
                 raise ValueError(f"bad profiler counter: {name}")
@@ -121,6 +121,7 @@ def summarize_profile(output, *, layers, prompt_length):
             "all_reduce_tensor_bytes": record["all_reduce_tensor_bytes"],
             "broadcast_tensor_bytes": record["broadcast_tensor_bytes"],
             "rss_sample_bytes": record["rss_sample_bytes"],
+            "peak_rss_bytes_linux": record["peak_rss_bytes_linux"],
         })
     return {
         "ranks": totals,
@@ -129,5 +130,6 @@ def summarize_profile(output, *, layers, prompt_length):
         "slowest_rank_collective_seconds": max(
             i["collective_seconds"] for i in totals),
         "scope": "Measured localhost Gloo wall times; tensor bytes are NOT wire bytes.",
-        "memory_limit": "RSS is one end-of-run sample, not process-tree peak memory.",
+        "memory_limit": ("Linux peak RSS is per inference rank process, including PyTorch; "
+                         "end-of-run sample is separate, neither measures Worker tree."),
     }
