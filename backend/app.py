@@ -81,7 +81,7 @@ class Benchmark(BaseModel):
 def health():
     return {
         "status": "ok",
-        "version": "0.5.0",
+        "version": "0.5.1",
         "qwen2_pp_queue_enabled": qwen2_queue is not None,
     }
 
@@ -140,3 +140,11 @@ def plan_topology(payload: PlanRequest, _: None = Depends(require_admin)):
             latency_ms=payload.latency_ms, bandwidth_mbps=payload.bandwidth_mbps)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+# Browser dashboard (v0.5.1). The API remains same-origin; secrets stay in the browser session.
+WEB_INDEX = Path(__file__).resolve().parent.parent / "web" / "index.html"
+
+@app.get("/", include_in_schema=False)
+def dashboard():
+    return FileResponse(WEB_INDEX, media_type="text/html")

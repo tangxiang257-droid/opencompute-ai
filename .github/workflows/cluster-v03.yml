@@ -37,6 +37,8 @@ on:
       - 'tests/test_cluster_v03.py'
       - 'benchmarks/cluster_sim.py'
       - 'backend/app.py'
+      - 'web/**'
+      - 'tests/test_web_dashboard_v051.py'
       - 'Dockerfile.worker'
       - 'Dockerfile.tp-worker'
       - 'Dockerfile'
@@ -81,6 +83,8 @@ on:
       - 'tests/test_cluster_v03.py'
       - 'benchmarks/cluster_sim.py'
       - 'backend/app.py'
+      - 'web/**'
+      - 'tests/test_web_dashboard_v051.py'
       - 'Dockerfile.worker'
       - 'Dockerfile.tp-worker'
       - 'Dockerfile'
@@ -108,6 +112,8 @@ jobs:
           docker compose -f docker-compose.tp-local.yml config --quiet
       - name: Compile check source and regression tests
         run: python -m compileall -q backend compute cluster_v03 cluster_v031 cluster_v04 cluster_v05 tests benchmarks
+      - name: v0.5.1 browser dashboard packaging regression
+        run: python -m unittest discover -s tests -p 'test_web_dashboard_v051.py' -v
       - name: Test scheduling, auth, leases, concurrent claims and Worker jobs
         run: python -m unittest discover -s tests -p 'test_cluster_v03.py' -v
       - name: Run managed TP session API and Gloo tests
