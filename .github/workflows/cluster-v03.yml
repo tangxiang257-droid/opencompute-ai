@@ -15,6 +15,7 @@ on:
       - 'benchmarks/qwen2_offline_validation.py'
       - 'benchmarks/qwen2_matrix_v045.py'
       - 'benchmarks/qwen2_repeat_v046.py'
+      - 'benchmarks/qwen2_pp_compare_v047.py'
       - 'compute/parallel_screen_v046.py'
       - 'benchmarks/qwen2_offline_reference.py'
       - 'tests/test_model_registry_v04.py'
@@ -54,6 +55,7 @@ on:
       - 'benchmarks/qwen2_offline_validation.py'
       - 'benchmarks/qwen2_matrix_v045.py'
       - 'benchmarks/qwen2_repeat_v046.py'
+      - 'benchmarks/qwen2_pp_compare_v047.py'
       - 'compute/parallel_screen_v046.py'
       - 'benchmarks/qwen2_offline_reference.py'
       - 'tests/test_model_registry_v04.py'
@@ -156,6 +158,16 @@ jobs:
         with:
           name: opencompute-qwen2-v046-repeated-gloo
           path: qwen2-v046-repeats.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: v0.4.7 true two-stage Qwen2 pipeline parity, tampering and fail-fast
+        run: python -m unittest discover -s tests -p 'test_qwen2_pipeline_v047.py' -v
+      - name: v0.4.7 Qwen2 TP1/TP2/PP2 CPU comparison and JSON artifact
+        run: python -m benchmarks.qwen2_pp_compare_v047 --dtype float32 --new-tokens 3 --output qwen2-v047-tp-pp.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opencompute-qwen2-v047-tp-pp-localhost
+          path: qwen2-v047-tp-pp.json
           if-no-files-found: error
           retention-days: 7
       - name: Run full localhost HTTP with two Qwen2 TP Workers
