@@ -13,6 +13,7 @@ on:
       - 'benchmarks/qwen2_offline_reference.py'
       - 'tests/test_qwen2_bf16_v044.py'
       - 'benchmarks/qwen2_offline_validation.py'
+      - 'benchmarks/qwen2_matrix_v045.py'
       - 'benchmarks/qwen2_offline_reference.py'
       - 'tests/test_model_registry_v04.py'
       - 'compute/rendezvous.py'
@@ -49,6 +50,7 @@ on:
       - 'benchmarks/qwen2_offline_reference.py'
       - 'tests/test_qwen2_bf16_v044.py'
       - 'benchmarks/qwen2_offline_validation.py'
+      - 'benchmarks/qwen2_matrix_v045.py'
       - 'benchmarks/qwen2_offline_reference.py'
       - 'tests/test_model_registry_v04.py'
       - 'compute/rendezvous.py'
@@ -122,6 +124,16 @@ jobs:
         run: python -m benchmarks.qwen2_chunked_session_demo
       - name: v0.4.4 BF16 streaming rank parity, LRU safety, and offline tokenizer tests
         run: python -m unittest discover -s tests -p 'test_qwen2_bf16_v044.py' -v
+      - name: v0.4.5 strict numerical parity and Gloo profiler contract
+        run: python -m unittest discover -s tests -p 'test_qwen2_validation_v045.py' -v
+      - name: v0.4.5 publish synthetic 1-vs-2 Rank FP32/BF16 benchmark JSON
+        run: python -m benchmarks.qwen2_matrix_v045 --workers 1,2 --precisions float32,bfloat16 --new-tokens 2 --output qwen2-v045-matrix.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opencompute-qwen2-v045-synthetic-benchmark
+          path: qwen2-v045-matrix.json
+          if-no-files-found: error
+          retention-days: 7
       - name: Run full localhost HTTP with two Qwen2 TP Workers
         run: python -m benchmarks.qwen2_tp_session_demo
       - name: Run full localhost HTTP and two-agent TP demo
