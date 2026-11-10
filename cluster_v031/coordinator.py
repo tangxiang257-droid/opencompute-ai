@@ -172,6 +172,39 @@ class SessionCoordinator:
             shutil.rmtree(folder, ignore_errors=True)
             raise
 
+    def create_qwen2_synthetic(self, *, workers, hidden, heads, layers,
+                               prompt_ids, new_tokens):
+        """Managed Qwen2 TP on trusted-localhost workers, using synthetic weights.
+
+        Qwen2 real checkpoint compatibility is a separate verification gate.
+        """
+        kv_heads = 2
+        if (not 1 <= workers <= 2 or not 8 <= hidden <= 128
+                or not 2 <= heads <= 8 or hidden % heads
+                or heads % kv_heads or kv_heads % workers
+                or (hidden // heads) % 2
+                or not 1 <= layers <= 4
+                or not 1 <= len(prompt_ids) <= 32
+                or any(type(v) is not int or not 0 <= v < 64 for v in prompt_ids)
+                or not 1 <= new_tokens <= 16
+                or len(prompt_ids) + new_tokens - 1 > 64):
+            raise ValueError("unsupported Qwen2 synthetic/GQA configuration")
+        session_id = uuid.uuid4().hex
+        folder = self.root / session_id
+        try:
+            state, config = qwen2_synthetic_state(
+                hidden=hidden, heads=heads, kv_heads=kv_heads,
+                layers=layers, inner=2 * hidden, vocab=64, positions=64)
+            manifest = export_qwen2_state(
+                state, config, folder, workers,
+                "synthetic-qwen2-tp-v0.4.1")
+            return self._register_session(session_id, folder, manifest,
+                                          workers, prompt_ids, new_tokens,
+                                          engine="qwen2-tp")
+        except BaseException:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
+
     def create_checkpoint(self, *, checkpoint, prompt_ids, new_tokens):
         """Use locally trusted, already exported GPT-2 shards; no model downloads."""
         if (not isinstance(checkpoint, str)
