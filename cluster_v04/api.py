@@ -63,6 +63,17 @@ def create_model_router(coordinator, *, admin_key: str):
                     prompt_ids=body.prompt_ids,
                     new_tokens=body.max_new_tokens,
                 )
+            elif spec.id == "qwen2-synthetic":
+                if body.checkpoint is not None:
+                    raise ValueError("Qwen2 synthetic test model does not accept a checkpoint")
+                output = coordinator.create_qwen2_synthetic(
+                    workers=body.workers or 2,
+                    hidden=body.hidden or 24,
+                    heads=body.heads or 6,
+                    layers=body.layers or 2,
+                    prompt_ids=body.prompt_ids,
+                    new_tokens=body.max_new_tokens,
+                )
             elif spec.id == "gpt2-local-checkpoint":
                 if not body.checkpoint:
                     raise ValueError("a pre-exported local checkpoint is required")
