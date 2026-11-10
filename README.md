@@ -1,3 +1,19 @@
+# OpenCompute AI v0.4.5 — 独立 Qwen2 数值验证与真实 Gloo 通信性能报告
+
+本版继续保持多模型架构，新增 Qwen2 每 Rank 的 Gloo All-Reduce/广播计时、可验证的逐 Token Logits 正确性标准、Linux 单进程峰值 RSS 样本，并运行了 **1/2 Rank × FP32/BF16** 的本机合成权重基准。独立 Hugging Face Qwen2 微型随机模型也已纳入必须运行的 CI 数值对照（不下载模型权重）。
+
+- [v0.4.5 实测数据、通信瓶颈和实验边界](docs/v0.4.5-validation-and-profile.md)
+- [通信探针](compute/qwen2_trace.py) · [严格每步输出验证](compute/qwen2_validation.py) · [可运行基准和 JSON 输出](benchmarks/qwen2_matrix_v045.py)
+- [离线模型来源/Tokenizer 核验入口](benchmarks/qwen2_offline_validation.py)
+- [独立 HF 微型 Qwen2 vs Gloo 数值测试](tests/test_qwen2_hf_tiny_v045.py) · [来源与配置校验测试](tests/test_qwen2_provenance_v045.py)
+- [GitHub Actions 运行记录与基准报告 Artifact](https://github.com/tangxiang257-droid/opencompute-ai/actions)
+
+**初步观察：** 在一次 GitHub CI 合成微型模型运行中，FP32 1 Rank 为 370.1 Token/s，FP32 2 Rank 为 220.8 Token/s；此场景下多 Rank 变慢，**不能推断跨设备或真实大模型一定加速**。BF16 主要减少磁盘/分发字节，CPU 运算仍为 FP32。
+
+**重要限制：** 此版本尚未下载或实测官方 DeepSeek-R1-Distill-Qwen-1.5B 完整预训练权重，不支持陌生公网节点。模型中心仍将官方 DeepSeek 模型标记为待适配，直到有真实权重独立验收。
+
+---
+
 # OpenCompute AI v0.4.4 — BF16 权重与可信离线模型验证
 
 支持 **Qwen2/DeepSeek-Qwen 架构的 BF16 Safetensors 分块存储**、可选择的 byte-bounded LRU 权重缓存，并提供 Tokenizer 与 Hugging Face 完整模型的 **离线、显式授权的数值对照**流程。GPU/MoE/公网陌生节点仍未支持。
