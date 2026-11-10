@@ -15,12 +15,13 @@ import torch.nn.functional as F
 
 from compute.qwen2_core import forward_layers, rms_norm
 from compute.qwen2_shards import FORMAT
+from compute.qwen2_chunked import FORMAT as CHUNK_FORMAT, ChunkedIO, load_chunked_rank, rank_files
 from compute.rendezvous import init_gloo
 
 
 def read_manifest(folder):
     m = json.loads((Path(folder) / "manifest.json").read_text(encoding="utf-8"))
-    if m.get("format") != FORMAT:
+    if m.get("format") not in (FORMAT, CHUNK_FORMAT):
         raise ValueError("unsupported Qwen2 shard manifest")
     from cluster_v031.checkpoints import validate_manifest
     validate_manifest(m)
@@ -28,6 +29,8 @@ def read_manifest(folder):
 
 
 def load_rank(folder, rank, m):
+    if m["format"] == CHUNK_FORMAT:
+        return load_chunked_rank(folder, rank, m)
     folder = Path(folder)
     hidden = m["hidden"]
     q_width = m["head_dim"] * m["heads"] // m["workers"]
@@ -114,15 +117,19 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
         sequence_length = prompt_length if step == 0 else 1
         if rank == 0:
             token = torch.tensor(pending, dtype=torch.long)
-            x = F.embedding(token, io["embed"]).unsqueeze(0).contiguous()
+            x = (io.embed(token) if isinstance(io, ChunkedIO)
+                 else F.embedding(token, io["embed"])).unsqueeze(0).contiguous()
         else:
             x = torch.empty((1, sequence_length, m["hidden"]), dtype=torch.float32)
         dist.broadcast(x, src=0)
         x, caches = forward_layers(x, layers, caches, m,
                                     reduce_sum=lambda v: dist.all_reduce(v, op=dist.ReduceOp.SUM))
         if rank == 0:
-            last = rms_norm(x[:, -1, :], io["norm"], m["rms_eps"])
-            logits = F.linear(last, io["lm_head"])[0]
+            last = rms_norm(x[:, -1, :],
+                            io.norm if isinstance(io, ChunkedIO) else io["norm"],
+                            m["rms_eps"])
+            logits = (io.logits(last)[0] if isinstance(io, ChunkedIO)
+                      else F.linear(last, io["lm_head"])[0])
             next_id = int(torch.argmax(logits).item())
             generated.append(next_id)
             if return_logits:
@@ -139,7 +146,11 @@ def generate(folder, ids, max_new_tokens, rank, world, return_logits=False,
         return 0
     # The managed Worker expects a per-rank weight metric just as the GPT-2
     # runner reports. All ranks must join this collective before rank 0 exits.
-    size = torch.tensor([tensor_bytes(layers) + tensor_bytes(io)], dtype=torch.int64)
+    weight_bytes = (sum((Path(folder) / name).stat().st_size
+                    for name in rank_files(m, rank) if name != "manifest.json")
+                    if m["format"] == CHUNK_FORMAT
+                    else tensor_bytes(layers) + tensor_bytes(io))
+    size = torch.tensor([weight_bytes], dtype=torch.int64)
     gathered = [torch.zeros_like(size) for _ in range(world)]
     dist.all_gather(gathered, size)
     if rank == 0:
