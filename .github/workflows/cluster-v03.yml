@@ -14,6 +14,8 @@ on:
       - 'tests/test_qwen2_bf16_v044.py'
       - 'benchmarks/qwen2_offline_validation.py'
       - 'benchmarks/qwen2_matrix_v045.py'
+      - 'benchmarks/qwen2_repeat_v046.py'
+      - 'compute/parallel_screen_v046.py'
       - 'benchmarks/qwen2_offline_reference.py'
       - 'tests/test_model_registry_v04.py'
       - 'compute/rendezvous.py'
@@ -51,6 +53,8 @@ on:
       - 'tests/test_qwen2_bf16_v044.py'
       - 'benchmarks/qwen2_offline_validation.py'
       - 'benchmarks/qwen2_matrix_v045.py'
+      - 'benchmarks/qwen2_repeat_v046.py'
+      - 'compute/parallel_screen_v046.py'
       - 'benchmarks/qwen2_offline_reference.py'
       - 'tests/test_model_registry_v04.py'
       - 'compute/rendezvous.py'
@@ -142,6 +146,16 @@ jobs:
         with:
           name: opencompute-qwen2-v045-synthetic-benchmark
           path: qwen2-v045-matrix.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: v0.4.6 capacity screening, repeat statistics, one-rank fastpath
+        run: python -m unittest discover -s tests -p 'test_qwen2_repeat_v046.py' -v
+      - name: v0.4.6 repeated no-download Qwen2 Gloo A/B benchmark
+        run: python -m benchmarks.qwen2_repeat_v046 --model-size tiny --dtype float32 --repeats 3 --warmups 0 --tokens 2 --output qwen2-v046-repeats.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opencompute-qwen2-v046-repeated-gloo
+          path: qwen2-v046-repeats.json
           if-no-files-found: error
           retention-days: 7
       - name: Run full localhost HTTP with two Qwen2 TP Workers
