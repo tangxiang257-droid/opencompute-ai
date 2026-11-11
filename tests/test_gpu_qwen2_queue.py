@@ -18,7 +18,7 @@ class Qwen2QueueTests(unittest.TestCase):
         self.store = ClusterStore(Path(self.tmp.name) / "cluster.sqlite", clock=lambda: self.now)
         self.scheduler = GPUScheduler(self.store, lease_seconds=60)
 
-    def worker(self, name, *, model_id=None, uuid=None, index=0, free=8192):
+    def worker(self, name, *, model_id=None, uuid=None, index=0, free=8192, utilization=0):
         node = self.store.register(name=name, platform="linux", cpu_cores=4,
                                    ram_mb=8192, compute_score=1, slots=1,
                                    capabilities=["sum"])
@@ -26,7 +26,7 @@ class Qwen2QueueTests(unittest.TestCase):
         self.store.report_gpu_inventory(*identity, [{
             "index": index, "uuid": uuid or name, "name": name,
             "vendor": "nvidia", "backend": "cuda", "runtime": "pytorch_cuda",
-            "total_memory_mb": 8192, "free_memory_mb": free, "utilization_pct": 0,
+            "total_memory_mb": 8192, "free_memory_mb": free, "utilization_pct": utilization,
             "qwen2_model_id": model_id, "qwen2_vram_mb": 4096 if model_id else None,
         }])
         return identity
@@ -52,6 +52,20 @@ class Qwen2QueueTests(unittest.TestCase):
             with self.subTest(payload=payload), self.assertRaises(ValueError):
                 self.scheduler.submit("qwen2_generate", payload)
 
+    def test_new_inference_requires_an_online_worker_for_the_model(self):
+        self.worker("target", model_id=MODEL)
+        self.now += 31
+        with self.assertRaisesRegex(ValueError, "online"):
+            self.scheduler.submit("qwen2_generate", PAYLOAD)
+
+    def test_busy_inference_worker_does_not_block_an_idle_worker(self):
+        busy = self.worker("busy", model_id=MODEL)
+        self.scheduler.submit("qwen2_generate", PAYLOAD)
+        self.assertIsNotNone(self.scheduler.claim(*busy)["task"])
+        idle = self.worker("idle", model_id=MODEL, free=4096, utilization=25)
+        queued = self.scheduler.submit("qwen2_generate", PAYLOAD)
+        self.assertEqual(self.scheduler.claim(*idle)["task"]["id"], queued["id"])
+
     def test_cancelled_inference_holds_vram_until_worker_exits(self):
         worker = self.worker("target", model_id=MODEL, uuid="same")
         task = self.scheduler.submit("qwen2_generate", PAYLOAD, required_vram_mb=8192)
@@ -70,6 +84,17 @@ class Qwen2QueueTests(unittest.TestCase):
         self.scheduler.complete(*worker, job["id"], job["gpu_index"], job["lease_token"], {})
         self.assertEqual(self.scheduler.status()["reserved_vram_mb"], 0)
         self.assertIsNone(self.scheduler.detail(task["id"])["result"])
+        self.assertEqual(self.scheduler.retry(task["id"])["status"], "queued")
+
+    def test_cancelled_lease_expiry_clears_the_assignment_for_retry(self):
+        worker = self.worker("target", model_id=MODEL)
+        task = self.scheduler.submit("qwen2_generate", PAYLOAD)
+        self.scheduler.claim(*worker)
+        self.scheduler.cancel(task["id"])
+        self.now += 60
+        released = self.scheduler.detail(task["id"])
+        self.assertIsNone(released["lease_until"])
+        self.assertIsNone(released["assigned_node"])
         self.assertEqual(self.scheduler.retry(task["id"])["status"], "queued")
 
     def test_offline_inference_retains_reservation_until_execution_deadline(self):

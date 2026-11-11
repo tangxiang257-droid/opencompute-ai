@@ -13,7 +13,7 @@ $expectedSha256 = Read-Host '输入可信发布源给出的权重 SHA-256'
 python -m cluster_v03.worker --name qwen2-gpu --qwen2-dir ./models/qwen2 --qwen2-sha256 $expectedSha256
 ```
 
-也可设置 `OPENCOMPUTE_QWEN2_DIR` 和 `OPENCOMPUTE_QWEN2_SHA256`。Worker 在启动时验证权重和分词器。模型标识由权重、配置和分词器共同决定，拥有相同文件的多个 Worker 会接收同一模型的任务。服务端根据 Worker 上报的保守估算预留显存。模型文件和目录路径留在设备上。
+也可设置 `OPENCOMPUTE_QWEN2_DIR` 和 `OPENCOMPUTE_QWEN2_SHA256`。Worker 在启动时验证权重和分词器。模型标识由权重、配置和分词器共同决定，拥有相同文件的多个 Worker 会接收同一模型的任务。服务端根据 Worker 上报的保守估算预留显存。模型文件和目录路径留在设备上。运行 Worker 时请保持模型文件只读或避免改动。
 
 ## 运行和验证
 

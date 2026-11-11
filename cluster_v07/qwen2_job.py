@@ -1,4 +1,5 @@
 """Run a configured Qwen2 model in a bounded Worker subprocess."""
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import math
@@ -10,6 +11,9 @@ import time
 from pathlib import Path
 
 from cluster_v07.scheduler import QWEN2_TASK, validate_gpu_task
+
+
+PULSE_INTERVAL = 5
 
 
 class Qwen2RequestError(ValueError):
@@ -75,24 +79,28 @@ def execute(model, job, *, claim_started, pulse):
                           "required_vram_mb": job["required_vram_mb"], "deadline": deadline})
     env = {key: value for key, value in os.environ.items()
            if key not in ("OPENCOMPUTE_JOIN_KEY", "OPENCOMPUTE_ADMIN_KEY")}
-    with subprocess.Popen([sys.executable, "-m", "cluster_v07.qwen2_job"], stdin=subprocess.PIPE,
-                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                          encoding="utf-8", env=env) as child:
+    with (
+        subprocess.Popen([sys.executable, "-m", "cluster_v07.qwen2_job"], stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                         encoding="utf-8", env=env) as child,
+        ThreadPoolExecutor(max_workers=1) as io_pool,
+    ):
         try:
+            # Keep the same pipe exchange alive across lease checks, including
+            # when the prompt is larger than the child process's stdin buffer.
+            exchange = io_pool.submit(child.communicate, message)
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("Qwen2 inference exceeded its GPU lease budget")
                 try:
-                    output, _ = child.communicate(message, timeout=min(5, remaining))
+                    output, _ = exchange.result(timeout=min(PULSE_INTERVAL, remaining))
                     break
-                except subprocess.TimeoutExpired:
-                    message = None
+                except TimeoutError:
                     pulse()
         finally:
             if child.poll() is None:
                 child.kill()
-                child.communicate()
     if child.returncode == 124:
         raise TimeoutError("Qwen2 inference exceeded its GPU lease budget")
     if child.returncode:

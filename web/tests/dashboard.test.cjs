@@ -168,3 +168,17 @@ test('GPU queue submits text to the selected Qwen2 model and renders the full ou
     assert.equal(d.doc.getElementById('gpuQwenPrompt').value,'');
   }finally{d.close()}
 });
+
+test('Qwen2 mode hides matrix fields and disables submission without an online model',async()=>{
+  const d=setup();
+  try {
+    connect(d.doc);await tick();
+    const kind=d.doc.getElementById('gpuTaskKind');
+    kind.value='qwen2_generate';kind.dispatchEvent(new d.w.Event('change'));
+    const model=d.doc.getElementById('gpuQwenModel');
+    assert.equal(model.value,'');
+    assert.equal(model.disabled,true);
+    assert.equal(d.doc.getElementById('submitGpuTask').disabled,true);
+    assert.equal(d.w.getComputedStyle(d.doc.getElementById('gpuMatrixFields')).display,'none');
+  }finally{d.close()}
+});

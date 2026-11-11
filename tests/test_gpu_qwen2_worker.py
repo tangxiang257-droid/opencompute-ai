@@ -1,8 +1,12 @@
 import hashlib
 import json
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from compute.qwen2_shards import synthetic_state
 
@@ -37,3 +41,24 @@ class Qwen2WorkerTests(unittest.TestCase):
             tokenizer.save(str(root / "tokenizer.json"))
             with self.assertRaisesRegex(ValueError, "model assets changed"):
                 generate_text(model, payload, device="cpu", required_vram_mb=model["vram_mb"])
+
+    def test_subprocess_accepts_large_prompt_while_worker_polls_its_lease(self):
+        from cluster_v07 import qwen2_job
+
+        model = {"id": "a" * 64}
+        job = {"payload": {"model_id": model["id"], "prompt": "🧪" * 4096, "max_new_tokens": 1},
+               "lease_seconds": 7, "gpu_index": 0, "required_vram_mb": 512}
+        pulses = []
+        popen = subprocess.Popen
+        code = ("import json,sys,time; time.sleep(0.3); request=json.load(sys.stdin); "
+                "print(json.dumps({'result':{'length':len(request['payload']['prompt'])}}))")
+
+        def fixture_child(_command, **kwargs):
+            return popen([sys.executable, "-c", code], **kwargs)
+
+        with (patch.object(qwen2_job, "PULSE_INTERVAL", 0.05),
+              patch.object(qwen2_job.subprocess, "Popen", side_effect=fixture_child)):
+            result = qwen2_job.execute(model, job, claim_started=time.monotonic(),
+                                       pulse=lambda: pulses.append(True))
+        self.assertEqual(result, {"length": 4096})
+        self.assertTrue(pulses)

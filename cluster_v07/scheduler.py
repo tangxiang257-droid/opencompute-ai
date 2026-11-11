@@ -104,10 +104,13 @@ class GPUScheduler:
         with self.store._tx() as conn:
             if kind == QWEN2_TASK:
                 minimum = conn.execute("""
-                    SELECT MIN(qwen2_vram_mb) FROM gpu_devices WHERE qwen2_model_id=?
-                """, (payload["model_id"],)).fetchone()[0]
+                    SELECT MIN(g.qwen2_vram_mb)
+                    FROM gpu_devices g JOIN nodes n ON n.id=g.node_id
+                    WHERE g.qwen2_model_id=? AND n.last_seen>=? AND g.last_seen>=?
+                """, (payload["model_id"], now - self.store.heartbeat_ttl,
+                      now - max(90.0, self.store.heartbeat_ttl * 3))).fetchone()[0]
                 if minimum is None:
-                    raise ValueError("Qwen2 model is not configured on a GPU Worker")
+                    raise ValueError("Qwen2 model has no online GPU Worker")
                 required_vram_mb = max(required_vram_mb, minimum)
             conn.execute("""
                 INSERT INTO gpu_tasks(
@@ -135,6 +138,12 @@ class GPUScheduler:
                 ))
             )
         """, (now, now, QWEN2_TASK, now - self.store.heartbeat_ttl))
+        conn.execute("""
+            UPDATE gpu_tasks
+            SET assigned_node=NULL,assigned_gpu_index=NULL,assigned_gpu_uuid=NULL,
+                assigned_at=NULL,lease_token=NULL,lease_until=NULL,updated=?
+            WHERE status='cancelled' AND lease_until<=?
+        """, (now, now))
 
     @staticmethod
     def _detail(conn, task_id):
@@ -164,8 +173,12 @@ class GPUScheduler:
                 GROUP BY assigned_gpu_uuid
             ) leases ON leases.assigned_gpu_uuid=g.uuid
             WHERE n.last_seen>=? AND g.last_seen>=? AND g.runtime='pytorch_cuda'
+              AND NOT EXISTS (
+                  SELECT 1 FROM gpu_tasks busy WHERE busy.assigned_node=g.node_id
+                    AND busy.kind=? AND busy.status IN ('leased','cancelled') AND busy.lease_until>?
+              )
         """, (now, now - self.store.heartbeat_ttl,
-              now - max(90.0, self.store.heartbeat_ttl * 3)))
+              now - max(90.0, self.store.heartbeat_ttl * 3), QWEN2_TASK, now))
         devices = []
         for row in rows:
             # Telemetry cannot establish how much of a reservation is allocated.
@@ -228,7 +241,7 @@ class GPUScheduler:
         if (job is None or job["status"] not in ("leased", "cancelled")
                 or job["assigned_node"] != node_id
                 or job["assigned_gpu_index"] != gpu_index
-                or not lease_token
+                or not isinstance(lease_token, str) or not lease_token.isascii()
                 or not secrets.compare_digest(job["lease_token"] or "", lease_token)
                 or job["lease_until"] is None or job["lease_until"] <= now):
             raise LeaseConflict("invalid, expired or already completed GPU lease")

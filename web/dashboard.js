@@ -147,7 +147,9 @@ function renderGpuModels(devices){
   for(const id of models){
     const option=el('option','','Qwen2 · '+id.slice(0,12));option.value=id;select.append(option);
   }
-  if(!models.length)select.append(el('option','','等待配置了 Qwen2 的在线 Worker'));
+  if(!models.length){
+    const option=el('option','','等待配置了 Qwen2 的在线 Worker');option.value='';select.append(option);
+  }
   select.disabled=!models.length;
   if(models.includes(current))select.value=current;
   updateGpuForm();
@@ -180,7 +182,7 @@ function renderGpuTasks(data){
     }
     const actions=el('td'),group=el('div','task-actions');
     if(['queued','leased','failed','cancelled'].includes(task.status)
-        && !(qwen&&task.status==='cancelled'&&Number(task.lease_until)>Date.now()/1000)){
+        && !(qwen&&task.status==='cancelled'&&task.lease_until)){
       const action=['queued','leased'].includes(task.status)?'cancel':'retry';
       const button=el('button','btn secondary small',action==='cancel'?'取消':'重试');
       button.addEventListener('click',()=>changeGpuTask(task.id,action,button));group.append(button);

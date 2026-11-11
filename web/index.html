@@ -20,6 +20,7 @@
 ::selection{background:#335d8d;color:#fff}input,textarea{caret-color:var(--cyan)}:focus-visible{outline:2px solid var(--cyan);outline-offset:3px}a{text-underline-offset:3px}*{scrollbar-color:#42618b #10192a}th,td,.checks dd{font-variant-numeric:tabular-nums}.task-filters{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px}.task-filters label{color:var(--muted);font-size:12px}.task-filters input{width:min(240px,100%)}.task-actions{display:flex;gap:6px}.checks{margin:0}.checks>div{display:grid;grid-template-columns:150px minmax(0,1fr);gap:18px;padding:15px 0;border-bottom:1px solid var(--line)}.checks>div:last-child{border:0}.checks dt{color:var(--muted)}.checks dd{margin:0;overflow-wrap:anywhere}.code{overflow-wrap:anywhere}#connectionFeedback{margin-bottom:18px}#taskDetail{white-space:pre-wrap}.key-box{flex-wrap:wrap}.key-box input{min-width:160px}button{min-height:36px}.card-head p{line-height:1.7}.nav-label{color:#9aacc7}.brand-sub,.nav-label,.status,.sub,th,.tiny,.kpi-foot,.field label,.notice,.card-head p,.section-title p{font-size:12px}input::placeholder,textarea::placeholder{color:#93a5c1}th{color:#a3b6d0}button svg{vertical-align:middle}
 @media(max-width:700px){:root{font-size:16px}.topbar{align-items:flex-start;flex-direction:column}.top-actions,.key-box{width:100%}.key-box input{flex:1;width:100%;font-size:16px}.checks>div{grid-template-columns:1fr;gap:6px}.task-filters{align-items:flex-start}.main{padding:20px 16px 36px}.btn{min-height:44px}.field label,.notice,.card-head p,.section-title p,.empty{font-size:14px}input,select,textarea{font-size:16px}.hero p{font-size:14px}.code{font-size:13px}.card-head{flex-wrap:wrap}}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+.form-grid[hidden]{display:none}
 .gpu-task-output{white-space:pre-wrap;overflow-wrap:anywhere;min-width:12rem;max-width:34rem;margin:.5rem 0 0}
 </style>
 </head>
@@ -73,7 +74,7 @@
     <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>所属节点</th><th>GPU 设备</th><th>厂商 / 后端</th><th>显存可用 / 总量</th><th>利用率</th><th>计算能力</th><th>执行环境</th><th>状态</th></tr></thead><tbody id="gpuRows"><tr><td colspan="7" class="muted">请先连接集群</td></tr></tbody></table></div>
   </article>
   <div class="notice warn" style="margin-top:14px">GPU 信息由 Worker 通过节点令牌上报，属于自报遥测而非硬件证明。GPU 任务调度要求节点同时报告可用的 PyTorch CUDA 运行环境。</div>
-  <div class="notice" style="margin-top:10px">当前 GPU 调度仅开放受限的矩阵校验任务，不执行用户代码或任意模型。模型推理、跨设备显存聚合及公网自动准入仍未实现。</div>
+  <div class="notice" style="margin-top:10px">配置了本地 Qwen2 模型的在线 Worker 会出现在 GPU 任务队列的模型列表中。</div>
 </section>
 
 <section class="page" id="page-tasks">
@@ -113,7 +114,7 @@
     <p id="gpuTaskFeedback" class="tiny muted" role="status"></p>
     <div class="resource" id="gpuTaskSummary"><div class="empty">连接后读取 GPU 任务统计</div></div>
     <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>任务 ID</th><th>类型</th><th>状态</th><th>分配设备</th><th>预留显存</th><th>尝试次数</th><th>结果</th><th>操作</th></tr></thead><tbody id="gpuTaskRows"><tr><td colspan="8" class="muted">请先连接集群</td></tr></tbody></table></div>
-    <div class="notice" style="margin-top:12px">当前仅执行固定的 CUDA 矩阵校验算子。GPU 资源和运行环境仍由 Worker 自报；公网接入前还需要硬件可信验证、隔离和滥用防护。</div>
+    <div class="notice" style="margin-top:12px">Qwen2 提示词会发送给执行任务的 Worker，并保存在任务记录中。</div>
   </article>
   <article class="card"><div class="card-head"><div><h3>任务记录</h3><p>最近 100 条任务，按创建时间倒序</p><div class="task-filters"><label for="taskFilter">状态</label><select id="taskFilter"><option value="all">全部状态</option><option value="queued">排队中</option><option value="leased">执行中</option><option value="completed">已完成</option><option value="failed">失败</option><option value="cancelled">已取消</option></select><label for="taskSearch">搜索</label><input id="taskSearch" placeholder="任务 ID 或类型"></div></div><span class="status" id="taskLiveStatus">未连接</span></div><div class="table-wrap"><table><thead><tr><th>任务 ID</th><th>类型</th><th>状态</th><th>分配设备</th><th>尝试次数</th><th>创建时间</th><th>结果</th><th>操作</th></tr></thead><tbody id="taskRows"><tr><td colspan="8" class="muted">请先连接集群</td></tr></tbody></table></div></article>
 <article id="taskDetailPanel" class="card hidden" style="margin-top:16px"><div class="card-head"><div><h3>任务详情</h3><p>完整输入、结果与状态；取消使租约失效，设备可能仍会完成当前计算。</p></div><button id="closeTaskDetail" class="btn secondary small">收起详情</button></div><pre id="taskDetail" class="code result" aria-live="polite"></pre></article>
