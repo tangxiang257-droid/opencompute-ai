@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.responses import FileResponse
 from cluster_v03.api import create_router as create_cluster_router
 from cluster_v03.store import ClusterStore
+from cluster_v07.api import create_router as create_gpu_router
 from cluster_v031.api import create_router as create_tp_router
 from cluster_v031.coordinator import SessionCoordinator
 from cluster_v04.api import create_model_router
@@ -63,6 +64,9 @@ app.include_router(create_cluster_router(
     cluster_db,
     admin_key=os.getenv("OPENCOMPUTE_ADMIN_KEY", ""),
     join_key=os.getenv("OPENCOMPUTE_JOIN_KEY", ""),
+))
+app.include_router(create_gpu_router(
+    cluster_db, admin_key=os.getenv("OPENCOMPUTE_ADMIN_KEY", "")
 ))
 
 @app.get("/v0.4/console", include_in_schema=False)

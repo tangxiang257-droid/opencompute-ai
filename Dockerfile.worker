@@ -2,5 +2,6 @@ FROM python:3.11-slim
 WORKDIR /app
 RUN pip install --no-cache-dir "requests>=2.31,<3" "psutil>=5.9,<8"
 COPY cluster_v03/ cluster_v03/
+COPY cluster_v07/ cluster_v07/
 ENV PYTHONUNBUFFERED=1
 CMD ["python", "-m", "cluster_v03.worker"]
