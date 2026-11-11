@@ -130,17 +130,16 @@ class GPUTaskSchedulerTests(unittest.TestCase):
         self.assertEqual(status["tasks"][0]["status"], "queued")
         self.assertEqual(status["tasks"][1]["status"], "leased")
 
-    def test_fresh_telemetry_supersedes_older_reservation_without_double_subtraction(self):
+    def test_fresh_telemetry_does_not_release_an_active_reservation(self):
         self.report()
-        first_task = self.submit(required_vram_mb=6000).json()
-        first = self.claim().json()["task"]
+        first = self.submit(required_vram_mb=6000).json()
+        self.assertEqual(self.claim().json()["task"]["id"], first["id"])
         self.clock.advance(1)
-        self.report(devices=[self.gpu(free_memory_mb=4096)])
-        self.submit(required_vram_mb=3000)
-        second = self.claim().json()["task"]
-        self.assertEqual(first["id"], first_task["id"])
-        self.assertIsNotNone(second)
-        self.assertNotEqual(first["id"], second["id"])
+        self.report()
+        second = self.submit(required_vram_mb=3000).json()
+        self.assertIsNone(self.claim().json()["task"])
+        self.scheduler.cancel(first["id"])
+        self.assertEqual(self.claim().json()["task"]["id"], second["id"])
 
     def test_scheduler_prefers_less_busy_gpu(self):
         self.report(devices=[

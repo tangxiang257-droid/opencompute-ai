@@ -137,10 +137,10 @@ class GPUScheduler:
                 SELECT COALESCE(SUM(required_vram_mb),0)
                 FROM gpu_tasks
                 WHERE status='leased' AND assigned_node=? AND assigned_gpu_index=?
-                  AND lease_until>=? AND assigned_at>=?
-            """, (row["node_id"], row["gpu_index"], now, row["last_seen"])).fetchone()[0]
-            # Subtract leases newer than this telemetry snapshot. A later GPU
-            # report already includes allocations made by running workloads.
+                  AND lease_until>?
+            """, (row["node_id"], row["gpu_index"], now)).fetchone()[0]
+            # Telemetry cannot establish how much of each reservation is
+            # already allocated. Keep the full reservation until lease release.
             available = max(0, int(row["free_memory_mb"]) - int(reserved or 0))
             if available < job["required_vram_mb"]:
                 continue
