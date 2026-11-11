@@ -192,7 +192,7 @@ class GPUScheduler:
 
     def claim(self, node_id, token):
         with self.store._tx() as conn:
-            requester = self.store._require_node(conn, node_id, token)
+            requester = self.store._require_gpu_node(conn, node_id, token)
             now = self.store.clock()
             self._reap(conn, now)
             if requester["last_seen"] < now - self.store.heartbeat_ttl:
@@ -249,7 +249,7 @@ class GPUScheduler:
 
     def lease_active(self, node_id, token, task_id, gpu_index, lease_token):
         with self.store._tx() as conn:
-            self.store._require_node(conn, node_id, token)
+            self.store._require_gpu_node(conn, node_id, token)
             now = self.store.clock()
             self._reap(conn, now)
             job = self._leased_job(conn, node_id, task_id, gpu_index, lease_token, now)
@@ -268,7 +268,7 @@ class GPUScheduler:
         if error is not None and (not isinstance(error, str) or len(error) > 500):
             raise ValueError("GPU task error must be at most 500 characters")
         with self.store._tx() as conn:
-            self.store._require_node(conn, node_id, token)
+            self.store._require_gpu_node(conn, node_id, token)
             now = self.store.clock()
             self._reap(conn, now)
             job = self._leased_job(conn, node_id, task_id, gpu_index, lease_token, now)
