@@ -148,7 +148,7 @@ class PublicPool:
                     seed, token, name=f"public-gpu-{seed[:8]}", platform="unknown",
                     cpu_cores=cores, ram_mb=ram,
                 )
-            except (ValueError, PermissionError, sqlite3.IntegrityError) as exc:
+            except (ValueError, PermissionError, sqlite3.Error) as exc:
                 with self._db(write=True) as conn:
                     conn.execute("DELETE FROM public_workers WHERE id=?", (seed,))
                 raise AdmissionError(409, "Could not register public GPU Worker identity") from exc
