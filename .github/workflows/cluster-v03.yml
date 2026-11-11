@@ -140,9 +140,7 @@ jobs:
       - name: Single-device Qwen2 Safetensors and CUDA fallback checks
         run: python -m unittest discover -s tests -p 'test_qwen2_single_device_v072.py' -v
       - name: GPU inventory, scheduling and lease regressions
-        run: |
-          python -m pip install 'tokenizers>=0.22,<0.23'
-          python -m unittest discover -s tests -p 'test_gpu_*.py' -v
+        run: python -m unittest discover -s tests -p 'test_gpu_*.py' -v
       - name: Compile check source and regression tests
         run: python -m compileall -q backend compute cluster_v03 cluster_v031 cluster_v04 cluster_v05 cluster_v07 tests benchmarks
       - name: v0.5.1 browser dashboard packaging regression
