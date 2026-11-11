@@ -155,6 +155,23 @@ class PublicPool:
         return {"node_id": seed, "token": token, "seed": next_seed,
                 "heartbeat_seconds": HEARTBEAT_SECONDS}
 
+    def leave(self, node_id, token):
+        """Revoke a CPU verification session immediately, without affecting GPU leases."""
+        if not HEX_32.fullmatch(node_id) or not TOKEN.fullmatch(token):
+            raise AdmissionError(401, "Invalid public Worker identity")
+        with self._db(write=True) as conn:
+            worker = conn.execute(
+                "SELECT token_hash, resource FROM public_workers WHERE id=?", (node_id,)
+            ).fetchone()
+            if worker is None or not hmac.compare_digest(
+                worker["token_hash"], hashlib.sha256(token.encode()).hexdigest()
+            ):
+                raise AdmissionError(401, "Invalid public Worker identity")
+            if worker["resource"] != "cpu":
+                raise AdmissionError(403, "Only CPU verification sessions can leave here")
+            conn.execute("DELETE FROM public_workers WHERE id=?", (node_id,))
+        return {"ok": True}
+
     def heartbeat(self, node_id, token, seed, checksum):
         if not TOKEN.fullmatch(token):
             raise AdmissionError(401, "Invalid public Worker token")
