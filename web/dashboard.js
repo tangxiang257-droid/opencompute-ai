@@ -302,7 +302,7 @@ async function loadPublicPool(){
     const metrics=$('publicPoolMetrics');metrics.replaceChildren();
     for(const [label,value] of [
       ['在线 CPU 节点',data.cpu_workers||0],
-      ['在线 GPU 节点',data.gpu_workers||0],
+      ['在线 GPU 节点（设备上报）',data.gpu_workers||0],
       ['在线节点已通过的校验',data.verified_checks||0]
     ]){
       const row=el('div','resource-row');row.append(el('span','',label),el('span'),el('strong','',String(value)));metrics.append(row);

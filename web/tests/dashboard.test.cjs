@@ -193,7 +193,7 @@ test('public admission works before administrator sign-in and uses a keyless com
     d.doc.querySelector('[data-page="connect"]').click();
     await tick();
     assert.equal(d.doc.getElementById('publicPoolControls').hidden,false);
-    assert.match(d.doc.getElementById('publicPoolMetrics').textContent,/在线 GPU 节点1/);
+    assert.match(d.doc.getElementById('publicPoolMetrics').textContent,/在线 GPU 节点（设备上报）1/);
     assert.equal(d.doc.getElementById('downloadPublicWorker').getAttribute('href'),'/v0.8/public/worker.py');
     assert.equal(calls[0][0],'/v0.8/public/status');
     assert.equal(calls[0][1].headers,undefined);

@@ -63,9 +63,9 @@ def validated(model, data):
         raise HTTPException(422, "Invalid public Worker request") from exc
 
 
-def create_router(store, *, enabled, signing_secret):
+def create_router(store, *, enabled):
     router = APIRouter(prefix="/v0.8/public", tags=["Public Worker pool"])
-    pool = PublicPool(store, signing_secret=signing_secret) if enabled and len(signing_secret) >= 16 else None
+    pool = PublicPool(store) if enabled else None
 
     def require_pool():
         if pool is None:
@@ -90,15 +90,16 @@ def create_router(store, *, enabled, signing_secret):
                             filename="opencompute-worker.py")
 
     @router.post("/challenge")
-    def challenge(data=Depends(bounded_json), active_pool=Depends(require_pool)):
+    def challenge(http: Request, data=Depends(bounded_json), active_pool=Depends(require_pool)):
         request = validated(ChallengeRequest, data)
-        return invoke(active_pool.challenge, request.resource)
+        return invoke(active_pool.challenge, request.resource, http.client.host if http.client else None)
 
     @router.post("/join")
-    def join(data=Depends(bounded_json), active_pool=Depends(require_pool)):
+    def join(http: Request, data=Depends(bounded_json), active_pool=Depends(require_pool)):
         request = validated(JoinRequest, data)
         return invoke(active_pool.join, request.challenge.model_dump(),
-                      request.resources.model_dump(), request.checksum)
+                      request.resources.model_dump(), request.checksum,
+                      http.client.host if http.client else None)
 
     @router.post("/heartbeat")
     def heartbeat(data=Depends(bounded_json), active_pool=Depends(require_pool),

@@ -1,6 +1,8 @@
+from contextlib import contextmanager
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from cluster_v03.store import ClusterStore
 from public_pool.store import AdmissionError, PublicPool
@@ -13,7 +15,7 @@ class PublicPoolTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.now = 1000
         self.store = ClusterStore(Path(self.temp.name) / "cluster.sqlite", clock=lambda: self.now)
-        self.pool = PublicPool(self.store, signing_secret="public-pool-tests-only")
+        self.pool = PublicPool(self.store)
 
     def join(self, kind="cpu", **changes):
         challenge = self.pool.challenge(kind)
@@ -27,6 +29,10 @@ class PublicPoolTests(unittest.TestCase):
         self.assertEqual(admission["node_id"], challenge["seed"])
         self.assertEqual(self.pool.status()["cpu_workers"], 1)
         self.assertEqual(self.store.status()["nodes"], [])
+        with self.store._tx() as conn:
+            self.assertIsNone(conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='public_workers'"
+            ).fetchone())
         with self.assertRaises(PermissionError):
             self.store.heartbeat(admission["node_id"], admission["token"],
                                  free_ram_mb=2048, cpu_load_pct=0)
@@ -79,6 +85,60 @@ class PublicPoolTests(unittest.TestCase):
             self.pool.heartbeat(worker["node_id"], worker["token"], reply["seed"],
                                 cpu_checksum(reply["seed"]))
         self.assertEqual(expired.exception.status, 401)
+
+    def test_unauthorized_heartbeats_cannot_block_an_active_worker(self):
+        _, worker = self.join()
+        self.now += 20
+        for _ in range(601):
+            with self.assertRaises(AdmissionError) as refused:
+                self.pool.heartbeat(worker["node_id"], "x" * 43, worker["seed"], 0)
+            self.assertEqual(refused.exception.status, 401)
+        result = self.pool.heartbeat(worker["node_id"], worker["token"], worker["seed"],
+                                     cpu_checksum(worker["seed"]))
+        self.assertNotEqual(result["seed"], worker["seed"])
+
+    def test_challenge_signing_key_survives_restart_and_expiry_is_checked_at_insert(self):
+        challenge = self.pool.challenge("cpu")
+        restarted = PublicPool(self.store)
+        resources = {"cores": 2, "ram_mb": 2048, "vram_mb": 0}
+        restarted.join(challenge, resources, cpu_checksum(challenge["seed"]))
+        self.assertEqual(self.pool.status()["cpu_workers"], 1)
+
+        challenge = self.pool.challenge("cpu")
+        self.now += 59
+        database = self.pool._db
+
+        @contextmanager
+        def delayed_database(*, write=False):
+            if write:
+                self.now += 2
+            with database(write=write) as conn:
+                yield conn
+
+        with patch.object(self.pool, "_db", delayed_database), self.assertRaises(AdmissionError):
+            self.pool.join(challenge, resources, cpu_checksum(challenge["seed"]))
+
+    def test_one_source_cannot_keep_all_public_slots(self):
+        resources = {"cores": 2, "ram_mb": 2048, "vram_mb": 0}
+        for _ in range(12):
+            challenge = self.pool.challenge("cpu")
+            self.pool.join(challenge, resources, cpu_checksum(challenge["seed"]), source="192.0.2.1")
+        self.now += 60
+        challenge = self.pool.challenge("cpu")
+        proof = cpu_checksum(challenge["seed"])
+        with self.assertRaises(AdmissionError) as refused:
+            self.pool.join(challenge, resources, proof, source="192.0.2.1")
+        self.assertEqual(refused.exception.status, 429)
+        self.pool.join(challenge, resources, proof, source="192.0.2.2")
+        self.assertEqual(self.pool.status()["cpu_workers"], 13)
+
+    def test_one_source_cannot_consume_the_entire_admission_budget(self):
+        for _ in range(12):
+            self.pool.challenge("cpu", source="192.0.2.1")
+        with self.assertRaises(AdmissionError) as refused:
+            self.pool.challenge("cpu", source="192.0.2.1")
+        self.assertEqual(refused.exception.status, 429)
+        self.assertIn("signature", self.pool.challenge("cpu", source="192.0.2.2"))
 
     def test_global_challenge_budget_recovers_after_window(self):
         for _ in range(60):

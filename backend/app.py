@@ -71,7 +71,6 @@ app.include_router(create_gpu_router(
 ))
 app.include_router(create_public_pool_router(
     cluster_db, enabled=os.getenv("OPENCOMPUTE_PUBLIC_ADMISSION", "0") == "1",
-    signing_secret=os.getenv("OPENCOMPUTE_ADMIN_KEY", ""),
 ))
 
 @app.get("/v0.4/console", include_in_schema=False)
