@@ -209,6 +209,13 @@ class GPUScheduler:
             if requester["last_seen"] < now - self.store.heartbeat_ttl:
                 raise ValueError("Worker offline; heartbeat first")
             if requester["role"] == "public_gpu":
+                active = conn.execute("""
+                    SELECT 1 FROM gpu_tasks
+                    WHERE assigned_node=? AND status IN ('leased','cancelled')
+                      AND lease_until>? LIMIT 1
+                """, (node_id, now)).fetchone()
+                if active:
+                    return {"task": None}
                 if now - float(requester["gpu_claimed_at"] or 0) < 2.0:
                     return {"task": None}
                 conn.execute("UPDATE nodes SET gpu_claimed_at=? WHERE id=?", (now, node_id))
