@@ -3,6 +3,8 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -12,7 +14,7 @@ from cluster_v03.store import ClusterStore
 from cluster_v07.api import create_router as create_gpu_router
 from cluster_v07.scheduler import expected_matmul_checksum
 from public_pool.api import create_router as create_public_pool_router
-from public_pool.worker import cpu_checksum
+from public_pool.worker import cpu_checksum, cuda_inventory, execute_gpu_task
 
 
 ADMIN = "public-gpu-integration-admin-key-0123456789"
@@ -65,6 +67,50 @@ class PublicGPUIntegrationTests(unittest.TestCase):
         })
         self.assertEqual(joined.status_code, 200, joined.text)
         return joined.json()
+
+    def test_public_cuda_inventory_is_bounded_and_reports_runtime(self):
+        properties = SimpleNamespace(
+            major=8, minor=6, total_memory=8 * 1024**3, uuid="GPU-mock-uuid"
+        )
+        fake_torch = SimpleNamespace(
+            __version__="2.6.0",
+            cuda=SimpleNamespace(
+                get_device_properties=lambda device: properties,
+                mem_get_info=lambda device: (6 * 1024**3, 8 * 1024**3),
+                utilization=lambda device: 12.5,
+                get_device_name=lambda device: "NVIDIA Mock GPU",
+            ),
+        )
+        with patch.dict("sys.modules", {"torch": fake_torch}):
+            inventory = cuda_inventory("cuda:0", "a" * 32)
+        self.assertEqual(inventory["uuid"], "GPU-mock-uuid")
+        self.assertEqual(inventory["vendor"], "nvidia")
+        self.assertEqual(inventory["backend"], "cuda")
+        self.assertEqual(inventory["runtime"], "pytorch_cuda")
+        self.assertEqual(inventory["total_memory_mb"], 8192)
+        self.assertEqual(inventory["free_memory_mb"], 6144)
+        self.assertEqual(inventory["supported_dtypes"], ["fp32", "fp16", "bf16", "tf32"])
+        self.assertNotIn("qwen2_model_id", inventory)
+
+    def test_public_gpu_executor_matches_scheduler_checksum_without_gpu_hardware(self):
+        import torch
+
+        job = {
+            "kind": "matmul_checksum",
+            "payload": {"size": 16},
+            "required_vram_mb": 256,
+        }
+        with (
+            patch("torch.cuda.mem_get_info", return_value=(1024**3, 1024**3)),
+            patch("torch.cuda.synchronize"),
+            patch("torch.cuda.empty_cache"),
+            patch("torch.cuda.get_device_name", return_value="Mock CUDA GPU"),
+        ):
+            result = execute_gpu_task(job, torch.device("cpu"))
+        self.assertEqual(result["operation"], "cuda_matmul_checksum")
+        self.assertEqual(result["size"], 16)
+        self.assertEqual(result["checksum"], expected_matmul_checksum(16))
+        self.assertEqual(result["gpu_name"], "Mock CUDA GPU")
 
     def test_existing_cluster_database_migrates_nodes_as_trusted(self):
         with tempfile.TemporaryDirectory() as folder:
