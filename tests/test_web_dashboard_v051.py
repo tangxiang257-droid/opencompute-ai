@@ -38,7 +38,11 @@ class WebDashboardTests(unittest.TestCase):
         html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
         self.assertIn("目录收录不代表当前都可执行", html)
         self.assertIn("不等于使用本平台设备算力", html)
-        self.assertIn("公网节点执行固定校验任务，资源规格由设备上报", html)
+        self.assertIn("CPU 模式目前仅做接入校验", html)
+        self.assertIn("尚未参与 CPU 任务调度", html)
+        self.assertIn("GPU 模式执行可验证矩阵任务", html)
+        self.assertIn("尚不承载 Qwen2 / DeepSeek 推理", html)
+        self.assertIn("暂非硬件远程证明", html)
 
 
 if __name__ == "__main__":

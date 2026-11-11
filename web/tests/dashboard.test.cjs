@@ -183,6 +183,45 @@ test('Qwen2 mode hides matrix fields and disables submission without an online m
   }finally{d.close()}
 });
 
+test('public GPU nodes are excluded from CPU pool metrics and device rows',async()=>{
+  const publicNode={id:'public-gpu-node',name:'public-gpu-test',role:'public_gpu',
+    online:true,cpu_cores:8,ram_mb:16384,free_ram_mb:8192,cpu_load_pct:0,
+    capabilities:[],last_seen:Date.now()/1000};
+  const d=setup({handler:async p=>{
+    if(p==='/v0.3/status')return {ok:true,status:200,json:async()=>({
+      nodes:[publicNode],tasks:[],counts:{queued:0,leased:0,completed:0,failed:0,cancelled:0}
+    })};
+    if(p==='/v0.7/gpus')return {ok:true,status:200,json:async()=>({devices:[],summary:{registered:0,online:0}})};
+    return {ok:true,status:200,json:async()=>({models:[],enabled:false,running:false,tasks:[],counts:{}})};
+  }});
+  try {
+    connect(d.doc);await tick();
+    assert.equal(d.doc.getElementById('kpiNodes').textContent,'0 / 0');
+    assert.equal(d.doc.getElementById('kpiCpu').textContent,'0');
+    assert.equal(d.doc.getElementById('deviceCount').textContent,'0 台已注册设备');
+    assert.doesNotMatch(d.doc.getElementById('deviceRows').textContent,/public-gpu-test/);
+  }finally{d.close()}
+});
+
+test('GPU inventory labels public Worker nodes separately from trusted Workers',async()=>{
+  const d=setup({handler:async p=>{
+    if(p==='/v0.3/status')return {ok:true,status:200,json:async()=>cluster};
+    if(p==='/v0.7/gpus')return {ok:true,status:200,json:async()=>({
+      summary:{registered:1,online:1,offline:0,total_vram_mb:8192,free_vram_mb:6144},
+      devices:[{node_id:'public-node-12345678',node_name:'public-gpu-1234',node_role:'public_gpu',
+        gpu_index:0,name:'NVIDIA Test GPU',vendor:'nvidia',backend:'cuda',
+        total_memory_mb:8192,free_memory_mb:6144,utilization_pct:10,
+        compute_capability:'8.6',runtime:'pytorch_cuda',runtime_version:'2.6.0',online:true}]
+    })};
+    return {ok:true,status:200,json:async()=>({models:[],enabled:false,running:false,tasks:[],counts:{}})};
+  }});
+  try {
+    connect(d.doc);await tick();
+    assert.match(d.doc.getElementById('gpuRows').textContent,/公共 Worker/);
+    assert.match(d.doc.getElementById('gpuRows').textContent,/NVIDIA Test GPU/);
+  }finally{d.close()}
+});
+
 test('public admission works before administrator sign-in and uses a keyless command',async()=>{
   const calls=[];
   const d=setup({url:'https://compute.example.test',handler:async(p,o)=>{

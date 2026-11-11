@@ -1,3 +1,14 @@
+# OpenCompute AI v0.8.1 — Public CUDA Worker → GPU Task Scheduler
+
+已将通过公共接入验证的 CUDA Worker 接入现有 v0.7 GPU 资源清单与任务调度器：公共 GPU 节点使用独立的 `public_gpu` 身份，只能报告 GPU、领取 GPU 白名单任务并提交自己的租约结果，不能使用可信 CPU Worker 的身份接口。公共矩阵任务的结果会由调度器独立计算校验。
+
+- [公共 CUDA Worker 接入、命令与安全边界](docs/v0.8.1-public-cuda-worker.md)
+- [公共 GPU Worker 集成测试](tests/test_public_gpu_integration.py)
+
+**当前边界：** 第一阶段只开放单个 CUDA 设备的 `matmul_checksum` 白名单任务；GPU 资源数据仍是 Worker 自报遥测，不是硬件远程证明。公共 GPU 上的 Qwen2 推理、多卡上报、跨设备模型分片和张量并行尚未完成。
+
+---
+
 # OpenCompute AI v0.6.0 — 可恢复任务与连接诊断
 
 新增任务详情、取消/重试与筛选，连接诊断页、可主动断开的管理员会话、正确的跨平台 Worker 接入命令，以及可选 HTTPS 入口。沿用现有数据库和模型引擎。

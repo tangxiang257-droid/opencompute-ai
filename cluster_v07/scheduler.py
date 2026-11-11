@@ -51,6 +51,17 @@ def validate_gpu_task(kind, payload, required_vram_mb):
     return {"size": size, "estimated_vram_mb": estimated}
 
 
+def expected_matmul_checksum(size):
+    """Compute the exact checksum for the bounded CUDA matmul task in O(size²)."""
+    if type(size) is not int or not 16 <= size <= 512:
+        raise ValueError("GPU matrix size must be an integer in range 16..512")
+    return sum(
+        sum((i * size + k) % 17 for i in range(size))
+        * sum((k * size + j) % 19 + 1 for j in range(size))
+        for k in range(size)
+    )
+
+
 class GPUScheduler:
     def __init__(self, store, *, lease_seconds=120.0):
         self.store = store
@@ -192,11 +203,22 @@ class GPUScheduler:
 
     def claim(self, node_id, token):
         with self.store._tx() as conn:
-            requester = self.store._require_node(conn, node_id, token)
+            requester = self.store._require_gpu_node(conn, node_id, token)
             now = self.store.clock()
             self._reap(conn, now)
             if requester["last_seen"] < now - self.store.heartbeat_ttl:
                 raise ValueError("Worker offline; heartbeat first")
+            if requester["role"] == "public_gpu":
+                active = conn.execute("""
+                    SELECT 1 FROM gpu_tasks
+                    WHERE assigned_node=? AND status IN ('leased','cancelled')
+                      AND lease_until>? LIMIT 1
+                """, (node_id, now)).fetchone()
+                if active:
+                    return {"task": None}
+                if now - float(requester["gpu_claimed_at"] or 0) < 2.0:
+                    return {"task": None}
+                conn.execute("UPDATE nodes SET gpu_claimed_at=? WHERE id=?", (now, node_id))
             devices = self._available_devices(conn, now)
             capacity = max((entry[1] for entry in devices if entry[3] == node_id), default=0)
             queued = conn.execute("""
@@ -204,6 +226,8 @@ class GPUScheduler:
                 ORDER BY created,id
             """, (capacity,))
             for job in queued:
+                if requester["role"] == "public_gpu" and job["kind"] != "matmul_checksum":
+                    continue
                 payload = json.loads(job["payload_json"])
                 device = next((row for _, available, _, _, _, row in devices
                                if available >= job["required_vram_mb"]
@@ -249,7 +273,7 @@ class GPUScheduler:
 
     def lease_active(self, node_id, token, task_id, gpu_index, lease_token):
         with self.store._tx() as conn:
-            self.store._require_node(conn, node_id, token)
+            self.store._require_gpu_node(conn, node_id, token)
             now = self.store.clock()
             self._reap(conn, now)
             job = self._leased_job(conn, node_id, task_id, gpu_index, lease_token, now)
@@ -268,10 +292,19 @@ class GPUScheduler:
         if error is not None and (not isinstance(error, str) or len(error) > 500):
             raise ValueError("GPU task error must be at most 500 characters")
         with self.store._tx() as conn:
-            self.store._require_node(conn, node_id, token)
+            node = self.store._require_gpu_node(conn, node_id, token)
             now = self.store.clock()
             self._reap(conn, now)
             job = self._leased_job(conn, node_id, task_id, gpu_index, lease_token, now)
+            if (job["kind"] == "matmul_checksum" and node["role"] == "public_gpu"
+                    and error is None):
+                payload = json.loads(job["payload_json"])
+                expected = expected_matmul_checksum(payload["size"])
+                checksum = result.get("checksum")
+                if (result.get("operation") != "cuda_matmul_checksum"
+                        or result.get("size") != payload["size"]
+                        or type(checksum) is not int or checksum != expected):
+                    error = "public GPU result failed deterministic checksum verification"
             if job["status"] == "cancelled":
                 status, error = "cancelled", job["error"]
             else:

@@ -69,7 +69,10 @@ class ClusterStore:
                     slots INTEGER NOT NULL,
                     capabilities TEXT NOT NULL,
                     last_seen REAL NOT NULL,
-                    created REAL NOT NULL
+                    created REAL NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'trusted',
+                    gpu_claimed_at REAL NOT NULL DEFAULT 0,
+                    gpu_reported_at REAL NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY,
@@ -111,6 +114,13 @@ class ClusterStore:
                 );
                 CREATE INDEX IF NOT EXISTS gpu_devices_node ON gpu_devices(node_id);
             """)
+            node_columns = {row["name"] for row in conn.execute("PRAGMA table_info(nodes)")}
+            if "role" not in node_columns:
+                conn.execute("ALTER TABLE nodes ADD COLUMN role TEXT NOT NULL DEFAULT 'trusted'")
+            if "gpu_claimed_at" not in node_columns:
+                conn.execute("ALTER TABLE nodes ADD COLUMN gpu_claimed_at REAL NOT NULL DEFAULT 0")
+            if "gpu_reported_at" not in node_columns:
+                conn.execute("ALTER TABLE nodes ADD COLUMN gpu_reported_at REAL NOT NULL DEFAULT 0")
             gpu_columns = {row["name"] for row in conn.execute("PRAGMA table_info(gpu_devices)")}
             if "runtime" not in gpu_columns:
                 conn.execute("ALTER TABLE gpu_devices ADD COLUMN runtime TEXT NOT NULL DEFAULT 'unknown'")
@@ -151,7 +161,10 @@ class ClusterStore:
         token = secrets.token_urlsafe(32)
         now = self.clock()
         with self._tx() as conn:
-            conn.execute("""INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            conn.execute("""INSERT INTO nodes(
+                id,name,token_hash,platform,cpu_cores,ram_mb,free_ram_mb,cpu_load_pct,
+                compute_score,slots,capabilities,last_seen,created
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                          (node_id, name, hashlib.sha256(token.encode()).hexdigest(),
                           platform, cpu_cores, ram_mb, ram_mb, 0.0, compute_score,
                           slots, json.dumps(sorted(set(capabilities))), now, now))
@@ -159,12 +172,53 @@ class ClusterStore:
                 "lease_seconds": self.lease_seconds}
 
     @staticmethod
-    def _require_node(conn, node_id, token):
+    def _valid_node_token(row, token):
+        return bool(row is not None and token and hmac.compare_digest(
+            row["token_hash"], hashlib.sha256(token.encode()).hexdigest()
+        ))
+
+    @classmethod
+    def _require_node(cls, conn, node_id, token):
         row = conn.execute("SELECT * FROM nodes WHERE id=?", (node_id,)).fetchone()
-        if row is None or not token or not hmac.compare_digest(
-                row["token_hash"], hashlib.sha256(token.encode()).hexdigest()):
+        if not cls._valid_node_token(row, token) or row["role"] != "trusted":
             raise PermissionError("invalid node credentials")
         return row
+
+    @classmethod
+    def _require_gpu_node(cls, conn, node_id, token):
+        row = conn.execute("SELECT * FROM nodes WHERE id=?", (node_id,)).fetchone()
+        if not cls._valid_node_token(row, token) or row["role"] not in ("trusted", "public_gpu"):
+            raise PermissionError("invalid GPU Worker credentials")
+        return row
+
+    def register_public_gpu(self, node_id, token, *, name, platform, cpu_cores, ram_mb):
+        """Register a public GPU Worker with GPU-only credentials and no CPU-task rights."""
+        if (not isinstance(node_id, str) or len(node_id) != 32
+                or any(ch not in "0123456789abcdef" for ch in node_id)
+                or not isinstance(token, str) or not token or len(token) > 128):
+            raise ValueError("invalid public GPU Worker identity")
+        if (type(cpu_cores) is not int or not 2 <= cpu_cores <= 1024
+                or type(ram_mb) is not int or not 2048 <= ram_mb <= 4194304):
+            raise ValueError("invalid public GPU Worker resources")
+        now = self.clock()
+        with self._tx() as conn:
+            conn.execute("""INSERT INTO nodes(
+                id,name,token_hash,platform,cpu_cores,ram_mb,free_ram_mb,cpu_load_pct,
+                compute_score,slots,capabilities,last_seen,created,role
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'public_gpu')""",
+                (node_id, name[:128], hashlib.sha256(token.encode()).hexdigest(),
+                 platform[:32], cpu_cores, ram_mb, ram_mb, 0.0, 1.0, 1, "[]", now, now))
+        return {"id": node_id, "heartbeat_seconds": 20,
+                "lease_seconds": self.lease_seconds}
+
+    def heartbeat_public_gpu(self, node_id, token):
+        """Refresh only the GPU scheduling liveness of a public GPU Worker."""
+        with self._tx() as conn:
+            node = self._require_gpu_node(conn, node_id, token)
+            if node["role"] != "public_gpu":
+                raise PermissionError("not a public GPU Worker")
+            conn.execute("UPDATE nodes SET last_seen=? WHERE id=?", (self.clock(), node_id))
+        return {"ok": True}
 
     def heartbeat(self, node_id, token, *, free_ram_mb, cpu_load_pct):
         with self._tx() as conn:
@@ -411,7 +465,19 @@ class ClusterStore:
 
         now = self.clock()
         with self._tx() as conn:
-            self._require_node(conn, node_id, token)
+            node = self._require_gpu_node(conn, node_id, token)
+            if node["role"] == "public_gpu":
+                if (len(devices) != 1 or devices[0].get("index") != 0
+                        or (devices[0].get("vendor"), devices[0].get("backend"),
+                            devices[0].get("runtime", "unknown"))
+                        != ("nvidia", "cuda", "pytorch_cuda")):
+                    raise ValueError("public GPU Workers may report exactly one CUDA-visible NVIDIA device")
+                if (devices[0].get("qwen2_model_id") is not None
+                        or devices[0].get("qwen2_vram_mb") is not None):
+                    raise ValueError("public GPU Workers cannot advertise trusted Qwen2 model assets")
+                if now - float(node["gpu_reported_at"] or 0) < 5.0:
+                    raise ValueError("public GPU telemetry may be refreshed at most once every 5 seconds")
+                conn.execute("UPDATE nodes SET gpu_reported_at=? WHERE id=?", (now, node_id))
             conn.execute("DELETE FROM gpu_devices WHERE node_id=?", (node_id,))
             for gpu in devices:
                 conn.execute(
@@ -438,7 +504,7 @@ class ClusterStore:
                           g.total_memory_mb,g.free_memory_mb,g.utilization_pct,
                           g.compute_capability,g.supported_dtypes,g.runtime,
                           g.runtime_version,g.qwen2_model_id,g.qwen2_vram_mb,g.last_seen,
-                          n.name AS node_name,n.last_seen AS node_last_seen
+                          n.name AS node_name,n.role AS node_role,n.last_seen AS node_last_seen
                    FROM gpu_devices g JOIN nodes n ON n.id=g.node_id
                    ORDER BY n.name,g.gpu_index"""
             ).fetchall()
@@ -473,7 +539,7 @@ class ClusterStore:
         with self._tx() as conn:
             now = self.clock()
             self._reap(conn, now)
-            nodes = [dict(row) for row in conn.execute("""SELECT id,name,platform,
+            nodes = [dict(row) for row in conn.execute("""SELECT id,name,platform,role,
                       cpu_cores,ram_mb,free_ram_mb,cpu_load_pct,compute_score,
                       slots,capabilities,last_seen FROM nodes ORDER BY name,id""")]
             for node in nodes:
