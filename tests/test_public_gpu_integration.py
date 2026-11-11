@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from cluster_v03.api import create_router as create_cluster_router
 from cluster_v03.store import ClusterStore
 from cluster_v07.api import create_router as create_gpu_router
 from cluster_v07.scheduler import expected_matmul_checksum
@@ -37,6 +38,9 @@ class PublicGPUIntegrationTests(unittest.TestCase):
             lease_seconds=25,
         )
         app = FastAPI()
+        app.include_router(create_cluster_router(
+            self.store, admin_key=ADMIN, join_key="public-gpu-test-join-key-012345"
+        ))
         app.include_router(create_gpu_router(self.store, admin_key=ADMIN))
         app.include_router(create_public_pool_router(self.store, enabled=True))
         self.client = TestClient(app)
@@ -72,6 +76,17 @@ class PublicGPUIntegrationTests(unittest.TestCase):
             self.store.heartbeat(
                 node_id, token, free_ram_mb=8192, cpu_load_pct=0.0
             )
+        cpu_heartbeat = self.client.post(
+            f"/v0.3/nodes/{node_id}/heartbeat",
+            headers={"X-Node-Token": token},
+            json={"free_ram_mb": 8192, "cpu_load_pct": 0.0},
+        )
+        self.assertEqual(cpu_heartbeat.status_code, 401, cpu_heartbeat.text)
+        cpu_claim = self.client.post(
+            f"/v0.3/nodes/{node_id}/claim",
+            headers={"X-Node-Token": token},
+        )
+        self.assertEqual(cpu_claim.status_code, 401, cpu_claim.text)
 
         inventory = self.client.post(
             f"/v0.7/nodes/{node_id}/gpus",
@@ -239,6 +254,63 @@ class PublicGPUIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(claimed.status_code, 200, claimed.text)
         self.assertIsNone(claimed.json()["task"])
+
+    def test_public_gpu_claim_polling_is_rate_limited(self):
+        worker = self.admit_gpu_worker()
+        node_id, token = worker["node_id"], worker["token"]
+        device = {
+            "index": 0,
+            "uuid": "GPU-public-claim-cooldown",
+            "name": "NVIDIA Public Test GPU",
+            "vendor": "nvidia",
+            "backend": "cuda",
+            "total_memory_mb": 8192,
+            "free_memory_mb": 8192,
+            "utilization_pct": 0.0,
+            "runtime": "pytorch_cuda",
+            "runtime_version": "2.6.0",
+        }
+        inventory = self.client.post(
+            f"/v0.7/nodes/{node_id}/gpus",
+            headers={"X-Node-Token": token},
+            json={"devices": [device]},
+        )
+        self.assertEqual(inventory.status_code, 200, inventory.text)
+
+        first = self.client.post(
+            f"/v0.7/nodes/{node_id}/gpu-claim",
+            headers={"X-Node-Token": token},
+        )
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertIsNone(first.json()["task"])
+        with self.store._tx() as conn:
+            first_claim_at = conn.execute(
+                "SELECT gpu_claimed_at FROM nodes WHERE id=?", (node_id,)
+            ).fetchone()["gpu_claimed_at"]
+
+        second = self.client.post(
+            f"/v0.7/nodes/{node_id}/gpu-claim",
+            headers={"X-Node-Token": token},
+        )
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertIsNone(second.json()["task"])
+        with self.store._tx() as conn:
+            second_claim_at = conn.execute(
+                "SELECT gpu_claimed_at FROM nodes WHERE id=?", (node_id,)
+            ).fetchone()["gpu_claimed_at"]
+        self.assertEqual(first_claim_at, second_claim_at)
+
+        self.clock.advance(2.1)
+        third = self.client.post(
+            f"/v0.7/nodes/{node_id}/gpu-claim",
+            headers={"X-Node-Token": token},
+        )
+        self.assertEqual(third.status_code, 200, third.text)
+        with self.store._tx() as conn:
+            third_claim_at = conn.execute(
+                "SELECT gpu_claimed_at FROM nodes WHERE id=?", (node_id,)
+            ).fetchone()["gpu_claimed_at"]
+        self.assertGreater(third_claim_at, second_claim_at)
 
     def test_public_heartbeat_refreshes_gpu_scheduler_liveness(self):
         worker = self.admit_gpu_worker()
