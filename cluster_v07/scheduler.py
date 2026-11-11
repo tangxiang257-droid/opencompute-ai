@@ -208,6 +208,10 @@ class GPUScheduler:
             self._reap(conn, now)
             if requester["last_seen"] < now - self.store.heartbeat_ttl:
                 raise ValueError("Worker offline; heartbeat first")
+            if requester["role"] == "public_gpu":
+                if now - float(requester["gpu_claimed_at"] or 0) < 2.0:
+                    return {"task": None}
+                conn.execute("UPDATE nodes SET gpu_claimed_at=? WHERE id=?", (now, node_id))
             devices = self._available_devices(conn, now)
             capacity = max((entry[1] for entry in devices if entry[3] == node_id), default=0)
             queued = conn.execute("""
