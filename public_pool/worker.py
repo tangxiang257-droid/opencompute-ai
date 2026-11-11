@@ -245,7 +245,11 @@ def run(origin, resource):
                     if exc.code in (401, 409):
                         print("Public GPU credentials expired. Reconnecting.", flush=True)
                         break
-                    raise RuntimeError(f"GPU inventory refresh failed (HTTP {exc.code}).") from None
+                    if exc.code == 422:
+                        print("GPU telemetry refresh was rejected or rate-limited; retrying later.", flush=True)
+                        next_gpu_report = time.monotonic() + 30
+                    else:
+                        raise RuntimeError(f"GPU inventory refresh failed (HTTP {exc.code}).") from None
                 except OSError:
                     print("GPU inventory refresh temporarily failed.", flush=True)
                     next_gpu_report = time.monotonic() + 5
