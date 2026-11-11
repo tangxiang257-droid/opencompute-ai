@@ -176,6 +176,17 @@ def browser_worker_script():
     return FileResponse(WEB_INDEX.with_name("browser-worker.js"), media_type="text/javascript")
 
 
+@app.get("/assets/join-client.js", include_in_schema=False)
+def join_client_script():
+    return FileResponse(WEB_INDEX.with_name("join-client.js"), media_type="text/javascript")
+
+
+@app.get("/join", include_in_schema=False)
+def join_page():
+    """Public opt-in entry point: no administrator key or privileged API."""
+    return FileResponse(WEB_INDEX.with_name("join.html"), media_type="text/html")
+
+
 @app.get("/", include_in_schema=False)
 def dashboard():
     return FileResponse(WEB_INDEX, media_type="text/html")
