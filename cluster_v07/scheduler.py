@@ -51,6 +51,17 @@ def validate_gpu_task(kind, payload, required_vram_mb):
     return {"size": size, "estimated_vram_mb": estimated}
 
 
+def expected_matmul_checksum(size):
+    """Compute the exact checksum for the bounded CUDA matmul task in O(size²)."""
+    if type(size) is not int or not 16 <= size <= 512:
+        raise ValueError("GPU matrix size must be an integer in range 16..512")
+    return sum(
+        sum((i * size + k) % 17 for i in range(size))
+        * sum((k * size + j) % 19 + 1 for j in range(size))
+        for k in range(size)
+    )
+
+
 class GPUScheduler:
     def __init__(self, store, *, lease_seconds=120.0):
         self.store = store
@@ -268,10 +279,19 @@ class GPUScheduler:
         if error is not None and (not isinstance(error, str) or len(error) > 500):
             raise ValueError("GPU task error must be at most 500 characters")
         with self.store._tx() as conn:
-            self.store._require_gpu_node(conn, node_id, token)
+            node = self.store._require_gpu_node(conn, node_id, token)
             now = self.store.clock()
             self._reap(conn, now)
             job = self._leased_job(conn, node_id, task_id, gpu_index, lease_token, now)
+            if (job["kind"] == "matmul_checksum" and node["role"] == "public_gpu"
+                    and error is None):
+                payload = json.loads(job["payload_json"])
+                expected = expected_matmul_checksum(payload["size"])
+                checksum = result.get("checksum")
+                if (result.get("operation") != "cuda_matmul_checksum"
+                        or result.get("size") != payload["size"]
+                        or type(checksum) is not int or checksum != expected):
+                    error = "public GPU result failed deterministic checksum verification"
             if job["status"] == "cancelled":
                 status, error = "cancelled", job["error"]
             else:
