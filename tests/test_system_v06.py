@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.operations import create_router
+from backend.version import VERSION
 from cluster_v03.store import ClusterStore
 
 ADMIN = "diagnostic-admin-0123456789"
@@ -34,7 +35,7 @@ class SystemTests(unittest.TestCase):
         response = self.get()
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(data["version"], "0.6.0")
+        self.assertEqual(data["version"], VERSION)
         self.assertEqual(data["database"], "ok")
         self.assertEqual(data["workers"]["online"], 0)
         self.assertEqual(data["qwen2"]["reason"], "bundle_not_configured")

@@ -1,6 +1,7 @@
 import unittest
 from fastapi.testclient import TestClient
 from backend.app import app
+from backend.version import VERSION
 
 
 class DashboardHttpTests(unittest.TestCase):
@@ -13,7 +14,7 @@ class DashboardHttpTests(unittest.TestCase):
 
     def test_serves_script_with_correct_type_and_current_health(self):
         with TestClient(app) as api:
-            self.assertEqual(api.get("/health").json()["version"], "0.6.0")
+            self.assertEqual(api.get("/health").json()["version"], VERSION)
             page = api.get("/")
             self.assertIn('/assets/dashboard.js', page.text)
             script = api.get("/assets/dashboard.js")
