@@ -459,7 +459,16 @@ class ClusterStore:
 
         now = self.clock()
         with self._tx() as conn:
-            self._require_gpu_node(conn, node_id, token)
+            node = self._require_gpu_node(conn, node_id, token)
+            if node["role"] == "public_gpu":
+                if (len(devices) != 1 or devices[0].get("index") != 0
+                        or (devices[0].get("vendor"), devices[0].get("backend"),
+                            devices[0].get("runtime", "unknown"))
+                        != ("nvidia", "cuda", "pytorch_cuda")):
+                    raise ValueError("public GPU Workers may report exactly one CUDA-visible NVIDIA device")
+                if (devices[0].get("qwen2_model_id") is not None
+                        or devices[0].get("qwen2_vram_mb") is not None):
+                    raise ValueError("public GPU Workers cannot advertise trusted Qwen2 model assets")
             conn.execute("DELETE FROM gpu_devices WHERE node_id=?", (node_id,))
             for gpu in devices:
                 conn.execute(
