@@ -109,7 +109,8 @@ function renderGpuInventory(data){
   if(!devices.length){const tr=el('tr');cell(tr,'暂未检测到 NVIDIA GPU。','muted').colSpan=8;body.append(tr);return}
   devices.forEach(gpu=>{
     const tr=el('tr');
-    cell(tr,(gpu.node_name||'未知节点')+' · '+String(gpu.node_id||'').slice(0,8),'node-name');
+    const role=gpu.node_role==='public_gpu'?'公共 Worker':'可信 Worker';
+    cell(tr,(gpu.node_name||'未知节点')+' · '+String(gpu.node_id||'').slice(0,8)+' · '+role,'node-name');
     cell(tr,'GPU '+gpu.gpu_index+' · '+gpu.name);
     cell(tr,(gpu.vendor||'—').toUpperCase()+' / '+(gpu.backend||'—').toUpperCase());
     cell(tr,bytesMb(gpu.free_memory_mb)+' / '+bytesMb(gpu.total_memory_mb));
