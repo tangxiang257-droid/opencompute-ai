@@ -46,7 +46,7 @@
 <div id="connectionFeedback" class="notice warn hidden" role="status" aria-live="polite"></div>
 
 <section class="page active" id="page-overview">
-  <div class="hero"><h2>让分散的设备，成为协同工作的 AI 算力网络。</h2><p>统一查看设备资源、任务调度与模型推理状态。统一管理 CPU 与 GPU 资源，逐步扩展到跨设备模型并行。</p><div class="hero-foot"><span class="pill">v0.6.0 控制台</span><span class="pill">节点状态实时读取</span><span class="pill">任务队列可操作</span></div></div>
+  <div class="hero"><h2>让分散的设备，成为协同工作的 AI 算力网络。</h2><p>统一查看设备资源、任务调度与模型推理状态。统一管理 CPU 与 GPU 资源，逐步扩展到跨设备模型并行。</p><div class="hero-foot"><span class="pill">v0.7.1 GPU 调度预览</span><span class="pill">节点状态实时读取</span><span class="pill">任务队列可操作</span></div></div>
   <div class="grid kpis">
     <article class="card"><div class="kpi-top"><span>在线设备</span><span class="kpi-icon">▣</span></div><div class="kpi-value" id="kpiNodes">—</div><div class="kpi-foot" id="kpiNodesFoot">等待集群连接</div></article>
     <article class="card"><div class="kpi-top"><span>在线 CPU 核心</span><span class="kpi-icon">⌘</span></div><div class="kpi-value" id="kpiCpu">—</div><div class="kpi-foot">来自在线 Worker 注册信息</div></article>
@@ -69,16 +69,16 @@
   <article class="card" style="margin-top:14px">
     <div class="card-head"><div><h3>GPU 算力池</h3><p>在线显卡、显存容量与设备负载</p></div><span id="gpuPoolState" class="status wait">等待数据</span></div>
     <div class="resource" id="gpuSummary"><div class="empty"><strong>等待 GPU 数据</strong>连接集群后读取 GPU Worker 上报的资源</div></div>
-    <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>所属节点</th><th>GPU 设备</th><th>厂商 / 后端</th><th>显存可用 / 总量</th><th>利用率</th><th>计算能力</th><th>状态</th></tr></thead><tbody id="gpuRows"><tr><td colspan="7" class="muted">请先连接集群</td></tr></tbody></table></div>
+    <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>所属节点</th><th>GPU 设备</th><th>厂商 / 后端</th><th>显存可用 / 总量</th><th>利用率</th><th>计算能力</th><th>执行环境</th><th>状态</th></tr></thead><tbody id="gpuRows"><tr><td colspan="7" class="muted">请先连接集群</td></tr></tbody></table></div>
   </article>
-  <div class="notice warn" style="margin-top:14px">GPU 信息由 Worker 通过节点令牌上报，目前属于自报遥测，尚未完成硬件证明、显存预约或 GPU 任务调度。通用 Worker 仍只执行受限 CPU 示例任务。</div>
-  <div class="notice" style="margin-top:10px">当前阶段只完成 GPU 自动发现、注册和监控。GPU 推理、跨设备显存聚合及公网自动准入将在后续阶段实现；不要把当前版本当作已开放的公共 GPU 执行网络。</div>
+  <div class="notice warn" style="margin-top:14px">GPU 信息由 Worker 通过节点令牌上报，属于自报遥测而非硬件证明。GPU 任务调度要求节点同时报告可用的 PyTorch CUDA 运行环境。</div>
+  <div class="notice" style="margin-top:10px">当前 GPU 调度仅开放受限的矩阵校验任务，不执行用户代码或任意模型。模型推理、跨设备显存聚合及公网自动准入仍未实现。</div>
 </section>
 
 <section class="page" id="page-tasks">
-  <div class="section-title"><div><h2>任务队列</h2><p>提交可控的 CPU 测试任务，观察节点领取与执行结果</p></div><button class="btn secondary small" id="refreshTasks">刷新队列</button></div>
+  <div class="section-title"><div><h2>任务队列</h2><p>提交受限 CPU / GPU 任务，观察设备领取、显存预留与执行结果</p></div><button class="btn secondary small" id="refreshTasks">刷新队列</button></div>
   <div class="grid two-col">
-    <article class="card"><div class="card-head"><div><h3>创建计算任务</h3><p>当前开放三种受限的 CPU 任务</p></div></div>
+    <article class="card"><div class="card-head"><div><h3>创建计算任务</h3><p>CPU 队列开放三种受限任务；GPU 队列独立调度 CUDA 任务</p></div></div>
       <form id="taskForm"><div class="form-grid">
         <div class="field full"><label for="taskKind">任务类型</label><select id="taskKind"><option value="sum">数值求和</option><option value="sha256">SHA-256 摘要</option><option value="matmul_checksum">矩阵乘法校验</option></select></div>
         <div class="field full" id="sumField"><label for="sumInput">数值列表（逗号分隔）</label><input id="sumInput" value="1,2,3,4,5"></div>
@@ -90,6 +90,17 @@
     </article>
     <article class="card"><div class="card-head"><div><h3>队列概况</h3><p>任务生命周期计数</p></div></div><div class="resource" id="taskSummary"><div class="empty">连接后读取任务统计</div></div><div class="notice" style="margin-top:15px">任务会被调度到支持对应能力且资源满足要求的在线节点。若没有匹配节点，任务将保持排队状态。</div></article>
   </div>
+  <article class="card" style="margin-top:16px">
+    <div class="card-head"><div><h3>GPU 任务调度</h3><p>向已接入的 NVIDIA CUDA Worker 提交受限矩阵校验任务</p></div><span class="status wait" id="gpuTaskLiveStatus">未连接</span></div>
+    <form id="gpuTaskForm"><div class="form-grid">
+      <div class="field"><label for="gpuTaskSize">矩阵边长（16–512）</label><input id="gpuTaskSize" type="number" min="16" max="512" value="128"></div>
+      <div class="field"><label for="gpuTaskVram">预留显存（MB）</label><input id="gpuTaskVram" type="number" min="64" max="1048576" value="256"></div>
+    </div><div class="form-actions"><button class="btn" type="submit" id="submitGpuTask">提交 GPU 任务</button><span class="tiny muted">需要管理员密钥；没有可用 GPU 时任务会留在队列中</span></div></form>
+    <p id="gpuTaskFeedback" class="tiny muted" role="status"></p>
+    <div class="resource" id="gpuTaskSummary"><div class="empty">连接后读取 GPU 任务统计</div></div>
+    <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>任务 ID</th><th>类型</th><th>状态</th><th>分配设备</th><th>预留显存</th><th>尝试次数</th><th>结果</th><th>操作</th></tr></thead><tbody id="gpuTaskRows"><tr><td colspan="8" class="muted">请先连接集群</td></tr></tbody></table></div>
+    <div class="notice" style="margin-top:12px">当前仅执行固定的 CUDA 矩阵校验算子。GPU 资源和运行环境仍由 Worker 自报；公网接入前还需要硬件可信验证、隔离和滥用防护。</div>
+  </article>
   <article class="card"><div class="card-head"><div><h3>任务记录</h3><p>最近 100 条任务，按创建时间倒序</p><div class="task-filters"><label for="taskFilter">状态</label><select id="taskFilter"><option value="all">全部状态</option><option value="queued">排队中</option><option value="leased">执行中</option><option value="completed">已完成</option><option value="failed">失败</option><option value="cancelled">已取消</option></select><label for="taskSearch">搜索</label><input id="taskSearch" placeholder="任务 ID 或类型"></div></div><span class="status" id="taskLiveStatus">未连接</span></div><div class="table-wrap"><table><thead><tr><th>任务 ID</th><th>类型</th><th>状态</th><th>分配设备</th><th>尝试次数</th><th>创建时间</th><th>结果</th><th>操作</th></tr></thead><tbody id="taskRows"><tr><td colspan="8" class="muted">请先连接集群</td></tr></tbody></table></div></article>
 <article id="taskDetailPanel" class="card hidden" style="margin-top:16px"><div class="card-head"><div><h3>任务详情</h3><p>完整输入、结果与状态；取消使租约失效，设备可能仍会完成当前计算。</p></div><button id="closeTaskDetail" class="btn secondary small">收起详情</button></div><pre id="taskDetail" class="code result" aria-live="polite"></pre></article>
 </section>
@@ -135,6 +146,10 @@ GET  /v0.3/tasks/{id}
 POST /v0.3/tasks/{id}/cancel
 POST /v0.3/tasks/{id}/retry
 POST /v0.3/tasks
+GET  /v0.7/gpus
+POST /v0.7/gpu-tasks
+POST /v0.7/nodes/{id}/gpu-claim
+POST /v0.7/gpu-tasks/{id}/complete
 GET  /v0.4/models
 GET  /v0.5/status
 POST /v0.5/requests</div><p class="muted tiny" style="line-height:1.8">Worker 节点使用 X-Join-Key 完成注册，之后使用节点令牌发送心跳、领取任务和提交结果。不要把管理员密钥或节点令牌写入公开网页、代码仓库或 URL。</p><a href="/docs" target="_blank" rel="noreferrer">打开 FastAPI 交互式 API 文档 ↗</a></article>

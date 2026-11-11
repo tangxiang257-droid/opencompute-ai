@@ -6,6 +6,7 @@ on:
       - 'cluster_v031/**'
       - 'cluster_v04/**'
       - 'cluster_v05/**'
+      - 'cluster_v07/**'
       - 'compute/qwen2_*.py'
       - 'tests/test_qwen2_safetensors_v042.py'
       - 'tests/test_qwen2_*.py'
@@ -42,6 +43,9 @@ on:
       - 'scripts/**'
       - 'docs/v0.6-windows-local-launcher.md'
       - 'tests/test_windows_launcher_v06.py'
+      - 'tests/test_gpu_pool_v07.py'
+      - 'tests/test_gpu_scheduler_v071.py'
+      - 'docs/v0.7.1-gpu-task-scheduling.md'
       - 'Dockerfile.worker'
       - 'Dockerfile.tp-worker'
       - 'Dockerfile'
@@ -56,6 +60,7 @@ on:
       - 'cluster_v031/**'
       - 'cluster_v04/**'
       - 'cluster_v05/**'
+      - 'cluster_v07/**'
       - 'compute/qwen2_*.py'
       - 'tests/test_qwen2_safetensors_v042.py'
       - 'tests/test_qwen2_*.py'
@@ -92,6 +97,9 @@ on:
       - 'scripts/**'
       - 'docs/v0.6-windows-local-launcher.md'
       - 'tests/test_windows_launcher_v06.py'
+      - 'tests/test_gpu_pool_v07.py'
+      - 'tests/test_gpu_scheduler_v071.py'
+      - 'docs/v0.7.1-gpu-task-scheduling.md'
       - 'Dockerfile.worker'
       - 'Dockerfile.tp-worker'
       - 'Dockerfile'
@@ -123,8 +131,16 @@ jobs:
           OPENCOMPUTE_ADMIN_KEY=ci-test-admin-placeholder-long-only \
           OPENCOMPUTE_JOIN_KEY=ci-test-join-placeholder-long-only \
           docker compose config --quiet
+      - name: Build API and TP worker images and check imports
+        run: |
+          docker build -t opencompute-ci .
+          docker run --rm opencompute-ci python -c 'from backend.app import app; assert "/v0.7/gpus" in app.openapi()["paths"]'
+          docker build -f Dockerfile.tp-worker -t opencompute-tp-worker-ci .
+          docker run --rm opencompute-tp-worker-ci python -m cluster_v031.worker --help
+      - name: GPU inventory, scheduling and lease regressions
+        run: python -m unittest discover -s tests -p 'test_gpu_*.py' -v
       - name: Compile check source and regression tests
-        run: python -m compileall -q backend compute cluster_v03 cluster_v031 cluster_v04 cluster_v05 tests benchmarks
+        run: python -m compileall -q backend compute cluster_v03 cluster_v031 cluster_v04 cluster_v05 cluster_v07 tests benchmarks
       - name: v0.5.1 browser dashboard packaging regression
         run: python -m unittest discover -s tests -p 'test_web_dashboard_v051.py' -v
       - name: v0.6 Windows local launcher safety regression
