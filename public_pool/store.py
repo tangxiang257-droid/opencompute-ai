@@ -176,6 +176,7 @@ class PublicPool:
                 raise AdmissionError(401, "Public Worker session expired or invalid")
             if seed == worker["previous_seed"]:
                 next_seed = worker["seed"]
+                conn.execute("UPDATE public_workers SET last_seen=? WHERE id=?", (now, node_id))
             else:
                 if seed != worker["seed"]:
                     raise AdmissionError(409, "Verification challenge has changed")
@@ -186,8 +187,6 @@ class PublicPool:
                     UPDATE public_workers
                     SET seed=?,previous_seed=?,last_seen=?,checks=checks+1 WHERE id=?
                 """, (next_seed, seed, now, node_id))
-                worker = dict(worker)
-                worker["resource"] = worker["resource"]
         if worker["resource"] == "cuda":
             try:
                 self.store.heartbeat_public_gpu(node_id, token)
