@@ -134,3 +134,51 @@ test('old inference cleanup cannot unlock a newer in-flight request',async()=>{
     assert.equal(d.doc.getElementById('submitInference').disabled,true);
   }finally{d.close()}
 });
+
+test('GPU queue submits text to the selected Qwen2 model and renders the full output as text',async()=>{
+  const model='a'.repeat(64),output='<em>模型输出</em> '+ '继续生成 '.repeat(20);
+  const submitted=[];
+  const d=setup({handler:async(p,o)=>{
+    let data={};
+    if(p==='/v0.3/status')data=cluster;
+    if(p==='/v0.7/gpus')data={devices:[{online:true,qwen2_model_id:model,qwen2_vram_mb:4096}]};
+    if(p==='/v0.7/gpu-tasks'&&o?.method==='POST'){
+      submitted.push(JSON.parse(o.body));
+      data={id:'qwen-task',status:'queued',required_vram_mb:4096};
+    }else if(p==='/v0.7/gpu-tasks'&&submitted.length){
+      data={tasks:[{id:'qwen-task',kind:'qwen2_generate',status:'completed',result:{text:output},required_vram_mb:4096,max_attempts:3}]};
+    }
+    return {ok:true,status:200,json:async()=>data};
+  }});
+  try {
+    connect(d.doc);await tick();
+    const kind=d.doc.getElementById('gpuTaskKind');
+    assert.ok(kind);
+    kind.value='qwen2_generate';kind.dispatchEvent(new d.w.Event('change'));
+    d.doc.getElementById('gpuQwenModel').value=model;
+    d.doc.getElementById('gpuQwenPrompt').value='你好';
+    d.doc.getElementById('gpuQwenTokens').value='16';
+    d.doc.getElementById('gpuTaskForm').dispatchEvent(new d.w.Event('submit',{cancelable:true}));
+    await tick();
+    assert.deepEqual(submitted,[{kind:'qwen2_generate',payload:{model_id:model,prompt:'你好',max_new_tokens:16}}]);
+    const result=d.doc.querySelector('#gpuTaskRows details pre');
+    assert.equal(result.textContent,output);
+    assert.equal(result.querySelector('em'),null);
+    d.doc.getElementById('disconnectBtn').click();
+    assert.equal(d.doc.getElementById('gpuQwenPrompt').value,'');
+  }finally{d.close()}
+});
+
+test('Qwen2 mode hides matrix fields and disables submission without an online model',async()=>{
+  const d=setup();
+  try {
+    connect(d.doc);await tick();
+    const kind=d.doc.getElementById('gpuTaskKind');
+    kind.value='qwen2_generate';kind.dispatchEvent(new d.w.Event('change'));
+    const model=d.doc.getElementById('gpuQwenModel');
+    assert.equal(model.value,'');
+    assert.equal(model.disabled,true);
+    assert.equal(d.doc.getElementById('submitGpuTask').disabled,true);
+    assert.equal(d.w.getComputedStyle(d.doc.getElementById('gpuMatrixFields')).display,'none');
+  }finally{d.close()}
+});

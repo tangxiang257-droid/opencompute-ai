@@ -24,6 +24,8 @@ class GPUDevice(BaseModel):
     )
     runtime: Literal["unknown", "pytorch_cuda"] = "unknown"
     runtime_version: str | None = Field(default=None, max_length=32)
+    qwen2_model_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    qwen2_vram_mb: int | None = Field(default=None, ge=64, le=1048576, strict=True)
 
     @model_validator(mode="after")
     def validate_memory(self):
@@ -37,7 +39,7 @@ class GPUInventoryReport(BaseModel):
 
 
 class GPUTaskRequest(BaseModel):
-    kind: Literal["matmul_checksum"] = "matmul_checksum"
+    kind: Literal["matmul_checksum", "qwen2_generate"] = "matmul_checksum"
     payload: dict
     required_vram_mb: int = Field(default=256, ge=64, le=1048576)
     required_vendor: Literal["nvidia"] = "nvidia"
@@ -45,10 +47,13 @@ class GPUTaskRequest(BaseModel):
     max_attempts: int = Field(default=3, ge=1, le=5)
 
 
-class GPUCompletion(BaseModel):
+class GPULease(BaseModel):
     node_id: str = Field(min_length=1, max_length=64)
     gpu_index: int = Field(ge=0, le=15)
     lease_token: str = Field(min_length=1, max_length=128)
+
+
+class GPUCompletion(GPULease):
     result: dict = Field(default_factory=dict)
     error: str | None = Field(default=None, max_length=500)
 
@@ -124,6 +129,17 @@ def create_router(store, *, admin_key):
         except PermissionError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
         except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @router.post("/gpu-tasks/{task_id}/lease")
+    def gpu_task_lease(task_id: str, body: GPULease, x_node_token: str = Header(default="")):
+        try:
+            return {"active": scheduler.lease_active(
+                body.node_id, x_node_token, task_id, body.gpu_index, body.lease_token,
+            )}
+        except PermissionError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+        except LeaseConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @router.post("/gpu-tasks/{task_id}/complete")
