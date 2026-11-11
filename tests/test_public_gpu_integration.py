@@ -209,6 +209,12 @@ class PublicGPUIntegrationTests(unittest.TestCase):
             json={"devices": [device]},
         )
         self.assertEqual(accepted.status_code, 200, accepted.text)
+        too_soon = self.client.post(
+            f"/v0.7/nodes/{node_id}/gpus",
+            headers={"X-Node-Token": token},
+            json={"devices": [device]},
+        )
+        self.assertEqual(too_soon.status_code, 422, too_soon.text)
 
         # Simulate stale/corrupted inventory data to verify the scheduler still
         # refuses to hand Qwen2 work to a public Worker.
