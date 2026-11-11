@@ -163,6 +163,10 @@ class PublicGPUIntegrationTests(unittest.TestCase):
         self.assertEqual(len(nodes), 1)
         self.assertEqual(nodes[0]["role"], "public_gpu")
         self.assertEqual(nodes[0]["capabilities"], [])
+        public_status = self.client.get("/v0.8/public/status").json()
+        self.assertEqual(public_status["gpu_workers"], 1)
+        self.assertEqual(public_status["gpu_vram_mb"], 8192)
+        self.assertEqual(public_status["cpu_cores"], 0)
         with self.assertRaises(PermissionError):
             self.store.heartbeat(
                 node_id, token, free_ram_mb=8192, cpu_load_pct=0.0
