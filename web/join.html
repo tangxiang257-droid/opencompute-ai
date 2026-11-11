@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0b1020">
+  <meta name="description" content="OpenCompute AI 一键加入公共 CPU 验证池。无需安装、无需管理员密钥。">
+  <title>一键加入算力池 · OpenCompute AI</title>
+  <style>
+    :root{color-scheme:dark;font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:radial-gradient(ellipse at 70% 0%,#16365c,#09101e 65%);color:#e8f1ff}
+    main{max-width:760px;margin:0 auto;padding:30px 20px 60px}
+    nav{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:60px}
+    a{color:#9ec7ff;text-decoration:none}a:hover{text-decoration:underline}
+    .brand{font-size:18px;color:#fff;font-weight:760}
+    .chip{display:inline-block;border:1px solid #44638d;background:#182946;color:#c7dfff;border-radius:99px;padding:4px 12px;font-size:13px}
+    h1{font-size:clamp(30px,5vw,48px);line-height:1.2;letter-spacing:-.04em;margin:16px 0}
+    h2{font-size:18px;margin:0 0 12px}
+    p{color:#abbfd9;margin:0 0 16px}
+    .panel{background:#121e31;border:1px solid #334969;border-radius:18px;padding:26px;margin:24px 0;box-shadow:0 20px 60px #0002}
+    button{font:inherit;cursor:pointer;border-radius:11px;padding:12px 18px;border:1px solid #568bcc;color:white;background:#3266ae;font-weight:700;min-height:50px}
+    button:hover{background:#4079c6}button:disabled{opacity:.42;cursor:not-allowed}
+    button.secondary{background:#192b45;border-color:#37516f}button.secondary:hover{background:#243b5c}
+    .actions{display:flex;flex-wrap:wrap;gap:11px;margin:20px 0}
+    .status{padding:14px;border-radius:11px;border:1px solid #384e6b;background:#101b2b;color:#b9d2ef;min-height:54px}
+    .status[data-phase="online"]{color:#8de6b8;border-color:#326c53}
+    .status[data-phase="error"]{color:#ffc89c;border-color:#855234}
+    ul{color:#adc1d9;padding-left:21px;margin:0}li{margin:8px 0}
+    .fine{font-size:13px;color:#95aac6}
+    code{color:#b9d7ff;background:#091524;padding:2px 5px;border-radius:5px}
+    @media(max-width:520px){nav{margin-bottom:38px}.panel{padding:20px}.actions button{width:100%}}
+  </style>
+</head>
+<body>
+<main>
+  <nav><a class="brand" href="/">◈ OpenCompute AI</a><a href="/">平台控制台</a></nav>
+  <span class="chip">公开测试 · 浏览器 CPU 校验</span>
+  <h1>让你的设备，成为 AI 算力网络的一部分</h1>
+  <p>点击一次即可自动检测浏览器报告的资源、完成服务器验证并注册节点。无需填写 API Key，也无需打开命令行。</p>
+  <section class="panel">
+    <h2>网页一键加入</h2>
+    <p>只使用一个浏览器计算线程进行定期校验。页面保持打开时维持在线；随时可以退出。不会读取本地文件，也不会在背后安装程序。</p>
+    <div class="actions">
+      <button type="button" data-browser-join>立即加入 CPU 验证池</button>
+      <button type="button" class="secondary" data-browser-leave disabled>退出算力池</button>
+    </div>
+    <div class="status" data-browser-status role="status" aria-live="polite">尚未加入。</div>
+    <p class="fine" style="margin-top:15px">当前仅进行 CPU 资源接入及校验，不执行其他用户的 AI 模型任务。需浏览器支持 Web Worker，报告至少 2 个逻辑处理器及约 2 GB 内存。设备信息属于浏览器估计值，不能证明硬件真实性。</p>
+  </section>
+  <section class="panel">
+    <h2>希望持续贡献 NVIDIA GPU 算力？</h2>
+    <p>GPU 模式目前需要本机客户端与兼容的 CUDA/PyTorch 环境。网页不能代替系统授权安装驱动或后台服务；我们不会自动下载和运行未经你确认的软件。</p>
+    <p><a href="/v0.8/public/worker.py" download="opencompute-worker.py">获取现有公开 Worker 脚本</a> · <a href="/">在平台控制台查看设备接入说明</a></p>
+    <p class="fine">公开 GPU Worker 当前只接受可校验的矩阵计算任务；跨设备 Qwen2 / DeepSeek 推理仍在研发中。</p>
+  </section>
+  <section class="panel">
+    <h2>你可以控制什么？</h2>
+    <ul>
+      <li>只有主动点击加入时才启动计算线程；刷新或关闭页面后不自动启动。</li>
+      <li>浏览器模式仅在当前标签页在线，后台标签页可能被系统休眠。</li>
+      <li>节点凭证只在本次浏览器计算线程内存中保存，不需要管理员密钥。</li>
+      <li>退出时请求服务器撤销节点会话；断网时服务器最多约 90 秒后判为离线。</li>
+    </ul>
+  </section>
+</main>
+<script src="/assets/join-client.js" defer></script>
+</body>
+</html>

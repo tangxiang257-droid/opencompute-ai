@@ -49,6 +49,12 @@
 
 <section class="page active" id="page-overview">
   <div class="hero"><h2>让分散的设备，成为协同工作的 AI 算力网络。</h2><p>统一查看设备资源、任务调度与模型推理状态。统一管理 CPU 与 GPU 资源，逐步扩展到跨设备模型并行。</p><div class="hero-foot"><span class="pill">v0.7.1 GPU 调度预览</span><span class="pill">节点状态实时读取</span><span class="pill">任务队列可操作</span></div></div>
+  <article class="card" style="margin-bottom:17px;border-color:#426b8f">
+    <div class="card-head"><div><h3>一键加入公共算力池</h3><p>无需下载脚本、终端命令或管理员密钥。网页仅进行 CPU 节点验证；贡献 GPU 任务请使用桌面 Worker。</p></div><a href="/join" style="white-space:nowrap">独立加入页面</a></div>
+    <div class="form-actions"><button type="button" class="btn" data-browser-join>立即加入 CPU 验证池</button><button type="button" class="btn secondary" data-browser-leave disabled>退出算力池</button></div>
+    <p data-browser-status role="status" aria-live="polite" class="muted" style="margin:12px 0 0">尚未加入。</p>
+    <p class="muted tiny" style="margin:5px 0 0">仅在当前网页保持打开时在线；不会访问本地文件或后台安装程序。CPU 验证节点暂不执行用户模型推理。</p>
+  </article>
   <div class="grid kpis">
     <article class="card"><div class="kpi-top"><span>在线设备</span><span class="kpi-icon">▣</span></div><div class="kpi-value" id="kpiNodes">—</div><div class="kpi-foot" id="kpiNodesFoot">等待集群连接</div></article>
     <article class="card"><div class="kpi-top"><span>在线 CPU 核心</span><span class="kpi-icon">⌘</span></div><div class="kpi-value" id="kpiCpu">—</div><div class="kpi-foot">来自在线 Worker 注册信息</div></article>
@@ -152,6 +158,10 @@
       <button class="btn secondary small" id="refreshPublicPool">刷新状态</button>
     </div>
     <p id="publicPoolStatus" class="muted" role="status">正在读取接入状态…</p>
+    <div class="notice" style="margin:12px 0">快捷方式：点击加入即可在浏览器启动 CPU 校验节点，无需安装或 API 密钥。也可打开 <a href="/join">独立加入页面</a> 分享给贡献者。</div>
+    <div class="form-actions"><button type="button" class="btn" data-browser-join>一键加入（网页 CPU）</button><button type="button" class="btn secondary" data-browser-leave disabled>退出</button></div>
+    <p data-browser-status class="muted" role="status" aria-live="polite">尚未加入。</p>
+
     <div id="publicPoolControls" hidden>
       <div class="resource" id="publicPoolMetrics"></div>
       <p class="muted">需要 Python 3.9+、至少 2 核 CPU 和 2 GB 内存。GPU 模式还需 NVIDIA CUDA 版 PyTorch 和至少 4 GB 显存。</p>
@@ -193,4 +203,5 @@ POST /v0.5/requests</div><p class="muted tiny" style="line-height:1.8">Worker �
 </div>
 <div class="toast" id="toast" role="status"></div>
 <script src="/assets/dashboard.js" defer></script>
+<script src="/assets/join-client.js" defer></script>
 </body></html>

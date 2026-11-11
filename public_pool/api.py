@@ -36,6 +36,10 @@ class JoinRequest(StrictRequest):
     checksum: int = Field(ge=0, le=100000000)
 
 
+class LeaveRequest(StrictRequest):
+    node_id: str = Field(pattern=r"^[0-9a-f]{32}$", max_length=32)
+
+
 class HeartbeatRequest(StrictRequest):
     node_id: str = Field(pattern=r"^[0-9a-f]{32}$", max_length=32)
     seed: str = Field(pattern=r"^[0-9a-f]{32}$", max_length=32)
@@ -108,5 +112,14 @@ def create_router(store, *, enabled):
         scheme, _, token = authorization.partition(" ")
         return invoke(active_pool.heartbeat, request.node_id,
                       token if scheme.lower() == "bearer" else "", request.seed, request.checksum)
+
+    @router.post("/leave")
+    def leave(data=Depends(bounded_json), active_pool=Depends(require_pool),
+              authorization: str = Header(default="")):
+        """Opt-in CPU browser verification nodes can immediately leave."""
+        request = validated(LeaveRequest, data)
+        scheme, _, token = authorization.partition(" ")
+        return invoke(active_pool.leave, request.node_id,
+                      token if scheme.lower() == "bearer" else "")
 
     return router
