@@ -70,7 +70,8 @@ class ClusterStore:
                     capabilities TEXT NOT NULL,
                     last_seen REAL NOT NULL,
                     created REAL NOT NULL,
-                    role TEXT NOT NULL DEFAULT 'trusted'
+                    role TEXT NOT NULL DEFAULT 'trusted',
+                    gpu_claimed_at REAL NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY,
@@ -115,6 +116,8 @@ class ClusterStore:
             node_columns = {row["name"] for row in conn.execute("PRAGMA table_info(nodes)")}
             if "role" not in node_columns:
                 conn.execute("ALTER TABLE nodes ADD COLUMN role TEXT NOT NULL DEFAULT 'trusted'")
+            if "gpu_claimed_at" not in node_columns:
+                conn.execute("ALTER TABLE nodes ADD COLUMN gpu_claimed_at REAL NOT NULL DEFAULT 0")
             gpu_columns = {row["name"] for row in conn.execute("PRAGMA table_info(gpu_devices)")}
             if "runtime" not in gpu_columns:
                 conn.execute("ALTER TABLE gpu_devices ADD COLUMN runtime TEXT NOT NULL DEFAULT 'unknown'")
