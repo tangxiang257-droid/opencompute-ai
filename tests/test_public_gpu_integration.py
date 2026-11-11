@@ -346,6 +346,81 @@ class PublicGPUIntegrationTests(unittest.TestCase):
         self.assertEqual(claimed.status_code, 200, claimed.text)
         self.assertIsNone(claimed.json()["task"])
 
+    def test_public_gpu_worker_has_only_one_active_gpu_task(self):
+        worker = self.admit_gpu_worker()
+        node_id, token = worker["node_id"], worker["token"]
+        inventory = self.client.post(
+            f"/v0.7/nodes/{node_id}/gpus",
+            headers={"X-Node-Token": token},
+            json={"devices": [{
+                "index": 0,
+                "uuid": "GPU-public-single-task",
+                "name": "NVIDIA Public Test GPU",
+                "vendor": "nvidia",
+                "backend": "cuda",
+                "total_memory_mb": 8192,
+                "free_memory_mb": 8192,
+                "utilization_pct": 0.0,
+                "runtime": "pytorch_cuda",
+                "runtime_version": "2.6.0",
+            }]},
+        )
+        self.assertEqual(inventory.status_code, 200, inventory.text)
+        task_ids = []
+        for _ in range(2):
+            submitted = self.client.post(
+                "/v0.7/gpu-tasks",
+                headers={"X-Admin-Key": ADMIN},
+                json={
+                    "kind": "matmul_checksum",
+                    "payload": {"size": 16},
+                    "required_vram_mb": 256,
+                },
+            )
+            self.assertEqual(submitted.status_code, 200, submitted.text)
+            task_ids.append(submitted.json()["id"])
+
+        first = self.client.post(
+            f"/v0.7/nodes/{node_id}/gpu-claim",
+            headers={"X-Node-Token": token},
+        )
+        self.assertEqual(first.status_code, 200, first.text)
+        first_task = first.json()["task"]
+        self.assertIsNotNone(first_task)
+        self.assertEqual(first_task["id"], task_ids[0])
+
+        self.clock.advance(2.1)
+        blocked = self.client.post(
+            f"/v0.7/nodes/{node_id}/gpu-claim",
+            headers={"X-Node-Token": token},
+        )
+        self.assertEqual(blocked.status_code, 200, blocked.text)
+        self.assertIsNone(blocked.json()["task"])
+
+        completed = self.client.post(
+            f"/v0.7/gpu-tasks/{first_task['id']}/complete",
+            headers={"X-Node-Token": token},
+            json={
+                "node_id": node_id,
+                "gpu_index": first_task["gpu_index"],
+                "lease_token": first_task["lease_token"],
+                "result": {
+                    "checksum": expected_matmul_checksum(16),
+                    "size": 16,
+                    "operation": "cuda_matmul_checksum",
+                },
+                "error": None,
+            },
+        )
+        self.assertEqual(completed.status_code, 200, completed.text)
+        self.clock.advance(2.1)
+        second = self.client.post(
+            f"/v0.7/nodes/{node_id}/gpu-claim",
+            headers={"X-Node-Token": token},
+        )
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(second.json()["task"]["id"], task_ids[1])
+
     def test_public_gpu_claim_polling_is_rate_limited(self):
         worker = self.admit_gpu_worker()
         node_id, token = worker["node_id"], worker["token"]
