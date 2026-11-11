@@ -64,7 +64,7 @@ def detect_nvidia_gpus():
         return []
 
     devices = []
-    for row in csv.reader(io.StringIO(output)):
+    for row in csv.reader(io.StringIO(output), skipinitialspace=True):
         if len(row) not in (6, 7):
             continue
         index = _integer(row[0])
