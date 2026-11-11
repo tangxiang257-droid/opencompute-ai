@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from cluster_v03.store import ClusterStore
 from cluster_v07.api import create_router as create_gpu_router
+from cluster_v07.scheduler import expected_matmul_checksum
 from public_pool.api import create_router as create_public_pool_router
 from public_pool.worker import cpu_checksum
 
@@ -113,14 +114,40 @@ class PublicGPUIntegrationTests(unittest.TestCase):
         self.assertEqual(task["id"], task_id)
         self.assertEqual(task["kind"], "matmul_checksum")
 
-        completed = self.client.post(
+        rejected = self.client.post(
             f"/v0.7/gpu-tasks/{task_id}/complete",
             headers={"X-Node-Token": token},
             json={
                 "node_id": node_id,
                 "gpu_index": task["gpu_index"],
                 "lease_token": task["lease_token"],
-                "result": {"checksum": 123, "operation": "cuda_matmul_checksum"},
+                "result": {"checksum": 123, "size": 16,
+                           "operation": "cuda_matmul_checksum"},
+                "error": None,
+            },
+        )
+        self.assertEqual(rejected.status_code, 200, rejected.text)
+        self.assertEqual(rejected.json()["status"], "queued")
+
+        retried = self.client.post(
+            f"/v0.7/nodes/{node_id}/gpu-claim",
+            headers={"X-Node-Token": token},
+        )
+        self.assertEqual(retried.status_code, 200, retried.text)
+        retry_task = retried.json()["task"]
+        self.assertEqual(retry_task["id"], task_id)
+        completed = self.client.post(
+            f"/v0.7/gpu-tasks/{task_id}/complete",
+            headers={"X-Node-Token": token},
+            json={
+                "node_id": node_id,
+                "gpu_index": retry_task["gpu_index"],
+                "lease_token": retry_task["lease_token"],
+                "result": {
+                    "checksum": expected_matmul_checksum(16),
+                    "size": 16,
+                    "operation": "cuda_matmul_checksum",
+                },
                 "error": None,
             },
         )
