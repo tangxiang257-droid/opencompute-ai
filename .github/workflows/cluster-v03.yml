@@ -7,6 +7,8 @@ on:
       - 'cluster_v04/**'
       - 'cluster_v05/**'
       - 'cluster_v07/**'
+      - 'public_pool/**'
+      - 'tests/test_public_pool*.py'
       - 'compute/qwen2_*.py'
       - 'tests/test_qwen2_safetensors_v042.py'
       - 'tests/test_qwen2_*.py'
@@ -61,6 +63,8 @@ on:
       - 'cluster_v04/**'
       - 'cluster_v05/**'
       - 'cluster_v07/**'
+      - 'public_pool/**'
+      - 'tests/test_public_pool*.py'
       - 'compute/qwen2_*.py'
       - 'tests/test_qwen2_safetensors_v042.py'
       - 'tests/test_qwen2_*.py'
@@ -134,15 +138,17 @@ jobs:
       - name: Build API and TP worker images and check imports
         run: |
           docker build -t opencompute-ci .
-          docker run --rm opencompute-ci python -c 'from backend.app import app; assert "/v0.7/gpus" in app.openapi()["paths"]'
+          docker run --rm opencompute-ci python -c 'from backend.app import app; assert {"/v0.7/gpus", "/v0.8/public/status"} <= app.openapi()["paths"].keys()'
           docker build -f Dockerfile.tp-worker -t opencompute-tp-worker-ci .
           docker run --rm opencompute-tp-worker-ci python -m cluster_v031.worker --help
       - name: Single-device Qwen2 Safetensors and CUDA fallback checks
         run: python -m unittest discover -s tests -p 'test_qwen2_single_device_v072.py' -v
       - name: GPU inventory, scheduling and lease regressions
         run: python -m unittest discover -s tests -p 'test_gpu_*.py' -v
+      - name: Public Worker admission, verification and API regressions
+        run: python -m unittest discover -s tests -p 'test_public_pool*.py' -v
       - name: Compile check source and regression tests
-        run: python -m compileall -q backend compute cluster_v03 cluster_v031 cluster_v04 cluster_v05 cluster_v07 tests benchmarks
+        run: python -m compileall -q backend compute cluster_v03 cluster_v031 cluster_v04 cluster_v05 cluster_v07 public_pool tests benchmarks
       - name: v0.5.1 browser dashboard packaging regression
         run: python -m unittest discover -s tests -p 'test_web_dashboard_v051.py' -v
       - name: v0.6 Windows local launcher safety regression

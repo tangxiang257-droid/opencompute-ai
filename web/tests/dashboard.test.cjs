@@ -182,3 +182,26 @@ test('Qwen2 mode hides matrix fields and disables submission without an online m
     assert.equal(d.w.getComputedStyle(d.doc.getElementById('gpuMatrixFields')).display,'none');
   }finally{d.close()}
 });
+
+test('public admission works before administrator sign-in and uses a keyless command',async()=>{
+  const calls=[];
+  const d=setup({url:'https://compute.example.test',handler:async(p,o)=>{
+    calls.push([p,o]);
+    return {ok:true,status:200,json:async()=>({enabled:true,cpu_workers:2,gpu_workers:1,verified_checks:7})};
+  }});
+  try {
+    d.doc.querySelector('[data-page="connect"]').click();
+    await tick();
+    assert.equal(d.doc.getElementById('publicPoolControls').hidden,false);
+    assert.match(d.doc.getElementById('publicPoolMetrics').textContent,/在线 GPU 节点1/);
+    assert.equal(d.doc.getElementById('downloadPublicWorker').getAttribute('href'),'/v0.8/public/worker.py');
+    assert.equal(calls[0][0],'/v0.8/public/status');
+    assert.equal(calls[0][1].headers,undefined);
+    assert.equal(calls[0][1].credentials,'omit');
+    d.doc.getElementById('publicWorkerShell').value='powershell';
+    const device=d.doc.getElementById('publicWorkerDevice');
+    device.value='cuda';device.dispatchEvent(new d.w.Event('change'));
+    assert.equal(d.doc.getElementById('publicWorkerCommand').textContent,
+      'python opencompute-worker.py --url "https://compute.example.test" --device cuda');
+  }finally{d.close()}
+});

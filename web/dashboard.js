@@ -52,7 +52,7 @@ async function poll(){
   if(!document.hidden)await Promise.all([loadCluster(),loadQwen(),loadGpuInventory(),loadGpuTasks(),state.page==='system'?loadSystem():Promise.resolve()]);
   if(epoch===state.epoch&&state.key)state.timer=setTimeout(poll,12000);
 }
-function go(page){if(!titles[page])return;state.page=page;document.querySelectorAll('.page').forEach(n=>n.classList.toggle('active',n.id==='page-'+page));document.querySelectorAll('[data-page]').forEach(n=>n.classList.toggle('active',n.dataset.page===page));$('pageTitle').textContent=titles[page][0];$('crumb').textContent=titles[page][1];$('sidebar').classList.remove('open');$('menuBtn').setAttribute('aria-expanded','false');if(page==='models')loadModels();if(page==='inference'&&state.key)loadQwen();if((page==='devices'||page==='tasks')&&state.key)loadCluster();if(page==='devices'&&state.key)loadGpuInventory();if(page==='tasks'&&state.key)loadGpuTasks();if(page==='system'&&state.key)loadSystem()}
+function go(page){if(!titles[page])return;state.page=page;document.querySelectorAll('.page').forEach(n=>n.classList.toggle('active',n.id==='page-'+page));document.querySelectorAll('[data-page]').forEach(n=>n.classList.toggle('active',n.dataset.page===page));$('pageTitle').textContent=titles[page][0];$('crumb').textContent=titles[page][1];$('sidebar').classList.remove('open');$('menuBtn').setAttribute('aria-expanded','false');if(page==='models')loadModels();if(page==='inference'&&state.key)loadQwen();if((page==='devices'||page==='tasks')&&state.key)loadCluster();if(page==='devices'&&state.key)loadGpuInventory();if(page==='tasks'&&state.key)loadGpuTasks();if(page==='system'&&state.key)loadSystem();if(page==='connect')loadPublicPool()}
 document.querySelectorAll('[data-page]').forEach(n=>n.addEventListener('click',()=>go(n.dataset.page)));
 document.querySelectorAll('[data-goto]').forEach(n=>n.addEventListener('click',()=>go(n.dataset.goto)));
 $('menuBtn').addEventListener('click',()=>{$('sidebar').classList.toggle('open');$('menuBtn').setAttribute('aria-expanded',String($('sidebar').classList.contains('open')))});
@@ -279,6 +279,51 @@ $('gpuTaskForm').addEventListener('submit',async e=>{
 });
 $('inferenceForm').addEventListener('submit',async e=>{e.preventDefault();if(!requireKey()||!state.qwen?.enabled||!state.qwen?.running||state.inferenceBusy)return;const epoch=state.epoch;try{const client=$('clientId').value.trim(),raw=$('promptIds').value.split(',').map(x=>x.trim());if(!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/.test(client))throw new Error('客户端标识须为 1–64 位安全 ASCII 字符');if(!raw.length||raw.length>128||raw.some(x=>!/^\d+$/.test(x)))throw new Error('请输入 1–128 个逗号分隔的 Token ID');const ids=raw.map(Number);if(ids.some(x=>!Number.isSafeInteger(x)||x<0||x>2147483647))throw new Error('Token ID 超出有效范围');state.inferenceBusy=true;$('submitInference').disabled=true;const result=await api('/v0.5/requests',{method:'POST',headers:{'X-Client-ID':client},timeoutMs:130000,body:JSON.stringify({prompt_ids:ids})});$('inferenceResult').textContent=JSON.stringify(result,null,2);$('inferenceFeedback').textContent='推理完成 · 批次大小 '+(result.batch_size||'—');await loadQwen()}catch(err){if(err.stale)return;$('inferenceFeedback').textContent='请求失败：'+err.message;$('inferenceResult').textContent=err.message}finally{if(epoch===state.epoch){state.inferenceBusy=false;$('submitInference').disabled=!state.qwen?.enabled||!state.qwen?.running}}});
 $('refreshDevices').addEventListener('click',()=>{loadCluster();loadGpuInventory()});$('refreshTasks').addEventListener('click',()=>{loadCluster();loadGpuTasks()});$('refreshModels').addEventListener('click',loadModels);$('refreshInference').addEventListener('click',loadQwen);
+let publicPoolLoading=false;
+function updatePublicCommand(){
+  const python=$('publicWorkerShell').value==='powershell'?'python':'python3';
+  const device=$('publicWorkerDevice').value;
+  $('publicWorkerCommand').textContent=python+' opencompute-worker.py --url "'+location.origin+'" --device '+device;
+}
+async function loadPublicPool(){
+  if(publicPoolLoading)return;
+  publicPoolLoading=true;
+  $('refreshPublicPool').disabled=true;
+  const status=$('publicPoolStatus'),controls=$('publicPoolControls');
+  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),8000);
+  try{
+    const response=await fetch('/v0.8/public/status',{cache:'no-store',credentials:'omit',signal:controller.signal});
+    if(!response.ok)throw new Error('status');
+    const data=await response.json();
+    if(!data.enabled){
+      controls.hidden=true;status.textContent='此服务器暂未启用公网设备接入。';return;
+    }
+    controls.hidden=false;status.textContent='接入开放。通过校验的设备会自动上线。';
+    const metrics=$('publicPoolMetrics');metrics.replaceChildren();
+    for(const [label,value] of [
+      ['在线 CPU 节点',data.cpu_workers||0],
+      ['在线 GPU 节点',data.gpu_workers||0],
+      ['在线节点已通过的校验',data.verified_checks||0]
+    ]){
+      const row=el('div','resource-row');row.append(el('span','',label),el('span'),el('strong','',String(value)));metrics.append(row);
+    }
+  }catch(_){
+    controls.hidden=true;status.textContent='暂时无法读取公网接入状态，请刷新重试。';
+  }finally{
+    clearTimeout(timeout);publicPoolLoading=false;$('refreshPublicPool').disabled=false;
+  }
+}
+$('publicWorkerShell').value=/^Win/i.test(navigator.platform)?'powershell':'posix';
+$('publicWorkerShell').addEventListener('change',updatePublicCommand);
+$('publicWorkerDevice').addEventListener('change',updatePublicCommand);
+$('refreshPublicPool').addEventListener('click',loadPublicPool);
+$('copyPublicWorker').addEventListener('click',async()=>{
+  try{await navigator.clipboard.writeText($('publicWorkerCommand').textContent);toast('启动命令已复制')}
+  catch(_){toast('请手动选择并复制启动命令')}
+});
+updatePublicCommand();
+const publicPoolTimer=setInterval(()=>{if(state.page==='connect'&&!document.hidden)loadPublicPool()},20000);
+
 function updateCommand(){
   const name=$('workerName').value.trim()||'my-cpu-worker',mode=$('workerShell').value;
   try{const url=new URL($('serverUrl').value.trim());if(!['http:','https:'].includes(url.protocol)||url.username||url.password||url.search||url.hash||url.pathname!=='/')throw new Error('请输入不含账户信息的完整服务源地址');
@@ -292,6 +337,6 @@ $('taskSearch').addEventListener('input',()=>{if(state.cluster)renderTasks(state
 $('closeTaskDetail').addEventListener('click',()=>{state.detailId=null;$('taskDetailPanel').classList.add('hidden');$('taskDetail').textContent=''});
 $('refreshSystem').addEventListener('click',()=>{if(requireKey())loadSystem()});
 $('apiOrigin').textContent=location.origin;
-window.addEventListener('pagehide',()=>{clearTimeout(state.timer);state.controllers.forEach(c=>c.abort())});
+window.addEventListener('pagehide',()=>{clearInterval(publicPoolTimer);clearTimeout(state.timer);state.controllers.forEach(c=>c.abort())});
 const saved=storage('read');if(saved){$('adminKey').value=saved;connect()}else connection(false,'等待连接');
 })();

@@ -11,6 +11,7 @@ from cluster_v05.api import create_router as create_qwen2_queue_router
 from cluster_v05.qwen2_service import Qwen2PipelineService
 from backend.operations import create_router as create_operations_router
 from backend.version import VERSION
+from public_pool.api import create_router as create_public_pool_router
 from pydantic import BaseModel, Field
 import json
 import hmac
@@ -67,6 +68,10 @@ app.include_router(create_cluster_router(
 ))
 app.include_router(create_gpu_router(
     cluster_db, admin_key=os.getenv("OPENCOMPUTE_ADMIN_KEY", "")
+))
+app.include_router(create_public_pool_router(
+    cluster_db, enabled=os.getenv("OPENCOMPUTE_PUBLIC_ADMISSION", "0") == "1",
+    signing_secret=os.getenv("OPENCOMPUTE_ADMIN_KEY", ""),
 ))
 
 @app.get("/v0.4/console", include_in_schema=False)

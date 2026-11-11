@@ -8,6 +8,7 @@ services:
       OPENCOMPUTE_DB_PATH: "/data/cluster-v03.sqlite"
       OPENCOMPUTE_TP_ROOT: "/data/tp-sessions"
       OPENCOMPUTE_TP_CHECKPOINTS: "/data/checkpoints"
+      OPENCOMPUTE_PUBLIC_ADMISSION: "${OPENCOMPUTE_PUBLIC_ADMISSION:-1}"
       OPENCOMPUTE_ADMIN_KEY: "${OPENCOMPUTE_ADMIN_KEY:-}"
       OPENCOMPUTE_JOIN_KEY: "${OPENCOMPUTE_JOIN_KEY:-}"
     volumes:
