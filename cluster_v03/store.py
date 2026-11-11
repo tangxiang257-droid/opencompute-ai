@@ -71,7 +71,8 @@ class ClusterStore:
                     last_seen REAL NOT NULL,
                     created REAL NOT NULL,
                     role TEXT NOT NULL DEFAULT 'trusted',
-                    gpu_claimed_at REAL NOT NULL DEFAULT 0
+                    gpu_claimed_at REAL NOT NULL DEFAULT 0,
+                    gpu_reported_at REAL NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY,
@@ -118,6 +119,8 @@ class ClusterStore:
                 conn.execute("ALTER TABLE nodes ADD COLUMN role TEXT NOT NULL DEFAULT 'trusted'")
             if "gpu_claimed_at" not in node_columns:
                 conn.execute("ALTER TABLE nodes ADD COLUMN gpu_claimed_at REAL NOT NULL DEFAULT 0")
+            if "gpu_reported_at" not in node_columns:
+                conn.execute("ALTER TABLE nodes ADD COLUMN gpu_reported_at REAL NOT NULL DEFAULT 0")
             gpu_columns = {row["name"] for row in conn.execute("PRAGMA table_info(gpu_devices)")}
             if "runtime" not in gpu_columns:
                 conn.execute("ALTER TABLE gpu_devices ADD COLUMN runtime TEXT NOT NULL DEFAULT 'unknown'")
@@ -472,6 +475,9 @@ class ClusterStore:
                 if (devices[0].get("qwen2_model_id") is not None
                         or devices[0].get("qwen2_vram_mb") is not None):
                     raise ValueError("public GPU Workers cannot advertise trusted Qwen2 model assets")
+                if now - float(node["gpu_reported_at"] or 0) < 5.0:
+                    raise ValueError("public GPU telemetry may be refreshed at most once every 5 seconds")
+                conn.execute("UPDATE nodes SET gpu_reported_at=? WHERE id=?", (now, node_id))
             conn.execute("DELETE FROM gpu_devices WHERE node_id=?", (node_id,))
             for gpu in devices:
                 conn.execute(
