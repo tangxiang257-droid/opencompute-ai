@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from cluster_v03.store import ClusterStore, LeaseConflict
 from cluster_v07.scheduler import GPUScheduler, validate_gpu_task
 from cluster_v07.api import create_router
+from cluster_v07.worker import map_gpu_inventory_to_cuda
 
 ADMIN = "gpu-scheduler-admin-key-0123456789"
 
@@ -237,6 +238,51 @@ class GPUTaskSchedulerTests(unittest.TestCase):
         second = self.scheduler.claim(other["id"], other["node_token"])["task"]
         self.assertEqual(second["id"], task["id"])
         self.assertNotEqual(first["lease_token"], second["lease_token"])
+
+
+    def test_cuda_logical_indices_are_mapped_by_gpu_uuid(self):
+        inventory = [
+            self.gpu(0, uuid="GPU-physical-a", name="NVIDIA A"),
+            self.gpu(1, uuid="GPU-physical-b", name="NVIDIA B"),
+        ]
+        runtime = {
+            "runtime": "pytorch_cuda",
+            "runtime_version": "2.6.0",
+            "devices": [
+                {"index": 0, "uuid": "GPU-physical-b", "name": "NVIDIA B"},
+                {"index": 1, "uuid": "GPU-physical-a", "name": "NVIDIA A"},
+            ],
+        }
+        mapped = map_gpu_inventory_to_cuda(inventory, runtime)
+        self.assertEqual([item["index"] for item in mapped], [1, 0])
+        self.assertTrue(all(item["runtime"] == "pytorch_cuda" for item in mapped))
+
+    def test_ambiguous_cuda_device_names_are_not_marked_schedulable(self):
+        inventory = [
+            self.gpu(0, uuid="GPU-physical-a", name="NVIDIA Same Model"),
+            self.gpu(1, uuid="GPU-physical-b", name="NVIDIA Same Model"),
+        ]
+        runtime = {
+            "runtime": "pytorch_cuda",
+            "runtime_version": "2.6.0",
+            "devices": [
+                {"index": 0, "uuid": None, "name": "NVIDIA Same Model"},
+                {"index": 1, "uuid": None, "name": "NVIDIA Same Model"},
+            ],
+        }
+        mapped = map_gpu_inventory_to_cuda(inventory, runtime)
+        self.assertTrue(all(item["runtime"] == "unknown" for item in mapped))
+
+    def test_single_cuda_device_can_use_unambiguous_name_fallback(self):
+        inventory = [self.gpu(3, uuid="GPU-physical-a", name="NVIDIA Single")]
+        runtime = {
+            "runtime": "pytorch_cuda",
+            "runtime_version": "2.6.0",
+            "devices": [{"index": 0, "uuid": None, "name": "NVIDIA Single"}],
+        }
+        mapped = map_gpu_inventory_to_cuda(inventory, runtime)
+        self.assertEqual(mapped[0]["index"], 0)
+        self.assertEqual(mapped[0]["runtime"], "pytorch_cuda")
 
 
 if __name__ == "__main__":

@@ -14,7 +14,7 @@ import requests
 
 from cluster_v03.store import validate_payload
 from cluster_v07.detection import detect_nvidia_gpus
-from cluster_v07.worker import detect_torch_cuda_runtime, execute_gpu_task
+from cluster_v07.worker import detect_torch_cuda_runtime, map_gpu_inventory_to_cuda, execute_gpu_task
 
 
 def execute_task(kind, payload):
@@ -79,8 +79,7 @@ def run(*, base_url, join_key, name, score=None, poll_seconds=2.0, once=False):
         try:
             devices = detect_nvidia_gpus()
             runtime = detect_torch_cuda_runtime()
-            for device in devices:
-                device.update(runtime)
+            devices = map_gpu_inventory_to_cuda(devices, runtime)
             result = post(f"/v0.7/nodes/{node_id}/gpus", {"devices": devices}, key)
             print(f"GPU inventory reported: {result.get('reported', 0)} device(s)", flush=True)
         except Exception as exc:

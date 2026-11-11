@@ -5,14 +5,73 @@ from cluster_v07.scheduler import validate_gpu_task
 
 
 def detect_torch_cuda_runtime():
-    """Return a runtime marker only when this process can actually use CUDA."""
+    """Describe logical CUDA devices available to this Worker process."""
     try:
         import torch
-        if torch.cuda.is_available():
-            return {"runtime": "pytorch_cuda", "runtime_version": str(torch.__version__)[:32]}
+        if not torch.cuda.is_available():
+            return {"runtime": "unknown", "runtime_version": None, "devices": []}
+        visible = []
+        for logical_index in range(torch.cuda.device_count()):
+            properties = torch.cuda.get_device_properties(logical_index)
+            raw_uuid = getattr(properties, "uuid", None)
+            visible.append({
+                "index": logical_index,
+                "uuid": str(raw_uuid) if raw_uuid else None,
+                "name": str(torch.cuda.get_device_name(logical_index))[:128],
+            })
+        if not visible:
+            return {"runtime": "unknown", "runtime_version": None, "devices": []}
+        return {
+            "runtime": "pytorch_cuda",
+            "runtime_version": str(torch.__version__)[:32],
+            "devices": visible,
+        }
     except Exception:
-        pass
-    return {"runtime": "unknown", "runtime_version": None}
+        return {"runtime": "unknown", "runtime_version": None, "devices": []}
+
+
+def map_gpu_inventory_to_cuda(devices, runtime):
+    """Map nvidia-smi physical inventory to PyTorch logical CUDA indices.
+
+    Prefer UUID matching. Fall back to a unique model-name match only when it
+    is unambiguous. Ambiguous devices remain visible but are not schedulable.
+    """
+    visible = runtime.get("devices", []) if runtime.get("runtime") == "pytorch_cuda" else []
+    version = runtime.get("runtime_version")
+    uuid_to_index = {
+        str(item["uuid"]): item["index"]
+        for item in visible if item.get("uuid")
+    }
+    visible_name_counts = {}
+    inventory_name_counts = {}
+    for item in visible:
+        visible_name_counts[item["name"]] = visible_name_counts.get(item["name"], 0) + 1
+    for item in devices:
+        inventory_name_counts[item["name"]] = inventory_name_counts.get(item["name"], 0) + 1
+
+    mapped = []
+    used_indices = set()
+    for device in devices:
+        logical_index = uuid_to_index.get(str(device.get("uuid", "")))
+        if logical_index is None:
+            name = device.get("name")
+            if (name and visible_name_counts.get(name) == 1
+                    and inventory_name_counts.get(name) == 1):
+                match = next((item for item in visible if item["name"] == name), None)
+                if match is not None:
+                    logical_index = match["index"]
+        item = dict(device)
+        if (type(logical_index) is int and 0 <= logical_index < 16
+                and logical_index not in used_indices):
+            item["index"] = logical_index
+            item["runtime"] = "pytorch_cuda"
+            item["runtime_version"] = version
+            used_indices.add(logical_index)
+        else:
+            item["runtime"] = "unknown"
+            item["runtime_version"] = None
+        mapped.append(item)
+    return mapped
 
 
 def execute_gpu_task(job):
