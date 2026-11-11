@@ -8,7 +8,7 @@ def detect_torch_cuda_runtime():
     """Describe logical CUDA devices available to this Worker process."""
     try:
         import torch
-        if not torch.cuda.is_available():
+        if torch.version.cuda is None or not torch.cuda.is_available():
             return {"runtime": "unknown", "runtime_version": None, "devices": []}
         visible = []
         for logical_index in range(torch.cuda.device_count()):
@@ -39,8 +39,11 @@ def map_gpu_inventory_to_cuda(devices, runtime):
     """
     visible = runtime.get("devices", []) if runtime.get("runtime") == "pytorch_cuda" else []
     version = runtime.get("runtime_version")
+    def normalized_uuid(value):
+        return str(value).lower().removeprefix("gpu-") if value else None
+
     uuid_to_index = {
-        str(item["uuid"]): item["index"]
+        normalized_uuid(item["uuid"]): item["index"]
         for item in visible if item.get("uuid")
     }
     visible_name_counts = {}
@@ -52,13 +55,13 @@ def map_gpu_inventory_to_cuda(devices, runtime):
 
     mapped, unmapped, used_indices = [], [], set()
     for device in devices:
-        logical_index = uuid_to_index.get(str(device.get("uuid", "")))
+        logical_index = uuid_to_index.get(normalized_uuid(device.get("uuid")))
         if logical_index is None:
             name = device.get("name")
             if (name and visible_name_counts.get(name) == 1
                     and inventory_name_counts.get(name) == 1):
                 match = next((item for item in visible if item["name"] == name), None)
-                if match is not None:
+                if match is not None and not match.get("uuid"):
                     logical_index = match["index"]
         if (type(logical_index) is int and 0 <= logical_index < 16
                 and logical_index not in used_indices):
