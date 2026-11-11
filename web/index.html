@@ -161,7 +161,7 @@
       </div>
       <div class="form-actions"><a class="btn" id="downloadPublicWorker" href="/v0.8/public/worker.py" download="opencompute-worker.py">下载 Worker</a><button class="btn secondary" id="copyPublicWorker">复制启动命令</button></div>
       <pre class="code" id="publicWorkerCommand" style="margin-top:12px"></pre>
-      <p class="muted tiny">在下载文件的目录运行命令并保持终端开启。GPU 模式当前执行可验证矩阵任务，尚不承载 Qwen2 / DeepSeek 推理；设备规格由 Worker 上报，暂非硬件远程证明。</p>
+      <p class="muted tiny">在下载文件的目录运行命令并保持终端开启。CPU 模式目前仅做接入校验，尚未参与 CPU 任务调度；GPU 模式执行可验证矩阵任务，尚不承载 Qwen2 / DeepSeek 推理。设备规格由 Worker 上报，暂非硬件远程证明。</p>
     </div>
   </article>
   <div class="grid two-col">
