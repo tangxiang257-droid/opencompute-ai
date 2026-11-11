@@ -170,6 +170,12 @@ WEB_INDEX = Path(__file__).resolve().parent.parent / "web" / "index.html"
 def dashboard_script():
     return FileResponse(WEB_INDEX.with_name("dashboard.js"), media_type="text/javascript")
 
+@app.get("/assets/browser-worker.js", include_in_schema=False)
+def browser_worker_script():
+    """No privileged credentials: public verification only, served same-origin."""
+    return FileResponse(WEB_INDEX.with_name("browser-worker.js"), media_type="text/javascript")
+
+
 @app.get("/", include_in_schema=False)
 def dashboard():
     return FileResponse(WEB_INDEX, media_type="text/html")
