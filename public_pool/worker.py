@@ -212,6 +212,7 @@ def run(origin, resource):
                 raise RuntimeError(f"GPU inventory report failed (HTTP {exc.code}).") from None
 
         next_heartbeat = time.monotonic() + worker["heartbeat_seconds"]
+        next_gpu_report = time.monotonic() + 30 if resource == "cuda" else 0
         while True:
             now = time.monotonic()
             if now >= next_heartbeat:
@@ -233,6 +234,21 @@ def run(origin, resource):
                     seed = reply["seed"]
                     next_heartbeat = time.monotonic() + worker["heartbeat_seconds"]
                     print("Verification accepted.", flush=True)
+
+            if resource == "cuda" and now >= next_gpu_report:
+                try:
+                    post(f"/v0.7/nodes/{worker['node_id']}/gpus",
+                         {"devices": [cuda_inventory(device, worker["node_id"])]},
+                         node_token=worker["token"])
+                    next_gpu_report = time.monotonic() + 30
+                except HTTPError as exc:
+                    if exc.code in (401, 409):
+                        print("Public GPU credentials expired. Reconnecting.", flush=True)
+                        break
+                    raise RuntimeError(f"GPU inventory refresh failed (HTTP {exc.code}).") from None
+                except OSError:
+                    print("GPU inventory refresh temporarily failed.", flush=True)
+                    next_gpu_report = time.monotonic() + 5
 
             if resource == "cuda":
                 try:
