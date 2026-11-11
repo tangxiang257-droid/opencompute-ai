@@ -162,6 +162,70 @@ class PublicGPUIntegrationTests(unittest.TestCase):
         self.assertEqual(device["node_role"], "public_gpu")
         self.assertEqual(device["verification"], "self_reported")
 
+    def test_public_gpu_cannot_claim_qwen2_or_advertise_fake_model_assets(self):
+        worker = self.admit_gpu_worker()
+        node_id, token = worker["node_id"], worker["token"]
+        device = {
+            "index": 0,
+            "uuid": "GPU-public-qwen-guard-test",
+            "name": "NVIDIA Public Test GPU",
+            "vendor": "nvidia",
+            "backend": "cuda",
+            "total_memory_mb": 8192,
+            "free_memory_mb": 8192,
+            "utilization_pct": 5.0,
+            "compute_capability": "8.6",
+            "supported_dtypes": ["fp32", "fp16", "bf16", "tf32"],
+            "runtime": "pytorch_cuda",
+            "runtime_version": "2.6.0",
+        }
+        fake_model = dict(device, qwen2_model_id="a" * 64, qwen2_vram_mb=4096)
+        rejected_model = self.client.post(
+            f"/v0.7/nodes/{node_id}/gpus",
+            headers={"X-Node-Token": token},
+            json={"devices": [fake_model]},
+        )
+        self.assertEqual(rejected_model.status_code, 422, rejected_model.text)
+
+        second_device = dict(device, index=1, uuid="GPU-public-qwen-guard-test-2")
+        rejected_multi = self.client.post(
+            f"/v0.7/nodes/{node_id}/gpus",
+            headers={"X-Node-Token": token},
+            json={"devices": [device, second_device]},
+        )
+        self.assertEqual(rejected_multi.status_code, 422, rejected_multi.text)
+
+        accepted = self.client.post(
+            f"/v0.7/nodes/{node_id}/gpus",
+            headers={"X-Node-Token": token},
+            json={"devices": [device]},
+        )
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+
+        # Simulate stale/corrupted inventory data to verify the scheduler still
+        # refuses to hand Qwen2 work to a public Worker.
+        with self.store._tx() as conn:
+            conn.execute(
+                "UPDATE gpu_devices SET qwen2_model_id=?,qwen2_vram_mb=? WHERE node_id=?",
+                ("a" * 64, 4096, node_id),
+            )
+        qwen_task = self.client.post(
+            "/v0.7/gpu-tasks",
+            headers={"X-Admin-Key": ADMIN},
+            json={
+                "kind": "qwen2_generate",
+                "payload": {"model_id": "a" * 64, "prompt": "hello", "max_new_tokens": 1},
+                "required_vram_mb": 4096,
+            },
+        )
+        self.assertEqual(qwen_task.status_code, 200, qwen_task.text)
+        claimed = self.client.post(
+            f"/v0.7/nodes/{node_id}/gpu-claim",
+            headers={"X-Node-Token": token},
+        )
+        self.assertEqual(claimed.status_code, 200, claimed.text)
+        self.assertIsNone(claimed.json()["task"])
+
     def test_public_heartbeat_refreshes_gpu_scheduler_liveness(self):
         worker = self.admit_gpu_worker()
         self.clock.advance(20)
