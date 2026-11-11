@@ -269,7 +269,7 @@ def run(origin, resource):
                     error, result = None, {}
                     try:
                         result = execute_gpu_task(task, device)
-                    except (ValueError, RuntimeError, ImportError) as exc:
+                    except Exception as exc:
                         error = str(exc)[:500]
                     try:
                         completion = post(f"/v0.7/gpu-tasks/{task['id']}/complete", {
