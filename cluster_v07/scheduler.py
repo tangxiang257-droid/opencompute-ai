@@ -52,6 +52,7 @@ class GPUScheduler:
                     status TEXT NOT NULL,
                     assigned_node TEXT,
                     assigned_gpu_index INTEGER,
+                    assigned_gpu_uuid TEXT,
                     assigned_at REAL,
                     lease_token TEXT,
                     lease_until REAL,
@@ -63,8 +64,17 @@ class GPUScheduler:
                     updated REAL NOT NULL
                 )
             """)
+            columns = {column["name"] for column in conn.execute("PRAGMA table_info(gpu_tasks)")}
+            if "assigned_gpu_uuid" not in columns:
+                conn.execute("ALTER TABLE gpu_tasks ADD COLUMN assigned_gpu_uuid TEXT")
+                conn.execute("""
+                    UPDATE gpu_tasks SET assigned_gpu_uuid=(
+                        SELECT uuid FROM gpu_devices
+                        WHERE node_id=gpu_tasks.assigned_node AND gpu_index=gpu_tasks.assigned_gpu_index
+                    ) WHERE status='leased'
+                """)
             conn.execute("CREATE INDEX IF NOT EXISTS gpu_tasks_status_created ON gpu_tasks(status, created, id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS gpu_tasks_device_status ON gpu_tasks(assigned_node, assigned_gpu_index, status, lease_until)")
+            conn.execute("CREATE INDEX IF NOT EXISTS gpu_tasks_device_uuid ON gpu_tasks(assigned_gpu_uuid, status, lease_until)")
 
     def submit(self, kind, payload, *, required_vram_mb=256,
                required_vendor="nvidia", required_backend="cuda", max_attempts=3):
@@ -89,7 +99,7 @@ class GPUScheduler:
         conn.execute("""
             UPDATE gpu_tasks
             SET status=CASE WHEN attempts>=max_attempts THEN 'failed' ELSE 'queued' END,
-                assigned_node=NULL,assigned_gpu_index=NULL,assigned_at=NULL,
+                assigned_node=NULL,assigned_gpu_index=NULL,assigned_gpu_uuid=NULL,assigned_at=NULL,
                 lease_token=NULL,lease_until=NULL,
                 error=CASE WHEN attempts>=max_attempts
                            THEN 'GPU lease expired or Worker went offline'
@@ -118,38 +128,30 @@ class GPUScheduler:
         task["result"] = json.loads(result) if result is not None else None
         return task
 
-    def _best_device(self, conn, job, now):
+    def _available_devices(self, conn, now):
         rows = conn.execute("""
             SELECT g.node_id,g.gpu_index,g.uuid,g.name,g.vendor,g.backend,
                    g.total_memory_mb,g.free_memory_mb,g.utilization_pct,
-                   g.compute_capability,g.last_seen,g.runtime,
-                   n.name AS node_name,n.last_seen AS node_last_seen
+                   COALESCE(leases.reserved, 0) AS reserved
             FROM gpu_devices g JOIN nodes n ON n.id=g.node_id
-            WHERE n.last_seen>=? AND g.last_seen>=?
-              AND g.vendor=? AND g.backend=? AND g.runtime='pytorch_cuda'
-            ORDER BY g.utilization_pct ASC,g.total_memory_mb DESC,n.name,g.gpu_index
-        """, (now - self.store.heartbeat_ttl,
-              now - max(90.0, self.store.heartbeat_ttl * 3),
-              job["required_vendor"], job["required_backend"])).fetchall()
-        best = None
+            LEFT JOIN (
+                SELECT assigned_gpu_uuid,SUM(required_vram_mb) AS reserved
+                FROM gpu_tasks WHERE status='leased' AND lease_until>?
+                GROUP BY assigned_gpu_uuid
+            ) leases ON leases.assigned_gpu_uuid=g.uuid
+            WHERE n.last_seen>=? AND g.last_seen>=? AND g.runtime='pytorch_cuda'
+        """, (now, now - self.store.heartbeat_ttl,
+              now - max(90.0, self.store.heartbeat_ttl * 3)))
+        devices = []
         for row in rows:
-            reserved = conn.execute("""
-                SELECT COALESCE(SUM(required_vram_mb),0)
-                FROM gpu_tasks
-                WHERE status='leased' AND assigned_node=? AND assigned_gpu_index=?
-                  AND lease_until>?
-            """, (row["node_id"], row["gpu_index"], now)).fetchone()[0]
-            # Telemetry cannot establish how much of each reservation is
-            # already allocated. Keep the full reservation until lease release.
-            available = max(0, int(row["free_memory_mb"]) - int(reserved or 0))
-            if available < job["required_vram_mb"]:
+            # Telemetry cannot establish how much of a reservation is allocated.
+            available = max(0, row["free_memory_mb"] - row["reserved"])
+            if available < 64:
                 continue
-            utilization = float(row["utilization_pct"])
-            score = (available / max(1, int(row["total_memory_mb"]))) * (1 - utilization / 100)
-            candidate = (score, available, -utilization, row["node_id"], -row["gpu_index"], row)
-            if best is None or candidate[:5] > best[:5]:
-                best = candidate
-        return best[5] if best else None
+            utilization = row["utilization_pct"]
+            score = (available / row["total_memory_mb"]) * (1 - utilization / 100)
+            devices.append((score, available, -utilization, row["node_id"], -row["gpu_index"], row))
+        return sorted(devices, key=lambda device: device[:5], reverse=True)
 
     def claim(self, node_id, token):
         with self.store._tx() as conn:
@@ -158,22 +160,27 @@ class GPUScheduler:
             self._reap(conn, now)
             if requester["last_seen"] < now - self.store.heartbeat_ttl:
                 raise ValueError("Worker offline; heartbeat first")
+            devices = self._available_devices(conn, now)
+            capacity = max((entry[1] for entry in devices if entry[3] == node_id), default=0)
             queued = conn.execute("""
-                SELECT * FROM gpu_tasks WHERE status='queued'
-                ORDER BY created,id LIMIT 100
-            """).fetchall()
+                SELECT * FROM gpu_tasks WHERE status='queued' AND required_vram_mb<=?
+                ORDER BY created,id
+            """, (capacity,))
             for job in queued:
-                device = self._best_device(conn, job, now)
+                device = next((row for _, available, _, _, _, row in devices
+                               if available >= job["required_vram_mb"]
+                               and row["vendor"] == job["required_vendor"]
+                               and row["backend"] == job["required_backend"]), None)
                 if device is None or device["node_id"] != node_id:
                     continue
                 lease_token = secrets.token_urlsafe(24)
                 deadline = now + self.lease_seconds
                 conn.execute("""
                     UPDATE gpu_tasks SET status='leased',assigned_node=?,
-                        assigned_gpu_index=?,assigned_at=?,lease_token=?,lease_until=?,
+                        assigned_gpu_index=?,assigned_gpu_uuid=?,assigned_at=?,lease_token=?,lease_until=?,
                         attempts=attempts+1,updated=?
                     WHERE id=? AND status='queued'
-                """, (node_id, device["gpu_index"], now, lease_token,
+                """, (node_id, device["gpu_index"], device["uuid"], now, lease_token,
                       deadline, now, job["id"]))
                 return {"task": {
                     "id": job["id"], "kind": job["kind"],
@@ -188,8 +195,14 @@ class GPUScheduler:
 
     def complete(self, node_id, token, task_id, gpu_index, lease_token,
                  result, *, error=None):
-        if not isinstance(result, dict) or len(json.dumps(result, ensure_ascii=False)) > 200000:
-            raise ValueError("GPU task result must be an object no larger than 200 KB")
+        if not isinstance(result, dict):
+            raise ValueError("GPU task result must be an object")
+        try:
+            encoded_result = json.dumps(result, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("GPU task result must contain valid JSON values") from exc
+        if len(encoded_result) > 200000:
+            raise ValueError("GPU task result must be no larger than 200 KB")
         if error is not None and (not isinstance(error, str) or len(error) > 500):
             raise ValueError("GPU task error must be at most 500 characters")
         with self.store._tx() as conn:
@@ -211,10 +224,11 @@ class GPUScheduler:
                 UPDATE gpu_tasks SET status=?,result_json=?,error=?,
                     assigned_node=CASE WHEN ?='completed' THEN assigned_node ELSE NULL END,
                     assigned_gpu_index=CASE WHEN ?='completed' THEN assigned_gpu_index ELSE NULL END,
+                    assigned_gpu_uuid=CASE WHEN ?='completed' THEN assigned_gpu_uuid ELSE NULL END,
                     assigned_at=CASE WHEN ?='completed' THEN assigned_at ELSE NULL END,
                     lease_token=NULL,lease_until=NULL,updated=? WHERE id=?
-            """, (status, json.dumps(result) if error is None else None,
-                  error, status, status, status, now, task_id))
+            """, (status, encoded_result if error is None else None,
+                  error, status, status, status, status, now, task_id))
             return {"ok": True, "status": status}
 
     def detail(self, task_id):

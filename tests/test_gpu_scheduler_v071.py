@@ -141,6 +141,38 @@ class GPUTaskSchedulerTests(unittest.TestCase):
         self.scheduler.cancel(first["id"])
         self.assertEqual(self.claim().json()["task"]["id"], second["id"])
 
+    def test_duplicate_device_uuid_shares_reservations_between_workers(self):
+        self.report()
+        first = self.submit(required_vram_mb=6000).json()
+        self.assertEqual(self.claim().json()["task"]["id"], first["id"])
+        self.report(devices=[self.gpu(free_memory_mb=0)])
+
+        other = self.register("same-physical-gpu")
+        self.report(node=other, devices=[self.gpu(index=1, uuid="GPU-test-0")])
+        second = self.submit(required_vram_mb=3000).json()
+        self.assertIsNone(self.claim(node=other).json()["task"])
+        self.scheduler.cancel(first["id"])
+        self.assertEqual(self.claim(node=other).json()["task"]["id"], second["id"])
+
+    def test_oversized_jobs_do_not_block_a_runnable_task(self):
+        self.report()
+        for _ in range(100):
+            self.submit(required_vram_mb=65536)
+        self.clock.advance(1)
+        task = self.submit().json()
+        self.assertEqual(self.claim().json()["task"]["id"], task["id"])
+
+    def test_rejects_non_finite_results_without_losing_the_lease(self):
+        self.report()
+        task = self.submit().json()
+        lease = self.claim().json()["task"]
+        identity = (self.node["id"], self.node["node_token"], task["id"],
+                    lease["gpu_index"], lease["lease_token"])
+        with self.assertRaisesRegex(ValueError, "valid JSON"):
+            self.scheduler.complete(*identity, {"checksum": float("nan")})
+        self.assertEqual(self.scheduler.complete(*identity, {"checksum": 7})["status"],
+                         "completed")
+
     def test_scheduler_prefers_less_busy_gpu(self):
         self.report(devices=[
             self.gpu(0, utilization_pct=90.0),
@@ -240,22 +272,22 @@ class GPUTaskSchedulerTests(unittest.TestCase):
 
 
     def test_cuda_logical_indices_are_mapped_by_gpu_uuid(self):
-        inventory = [
-            self.gpu(0, uuid="GPU-physical-a", name="NVIDIA A"),
-            self.gpu(1, uuid="GPU-physical-b", name="NVIDIA B"),
-        ]
+        a = "a1712003-9000-4779-9944-dbe8d14d299d"
+        b = "b1712003-9000-4779-9944-dbe8d14d299d"
+        name = "NVIDIA Same Model"
+        inventory = [self.gpu(0, uuid=f"GPU-{a}", name=name),
+                     self.gpu(1, uuid=f"GPU-{b}", name=name)]
         runtime = {
             "runtime": "pytorch_cuda",
-            "runtime_version": "2.6.0",
+            "runtime_version": "2.7.0",
             "devices": [
-                {"index": 0, "uuid": "GPU-physical-b", "name": "NVIDIA B"},
-                {"index": 1, "uuid": "GPU-physical-a", "name": "NVIDIA A"},
+                {"index": 0, "uuid": b, "name": name},
+                {"index": 1, "uuid": a, "name": name},
             ],
         }
         mapped = map_gpu_inventory_to_cuda(inventory, runtime)
         indices = {item["uuid"]: item["index"] for item in mapped}
-        self.assertEqual(indices["GPU-physical-a"], 1)
-        self.assertEqual(indices["GPU-physical-b"], 0)
+        self.assertEqual(indices, {f"GPU-{a}": 1, f"GPU-{b}": 0})
         self.assertTrue(all(item["runtime"] == "pytorch_cuda" for item in mapped))
 
     def test_ambiguous_cuda_device_names_are_not_marked_schedulable(self):

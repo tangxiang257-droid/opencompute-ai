@@ -13,15 +13,19 @@ def run(model_dir, prompt_ids, max_new_tokens, *, device="cuda:0", expected_sha2
     if not 1 <= len(prompt_ids) <= 512 or not 1 <= max_new_tokens <= 64:
         raise ValueError("expected 1–512 prompt tokens and 1–64 new tokens")
 
-    device = torch.device(device)
-    if device.type == "cuda":
-        if not torch.cuda.is_available():
-            raise ValueError("CUDA device unavailable; install CUDA-enabled PyTorch")
-        index = torch.cuda.current_device() if device.index is None else device.index
+    device_type, separator, index_text = str(device).partition(":")
+    if device_type == "cuda":
+        if separator and (not index_text.isascii() or not index_text.isdecimal()):
+            raise ValueError("CUDA device index must be a non-negative integer")
+        if torch.version.cuda is None or not torch.cuda.is_available():
+            raise ValueError("NVIDIA CUDA device unavailable; install CUDA-enabled PyTorch")
+        index = int(index_text) if separator else torch.cuda.current_device()
         if index >= torch.cuda.device_count():
             raise ValueError("selected CUDA device is not visible to PyTorch")
         device = torch.device("cuda", index)
-    elif device != torch.device("cpu"):
+    elif device_type == "cpu" and not separator:
+        device = torch.device("cpu")
+    else:
         raise ValueError("device must be cpu or cuda[:index]")
 
     inspected = inspect_directory(model_dir, workers=1, expected_sha256=expected_sha256)

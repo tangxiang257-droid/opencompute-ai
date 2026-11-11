@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 
@@ -19,7 +20,7 @@ class Qwen2SingleDeviceTests(unittest.TestCase):
         self.assertEqual(actual["generated_ids"], [52, 9, 21])
         self.assertEqual(actual["step_logits"].device.type, "cpu")
 
-    @unittest.skipUnless(torch.cuda.is_available(), "requires CUDA-enabled PyTorch and a GPU")
+    @unittest.skipUnless(torch.version.cuda and torch.cuda.is_available(), "requires CUDA-enabled PyTorch and a GPU")
     def test_prefill_and_cached_decode_run_on_cuda(self):
         reference = generate_dense(self.state, self.config, self.prompt)
         actual = generate_dense(self.state, self.config, self.prompt, device="cuda:0")
@@ -40,6 +41,23 @@ class Qwen2SingleDeviceTests(unittest.TestCase):
         expected = generate_dense(self.state, self.config, self.prompt)
         self.assertEqual(actual["generated_ids"], expected["generated_ids"])
         self.assertEqual(actual["device"], "cpu")
+
+    def test_cuda_request_rejects_rocm_even_with_cuda_api_available(self):
+        from compute.qwen2_single_device import run
+
+        with (patch.object(torch.version, "cuda", None),
+              patch.object(torch.cuda, "is_available", return_value=True)):
+            with self.assertRaisesRegex(ValueError, "CUDA-enabled PyTorch"):
+                run("unused", self.prompt, 3, device="cuda:0")
+
+    def test_cuda_index_cannot_wrap_to_a_visible_gpu(self):
+        from compute.qwen2_single_device import run
+
+        with (patch.object(torch.version, "cuda", "12.8"),
+              patch.object(torch.cuda, "is_available", return_value=True),
+              patch.object(torch.cuda, "device_count", return_value=1)):
+            with self.assertRaisesRegex(ValueError, "not visible"):
+                run("unused", self.prompt, 3, device="cuda:256")
 
     def test_cuda_request_fails_without_a_visible_cuda_device(self):
         if torch.cuda.is_available():
