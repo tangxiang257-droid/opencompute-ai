@@ -20,6 +20,7 @@
 ::selection{background:#335d8d;color:#fff}input,textarea{caret-color:var(--cyan)}:focus-visible{outline:2px solid var(--cyan);outline-offset:3px}a{text-underline-offset:3px}*{scrollbar-color:#42618b #10192a}th,td,.checks dd{font-variant-numeric:tabular-nums}.task-filters{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px}.task-filters label{color:var(--muted);font-size:12px}.task-filters input{width:min(240px,100%)}.task-actions{display:flex;gap:6px}.checks{margin:0}.checks>div{display:grid;grid-template-columns:150px minmax(0,1fr);gap:18px;padding:15px 0;border-bottom:1px solid var(--line)}.checks>div:last-child{border:0}.checks dt{color:var(--muted)}.checks dd{margin:0;overflow-wrap:anywhere}.code{overflow-wrap:anywhere}#connectionFeedback{margin-bottom:18px}#taskDetail{white-space:pre-wrap}.key-box{flex-wrap:wrap}.key-box input{min-width:160px}button{min-height:36px}.card-head p{line-height:1.7}.nav-label{color:#9aacc7}.brand-sub,.nav-label,.status,.sub,th,.tiny,.kpi-foot,.field label,.notice,.card-head p,.section-title p{font-size:12px}input::placeholder,textarea::placeholder{color:#93a5c1}th{color:#a3b6d0}button svg{vertical-align:middle}
 @media(max-width:700px){:root{font-size:16px}.topbar{align-items:flex-start;flex-direction:column}.top-actions,.key-box{width:100%}.key-box input{flex:1;width:100%;font-size:16px}.checks>div{grid-template-columns:1fr;gap:6px}.task-filters{align-items:flex-start}.main{padding:20px 16px 36px}.btn{min-height:44px}.field label,.notice,.card-head p,.section-title p,.empty{font-size:14px}input,select,textarea{font-size:16px}.hero p{font-size:14px}.code{font-size:13px}.card-head{flex-wrap:wrap}}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+.gpu-task-output{white-space:pre-wrap;overflow-wrap:anywhere;min-width:12rem;max-width:34rem;margin:.5rem 0 0}
 </style>
 </head>
 <body>
@@ -91,11 +92,24 @@
     <article class="card"><div class="card-head"><div><h3>队列概况</h3><p>任务生命周期计数</p></div></div><div class="resource" id="taskSummary"><div class="empty">连接后读取任务统计</div></div><div class="notice" style="margin-top:15px">任务会被调度到支持对应能力且资源满足要求的在线节点。若没有匹配节点，任务将保持排队状态。</div></article>
   </div>
   <article class="card" style="margin-top:16px">
-    <div class="card-head"><div><h3>GPU 任务调度</h3><p>向已接入的 NVIDIA CUDA Worker 提交受限矩阵校验任务</p></div><span class="status wait" id="gpuTaskLiveStatus">未连接</span></div>
-    <form id="gpuTaskForm"><div class="form-grid">
-      <div class="field"><label for="gpuTaskSize">矩阵边长（16–512）</label><input id="gpuTaskSize" type="number" min="16" max="512" value="128"></div>
-      <div class="field"><label for="gpuTaskVram">预留显存（MB）</label><input id="gpuTaskVram" type="number" min="64" max="1048576" value="256"></div>
-    </div><div class="form-actions"><button class="btn" type="submit" id="submitGpuTask">提交 GPU 任务</button><span class="tiny muted">需要管理员密钥；没有可用 GPU 时任务会留在队列中</span></div></form>
+    <div class="card-head"><div><h3>GPU 任务调度</h3><p>在 NVIDIA CUDA Worker 上运行矩阵校验或 Qwen2 文本生成</p></div><span class="status wait" id="gpuTaskLiveStatus">未连接</span></div>
+    <form id="gpuTaskForm">
+      <div class="field"><label for="gpuTaskKind">任务类型</label><select id="gpuTaskKind">
+        <option value="matmul_checksum">矩阵校验</option><option value="qwen2_generate">Qwen2 文本生成</option>
+      </select></div>
+      <div class="form-grid" id="gpuMatrixFields">
+        <div class="field"><label for="gpuTaskSize">矩阵边长（16–512）</label><input id="gpuTaskSize" type="number" min="16" max="512" value="128"></div>
+        <div class="field"><label for="gpuTaskVram">预留显存（MB）</label><input id="gpuTaskVram" type="number" min="64" max="1048576" value="256"></div>
+      </div>
+      <div id="gpuQwenFields" hidden>
+        <div class="form-grid">
+          <div class="field"><label for="gpuQwenModel">模型</label><select id="gpuQwenModel" disabled><option value="">等待配置了 Qwen2 的在线 Worker</option></select></div>
+          <div class="field"><label for="gpuQwenTokens">生成 Token 数（1–64）</label><input id="gpuQwenTokens" type="number" min="1" max="64" value="16"></div>
+        </div>
+        <div class="field"><label for="gpuQwenPrompt">提示词</label><textarea id="gpuQwenPrompt" rows="4" maxlength="4096" placeholder="输入要续写的文本"></textarea></div>
+      </div>
+      <div class="form-actions"><button class="btn" type="submit" id="submitGpuTask">提交 GPU 任务</button></div>
+    </form>
     <p id="gpuTaskFeedback" class="tiny muted" role="status"></p>
     <div class="resource" id="gpuTaskSummary"><div class="empty">连接后读取 GPU 任务统计</div></div>
     <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>任务 ID</th><th>类型</th><th>状态</th><th>分配设备</th><th>预留显存</th><th>尝试次数</th><th>结果</th><th>操作</th></tr></thead><tbody id="gpuTaskRows"><tr><td colspan="8" class="muted">请先连接集群</td></tr></tbody></table></div>

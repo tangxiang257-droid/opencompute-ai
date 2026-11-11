@@ -13,7 +13,9 @@ import psutil
 import requests
 
 from cluster_v03.store import validate_payload
+from cluster_v07 import qwen2_job
 from cluster_v07.detection import detect_nvidia_gpus
+from cluster_v07.scheduler import QWEN2_TASK
 from cluster_v07.worker import detect_torch_cuda_runtime, map_gpu_inventory_to_cuda, execute_gpu_task
 
 
@@ -46,18 +48,26 @@ def calibrate_cpu_score():
     return round(1 / max(min(samples), 1e-4), 4)
 
 
-def run(*, base_url, join_key, name, score=None, poll_seconds=2.0, once=False):
+def run(*, base_url, join_key, name, score=None, poll_seconds=2.0, once=False,
+        qwen2_dir=None, qwen2_sha256=None):
     if not join_key or len(join_key) < 16:
         raise ValueError("OPENCOMPUTE_JOIN_KEY needs at least 16 characters")
     if not base_url.startswith(("http://127.0.0.1:", "http://localhost:", "http://opencompute:")):
         # This research agent can also work on a private network, but warns
         # about unencrypted transport. Production must use authenticated TLS.
         print("WARNING: use a trusted private network, ideally HTTPS with TLS", flush=True)
+    model = None
+    if qwen2_dir or qwen2_sha256:
+        if not qwen2_dir or not qwen2_sha256:
+            raise ValueError("Qwen2 Worker needs both a local model directory and weight SHA-256")
+        if detect_torch_cuda_runtime()["runtime"] != "pytorch_cuda":
+            raise ValueError("Qwen2 Worker needs a visible NVIDIA CUDA device and CUDA-enabled PyTorch")
+        model = qwen2_job.configure(qwen2_dir, qwen2_sha256)
     session = requests.Session()
 
-    def post(path, data=None, headers=None, *, allow_stale_completion=False):
+    def post(path, data=None, headers=None, *, allow_stale_completion=False, timeout=15):
         response = session.post(base_url.rstrip("/") + path,
-                                json=data, headers=headers or {}, timeout=15)
+                                json=data, headers=headers or {}, timeout=timeout)
         if allow_stale_completion and response.status_code == 409:
             return {"status": "discarded"}
         response.raise_for_status()
@@ -80,6 +90,11 @@ def run(*, base_url, join_key, name, score=None, poll_seconds=2.0, once=False):
             devices = detect_nvidia_gpus()
             runtime = detect_torch_cuda_runtime()
             devices = map_gpu_inventory_to_cuda(devices, runtime)
+            if model:
+                for gpu in devices:
+                    if (gpu["runtime"] == "pytorch_cuda"
+                            and gpu["total_memory_mb"] >= model["vram_mb"]):
+                        gpu.update(qwen2_model_id=model["id"], qwen2_vram_mb=model["vram_mb"])
             result = post(f"/v0.7/nodes/{node_id}/gpus", {"devices": devices}, key)
             print(f"GPU inventory reported: {result.get('reported', 0)} device(s)", flush=True)
         except Exception as exc:
@@ -89,12 +104,15 @@ def run(*, base_url, join_key, name, score=None, poll_seconds=2.0, once=False):
     report_gpu_inventory()
     gpu_runtime = detect_torch_cuda_runtime()
     last_gpu_report = time.monotonic()
-    while True:
+    def heartbeat(timeout=15):
         memory = psutil.virtual_memory()
         post(f"/v0.3/nodes/{node_id}/heartbeat", {
             "free_ram_mb": int(memory.available / 1048576),
             "cpu_load_pct": psutil.cpu_percent(interval=None),
-        }, key)
+        }, key, timeout=timeout)
+
+    while True:
+        heartbeat()
         if time.monotonic() - last_gpu_report >= 30:
             report_gpu_inventory()
             gpu_runtime = detect_torch_cuda_runtime()
@@ -113,17 +131,31 @@ def run(*, base_url, join_key, name, score=None, poll_seconds=2.0, once=False):
             print(f"processed {job['id'][:8]}: {completion.get('status') or error or 'completed'}", flush=True)
         if gpu_runtime["runtime"] == "pytorch_cuda":
             try:
+                claim_started = time.monotonic()
                 gpu_job = post(f"/v0.7/nodes/{node_id}/gpu-claim", {}, key)["task"]
                 if gpu_job:
+                    lease = {"node_id": node_id, "gpu_index": gpu_job["gpu_index"],
+                             "lease_token": gpu_job["lease_token"]}
+                    task_url = f"/v0.7/gpu-tasks/{gpu_job['id']}"
+
+                    def pulse():
+                        heartbeat(timeout=5)
+                        if not post(task_url + "/lease", lease, key, timeout=5)["active"]:
+                            raise InterruptedError("GPU task cancelled")
+
                     try:
-                        gpu_result = execute_gpu_task(gpu_job)
+                        if gpu_job["kind"] == QWEN2_TASK:
+                            gpu_result = qwen2_job.execute(model, gpu_job,
+                                                          claim_started=claim_started, pulse=pulse)
+                        else:
+                            gpu_result = execute_gpu_task(gpu_job)
                         gpu_error = None
+                    except (TimeoutError, ValueError, InterruptedError) as exc:
+                        gpu_result, gpu_error = {}, f"GPU execution failed: {exc}"[:500]
                     except Exception as exc:
                         gpu_result, gpu_error = {}, f"GPU execution failed: {type(exc).__name__}"
-                    gpu_completion = post(f"/v0.7/gpu-tasks/{gpu_job['id']}/complete", {
-                        "node_id": node_id, "gpu_index": gpu_job["gpu_index"],
-                        "lease_token": gpu_job["lease_token"],
-                        "result": gpu_result, "error": gpu_error,
+                    gpu_completion = post(task_url + "/complete", {
+                        **lease, "result": gpu_result, "error": gpu_error,
                     }, key, allow_stale_completion=True)
                     print(f"GPU task {gpu_job['id'][:8]}: {gpu_completion.get('status') or gpu_error or 'completed'}", flush=True)
             except Exception as exc:
@@ -139,10 +171,13 @@ def main():
     p.add_argument("--url", default=os.getenv("OPENCOMPUTE_API_URL", "http://127.0.0.1:8000"))
     p.add_argument("--name", default=os.getenv("OPENCOMPUTE_WORKER_NAME", platform.node() or "cpu-worker"))
     p.add_argument("--score", type=float, default=float(os.environ["OPENCOMPUTE_WORKER_SCORE"]) if os.getenv("OPENCOMPUTE_WORKER_SCORE") else None)
+    p.add_argument("--qwen2-dir", default=os.getenv("OPENCOMPUTE_QWEN2_DIR"))
+    p.add_argument("--qwen2-sha256", default=os.getenv("OPENCOMPUTE_QWEN2_SHA256"))
     p.add_argument("--once", action="store_true")
     a = p.parse_args()
     run(base_url=a.url, join_key=os.getenv("OPENCOMPUTE_JOIN_KEY", ""),
-        name=a.name, score=a.score, once=a.once)
+        name=a.name, score=a.score, once=a.once,
+        qwen2_dir=a.qwen2_dir, qwen2_sha256=a.qwen2_sha256)
 
 
 if __name__ == "__main__":

@@ -6,26 +6,43 @@ reported by a Worker is trusted hardware attestation.
 """
 import json
 import math
+import re
 import secrets
 import uuid
 
 from cluster_v03.store import LeaseConflict
 
 
-GPU_TASK_KINDS = {"matmul_checksum"}
+QWEN2_TASK = "qwen2_generate"
+GPU_TASK_KINDS = {"matmul_checksum", QWEN2_TASK}
 GPU_TASK_STATUSES = ("queued", "leased", "completed", "failed", "cancelled")
 
 
 def validate_gpu_task(kind, payload, required_vram_mb):
     if kind not in GPU_TASK_KINDS:
         raise ValueError("unsupported GPU task kind")
+    if type(required_vram_mb) is not int or not 64 <= required_vram_mb <= 1048576:
+        raise ValueError("required_vram_mb must be an integer in range 64..1048576")
+    if kind == QWEN2_TASK:
+        if not isinstance(payload, dict) or set(payload) != {"model_id", "prompt", "max_new_tokens"}:
+            raise ValueError("Qwen2 payload requires model_id, prompt and max_new_tokens")
+        model_id, prompt, steps = payload["model_id"], payload["prompt"], payload["max_new_tokens"]
+        if not isinstance(model_id, str) or not re.fullmatch(r"[0-9a-f]{64}", model_id):
+            raise ValueError("invalid Qwen2 model identifier")
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 4096:
+            raise ValueError("Qwen2 prompt must contain 1..4096 characters")
+        try:
+            prompt.encode("utf-8")
+        except UnicodeError as exc:
+            raise ValueError("Qwen2 prompt must be valid UTF-8") from exc
+        if type(steps) is not int or not 1 <= steps <= 64:
+            raise ValueError("max_new_tokens must be an integer in range 1..64")
+        return None
     if not isinstance(payload, dict) or set(payload) - {"size"}:
         raise ValueError("GPU matmul payload accepts only the size field")
     size = payload.get("size")
     if type(size) is not int or not 16 <= size <= 512:
         raise ValueError("GPU matmul size must be an integer in range 16..512")
-    if type(required_vram_mb) is not int or not 64 <= required_vram_mb <= 1048576:
-        raise ValueError("required_vram_mb must be an integer in range 64..1048576")
     estimated = 64 + math.ceil(3 * size * size * 4 / (1024 * 1024))
     if required_vram_mb < estimated:
         raise ValueError(f"requested VRAM is below the conservative workload estimate ({estimated} MB)")
@@ -85,6 +102,13 @@ class GPUScheduler:
             raise ValueError("max_attempts must be an integer in range 1..5")
         task_id, now = uuid.uuid4().hex, self.store.clock()
         with self.store._tx() as conn:
+            if kind == QWEN2_TASK:
+                minimum = conn.execute("""
+                    SELECT MIN(qwen2_vram_mb) FROM gpu_devices WHERE qwen2_model_id=?
+                """, (payload["model_id"],)).fetchone()[0]
+                if minimum is None:
+                    raise ValueError("Qwen2 model is not configured on a GPU Worker")
+                required_vram_mb = max(required_vram_mb, minimum)
             conn.execute("""
                 INSERT INTO gpu_tasks(
                     id,kind,payload_json,required_vram_mb,required_vendor,
@@ -106,11 +130,11 @@ class GPUScheduler:
                            ELSE 'GPU lease expired; task returned to queue' END,
                 updated=?
             WHERE status='leased' AND (
-                lease_until<=? OR assigned_node IN (
+                lease_until<=? OR (kind<>? AND assigned_node IN (
                     SELECT id FROM nodes WHERE last_seen<?
-                )
+                ))
             )
-        """, (now, now, now - self.store.heartbeat_ttl))
+        """, (now, now, QWEN2_TASK, now - self.store.heartbeat_ttl))
 
     @staticmethod
     def _detail(conn, task_id):
@@ -131,12 +155,12 @@ class GPUScheduler:
     def _available_devices(self, conn, now):
         rows = conn.execute("""
             SELECT g.node_id,g.gpu_index,g.uuid,g.name,g.vendor,g.backend,
-                   g.total_memory_mb,g.free_memory_mb,g.utilization_pct,
+                   g.total_memory_mb,g.free_memory_mb,g.utilization_pct,g.qwen2_model_id,g.qwen2_vram_mb,
                    COALESCE(leases.reserved, 0) AS reserved
             FROM gpu_devices g JOIN nodes n ON n.id=g.node_id
             LEFT JOIN (
                 SELECT assigned_gpu_uuid,SUM(required_vram_mb) AS reserved
-                FROM gpu_tasks WHERE status='leased' AND lease_until>?
+                FROM gpu_tasks WHERE status IN ('leased','cancelled') AND lease_until>?
                 GROUP BY assigned_gpu_uuid
             ) leases ON leases.assigned_gpu_uuid=g.uuid
             WHERE n.last_seen>=? AND g.last_seen>=? AND g.runtime='pytorch_cuda'
@@ -167,10 +191,14 @@ class GPUScheduler:
                 ORDER BY created,id
             """, (capacity,))
             for job in queued:
+                payload = json.loads(job["payload_json"])
                 device = next((row for _, available, _, _, _, row in devices
                                if available >= job["required_vram_mb"]
                                and row["vendor"] == job["required_vendor"]
-                               and row["backend"] == job["required_backend"]), None)
+                               and row["backend"] == job["required_backend"]
+                               and (job["kind"] != QWEN2_TASK
+                                    or (row["qwen2_model_id"] == payload["model_id"]
+                                        and row["qwen2_vram_mb"] <= job["required_vram_mb"]))), None)
                 if device is None or device["node_id"] != node_id:
                     continue
                 lease_token = secrets.token_urlsafe(24)
@@ -184,14 +212,35 @@ class GPUScheduler:
                       deadline, now, job["id"]))
                 return {"task": {
                     "id": job["id"], "kind": job["kind"],
-                    "payload": json.loads(job["payload_json"]),
+                    "payload": payload,
                     "required_vram_mb": job["required_vram_mb"],
                     "gpu_index": device["gpu_index"],
                     "gpu_name": device["name"],
                     "lease_token": lease_token,
                     "lease_until": deadline,
+                    "lease_seconds": self.lease_seconds,
                 }}
         return {"task": None}
+
+    @staticmethod
+    def _leased_job(conn, node_id, task_id, gpu_index, lease_token, now):
+        job = conn.execute("SELECT * FROM gpu_tasks WHERE id=?", (task_id,)).fetchone()
+        if (job is None or job["status"] not in ("leased", "cancelled")
+                or job["assigned_node"] != node_id
+                or job["assigned_gpu_index"] != gpu_index
+                or not lease_token
+                or not secrets.compare_digest(job["lease_token"] or "", lease_token)
+                or job["lease_until"] is None or job["lease_until"] <= now):
+            raise LeaseConflict("invalid, expired or already completed GPU lease")
+        return job
+
+    def lease_active(self, node_id, token, task_id, gpu_index, lease_token):
+        with self.store._tx() as conn:
+            self.store._require_node(conn, node_id, token)
+            now = self.store.clock()
+            self._reap(conn, now)
+            job = self._leased_job(conn, node_id, task_id, gpu_index, lease_token, now)
+            return job["status"] == "leased"
 
     def complete(self, node_id, token, task_id, gpu_index, lease_token,
                  result, *, error=None):
@@ -209,17 +258,13 @@ class GPUScheduler:
             self.store._require_node(conn, node_id, token)
             now = self.store.clock()
             self._reap(conn, now)
-            job = conn.execute("SELECT * FROM gpu_tasks WHERE id=?", (task_id,)).fetchone()
-            if (job is None or job["status"] != "leased"
-                    or job["assigned_node"] != node_id
-                    or job["assigned_gpu_index"] != gpu_index
-                    or not lease_token
-                    or not secrets.compare_digest(job["lease_token"] or "", lease_token)
-                    or job["lease_until"] is None or job["lease_until"] < now):
-                raise LeaseConflict("invalid, expired or already completed GPU lease")
-            status = "completed" if error is None else (
-                "failed" if job["attempts"] >= job["max_attempts"] else "queued"
-            )
+            job = self._leased_job(conn, node_id, task_id, gpu_index, lease_token, now)
+            if job["status"] == "cancelled":
+                status, error = "cancelled", job["error"]
+            else:
+                status = "completed" if error is None else (
+                    "failed" if job["attempts"] >= job["max_attempts"] else "queued"
+                )
             conn.execute("""
                 UPDATE gpu_tasks SET status=?,result_json=?,error=?,
                     assigned_node=CASE WHEN ?='completed' THEN assigned_node ELSE NULL END,
@@ -227,7 +272,7 @@ class GPUScheduler:
                     assigned_gpu_uuid=CASE WHEN ?='completed' THEN assigned_gpu_uuid ELSE NULL END,
                     assigned_at=CASE WHEN ?='completed' THEN assigned_at ELSE NULL END,
                     lease_token=NULL,lease_until=NULL,updated=? WHERE id=?
-            """, (status, encoded_result if error is None else None,
+            """, (status, encoded_result if status == "completed" else None,
                   error, status, status, status, status, now, task_id))
             return {"ok": True, "status": status}
 
@@ -243,12 +288,18 @@ class GPUScheduler:
             task = self._detail(conn, task_id)
             if task["status"] not in ("queued", "leased"):
                 raise LeaseConflict("only queued or leased GPU tasks can be cancelled")
-            conn.execute("""
-                UPDATE gpu_tasks SET status='cancelled',assigned_node=NULL,
-                    assigned_gpu_index=NULL,assigned_at=NULL,lease_token=NULL,
-                    lease_until=NULL,result_json=NULL,error='cancelled by administrator',
-                    updated=? WHERE id=?
-            """, (now, task_id))
+            if task["kind"] == QWEN2_TASK and task["status"] == "leased":
+                conn.execute("""
+                    UPDATE gpu_tasks SET status='cancelled',error='cancelled by administrator',
+                        updated=? WHERE id=?
+                """, (now, task_id))
+            else:
+                conn.execute("""
+                    UPDATE gpu_tasks SET status='cancelled',assigned_node=NULL,
+                        assigned_gpu_index=NULL,assigned_gpu_uuid=NULL,assigned_at=NULL,
+                        lease_token=NULL,lease_until=NULL,result_json=NULL,
+                        error='cancelled by administrator',updated=? WHERE id=?
+                """, (now, task_id))
             return self._detail(conn, task_id)
 
     def retry(self, task_id):
@@ -258,9 +309,11 @@ class GPUScheduler:
             task = self._detail(conn, task_id)
             if task["status"] not in ("failed", "cancelled"):
                 raise LeaseConflict("only failed or cancelled GPU tasks can be retried")
+            if task["lease_until"] is not None and task["lease_until"] > now:
+                raise LeaseConflict("GPU inference is still shutting down; retry after lease release")
             conn.execute("""
                 UPDATE gpu_tasks SET status='queued',assigned_node=NULL,
-                    assigned_gpu_index=NULL,assigned_at=NULL,lease_token=NULL,
+                    assigned_gpu_index=NULL,assigned_gpu_uuid=NULL,assigned_at=NULL,lease_token=NULL,
                     lease_until=NULL,result_json=NULL,error=NULL,attempts=0,updated=?
                 WHERE id=?
             """, (now, task_id))
@@ -288,7 +341,7 @@ class GPUScheduler:
             )}
             reserved = conn.execute("""
                 SELECT COALESCE(SUM(required_vram_mb),0) AS total
-                FROM gpu_tasks WHERE status='leased' AND lease_until>=?
+                FROM gpu_tasks WHERE status IN ('leased','cancelled') AND lease_until>?
             """, (now,)).fetchone()["total"]
         return {
             "tasks": tasks,

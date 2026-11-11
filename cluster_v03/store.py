@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import math
+import re
 from pathlib import Path
 import secrets
 import sqlite3
@@ -103,6 +104,8 @@ class ClusterStore:
                     supported_dtypes TEXT NOT NULL,
                     runtime TEXT NOT NULL DEFAULT 'unknown',
                     runtime_version TEXT,
+                    qwen2_model_id TEXT,
+                    qwen2_vram_mb INTEGER,
                     last_seen REAL NOT NULL,
                     PRIMARY KEY(node_id, gpu_index)
                 );
@@ -113,6 +116,10 @@ class ClusterStore:
                 conn.execute("ALTER TABLE gpu_devices ADD COLUMN runtime TEXT NOT NULL DEFAULT 'unknown'")
             if "runtime_version" not in gpu_columns:
                 conn.execute("ALTER TABLE gpu_devices ADD COLUMN runtime_version TEXT")
+            if "qwen2_model_id" not in gpu_columns:
+                conn.execute("ALTER TABLE gpu_devices ADD COLUMN qwen2_model_id TEXT")
+            if "qwen2_vram_mb" not in gpu_columns:
+                conn.execute("ALTER TABLE gpu_devices ADD COLUMN qwen2_vram_mb INTEGER")
 
     def _db(self):
         conn = sqlite3.connect(self.path, timeout=10, isolation_level=None)
@@ -394,6 +401,13 @@ class ClusterStore:
             runtime_version = gpu.get("runtime_version")
             if runtime_version is not None and (not isinstance(runtime_version, str) or len(runtime_version) > 32):
                 raise ValueError("invalid GPU runtime version")
+            model_id, model_vram = gpu.get("qwen2_model_id"), gpu.get("qwen2_vram_mb")
+            if model_id is not None or model_vram is not None:
+                if (not isinstance(model_id, str) or not re.fullmatch(r"[0-9a-f]{64}", model_id)
+                        or type(model_vram) is not int or not 64 <= model_vram <= total
+                        or (gpu["vendor"], gpu["backend"], runtime)
+                        != ("nvidia", "cuda", "pytorch_cuda")):
+                    raise ValueError("invalid Qwen2 GPU model capability")
 
         now = self.clock()
         with self._tx() as conn:
@@ -404,13 +418,14 @@ class ClusterStore:
                     """INSERT INTO gpu_devices(
                         node_id,gpu_index,uuid,name,vendor,backend,total_memory_mb,
                         free_memory_mb,utilization_pct,compute_capability,
-                        supported_dtypes,runtime,runtime_version,last_seen
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        supported_dtypes,runtime,runtime_version,qwen2_model_id,qwen2_vram_mb,last_seen
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (node_id, gpu["index"], gpu["uuid"], gpu["name"], gpu["vendor"],
                      gpu["backend"], gpu["total_memory_mb"], gpu["free_memory_mb"],
                      float(gpu["utilization_pct"]), gpu.get("compute_capability"),
                      json.dumps(sorted(set(gpu.get("supported_dtypes", [])))),
-                     gpu.get("runtime", "unknown"), gpu.get("runtime_version"), now),
+                     gpu.get("runtime", "unknown"), gpu.get("runtime_version"),
+                     gpu.get("qwen2_model_id"), gpu.get("qwen2_vram_mb"), now),
                 )
         return {"ok": True, "reported": len(devices), "reported_at": now}
 
@@ -422,7 +437,7 @@ class ClusterStore:
                 """SELECT g.node_id,g.gpu_index,g.uuid,g.name,g.vendor,g.backend,
                           g.total_memory_mb,g.free_memory_mb,g.utilization_pct,
                           g.compute_capability,g.supported_dtypes,g.runtime,
-                          g.runtime_version,g.last_seen,
+                          g.runtime_version,g.qwen2_model_id,g.qwen2_vram_mb,g.last_seen,
                           n.name AS node_name,n.last_seen AS node_last_seen
                    FROM gpu_devices g JOIN nodes n ON n.id=g.node_id
                    ORDER BY n.name,g.gpu_index"""

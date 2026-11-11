@@ -2,7 +2,7 @@
 (function(){
 'use strict';
 const $=id=>document.getElementById(id);
-const state={key:'',cluster:null,qwen:null,models:[],page:'overview',timer:null,epoch:0,controllers:new Set(),clusterBusy:false,inferenceBusy:false,detailId:null,qwenSequence:0,systemSequence:0,gpuSequence:0,gpus:null,gpuTasks:null,gpuTaskSequence:0};
+const state={key:'',cluster:null,qwen:null,models:[],page:'overview',timer:null,epoch:0,controllers:new Set(),clusterBusy:false,inferenceBusy:false,detailId:null,qwenSequence:0,systemSequence:0,gpuSequence:0,gpus:null,gpuTasks:null,gpuTaskSequence:0,gpuSubmitting:false};
 const titles={overview:['算力总览','OVERVIEW'],devices:['设备节点','DEVICES'],tasks:['任务队列','TASK QUEUE'],models:['模型中心','MODEL HUB'],inference:['推理实验','INFERENCE LAB'],system:['连接诊断','DIAGNOSTICS'],connect:['设备接入与 API','DEVELOPER']};
 function toast(message){const el=$('toast');el.textContent=message;el.classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>el.classList.remove('show'),3000)}
 function text(v){return String(v===undefined||v===null?'—':v)}
@@ -42,6 +42,7 @@ function disconnect(message='已断开'){
   [['overviewNodes',4],['overviewTasks',3],['deviceRows',8],['taskRows',8],['gpuTaskRows',8]].forEach(([id,n])=>{const row=el('tr');cell(row,'请先连接集群','muted').colSpan=n;$(id).replaceChildren(row)});
   $('taskDetailPanel').classList.add('hidden');$('taskDetail').textContent='';$('taskFeedback').textContent='';$('inferenceFeedback').textContent='';$('inferenceResult').textContent='尚未提交请求';
   $('qwenBadge').textContent='未检测';$('qwenBadge').className='status';$('taskLiveStatus').textContent='未连接';$('taskLiveStatus').className='status';$('gpuTaskLiveStatus').textContent='未连接';$('gpuTaskLiveStatus').className='status';$('gpuTaskFeedback').textContent='';
+  state.gpuSubmitting=false;$('gpuQwenPrompt').value='';renderGpuModels([]);
   $('deviceCount').textContent='等待连接';$('gpuPoolState').textContent='等待数据';$('gpuPoolState').className='status wait';const gpuRow=el('tr');cell(gpuRow,'请先连接集群','muted').colSpan=8;$('gpuRows').replaceChildren(gpuRow);$('kpiTaskFoot').textContent='等待集群连接';$('kpiNodesFoot').textContent='等待集群连接';
   $('systemChecks').replaceChildren();$('systemState').textContent='未检测';$('systemState').className='status';$('systemHint').textContent='连接管理员密钥后读取服务器状态';
   connection(false,message);banner('');
@@ -124,14 +125,32 @@ async function loadGpuInventory(){
   try{
     const data=await api('/v0.7/gpus');
     if(sequence!==state.gpuSequence)return;
-    state.gpus=data;renderGpuInventory(data);
+    state.gpus=data;renderGpuInventory(data);renderGpuModels(data.devices||[]);
   }catch(error){
     if(!error.stale&&sequence===state.gpuSequence){
+      renderGpuModels([]);
       $('gpuPoolState').textContent='读取失败';$('gpuPoolState').className='status bad';
       $('gpuSummary').replaceChildren(el('div','empty','GPU 资源读取失败：'+error.message));
       const row=el('tr');cell(row,'请检查服务端是否已部署 v0.7 GPU API。','muted').colSpan=7;$('gpuRows').replaceChildren(row);
     }
   }
+}
+function updateGpuForm(){
+  const qwen=$('gpuTaskKind').value==='qwen2_generate';
+  $('gpuMatrixFields').hidden=qwen;$('gpuQwenFields').hidden=!qwen;
+  $('submitGpuTask').disabled=state.gpuSubmitting||(qwen&&!$('gpuQwenModel').value);
+}
+function renderGpuModels(devices){
+  const select=$('gpuQwenModel'),current=select.value;
+  const models=[...new Set(devices.filter(gpu=>gpu.online&&gpu.qwen2_model_id).map(gpu=>gpu.qwen2_model_id))].sort();
+  select.replaceChildren();
+  for(const id of models){
+    const option=el('option','','Qwen2 · '+id.slice(0,12));option.value=id;select.append(option);
+  }
+  if(!models.length)select.append(el('option','','等待配置了 Qwen2 的在线 Worker'));
+  select.disabled=!models.length;
+  if(models.includes(current))select.value=current;
+  updateGpuForm();
 }
 function renderGpuTasks(data){
   const tasks=data.tasks||[],counts=data.counts||{},host=$('gpuTaskSummary');
@@ -139,19 +158,29 @@ function renderGpuTasks(data){
   [['排队中',counts.queued||0],['执行中',counts.leased||0],['已完成',counts.completed||0],['失败',counts.failed||0],['已取消',counts.cancelled||0],['当前预留显存',bytesMb(data.reserved_vram_mb||0)]].forEach(([label,value])=>{
     const row=el('div','resource-row');row.append(el('span','',label),el('span'),el('strong','',String(value)));host.append(row);
   });
-  const body=$('gpuTaskRows');body.replaceChildren();
-  if(!tasks.length){const tr=el('tr');cell(tr,'暂无 GPU 任务。提交一个矩阵校验任务开始体验。','muted').colSpan=8;body.append(tr)}
+  const body=$('gpuTaskRows');
+  const expanded=new Set([...body.querySelectorAll('details[open]')].map(item=>item.dataset.taskId));
+  body.replaceChildren();
+  if(!tasks.length){const tr=el('tr');cell(tr,'暂无 GPU 任务。','muted').colSpan=8;body.append(tr)}
   tasks.forEach(task=>{
     const tr=el('tr');
     cell(tr,String(task.id||'').slice(0,12),'node-name');
-    cell(tr,task.kind);
+    const qwen=task.kind==='qwen2_generate';
+    cell(tr,qwen?'Qwen2 文本生成':task.kind==='matmul_checksum'?'矩阵校验':task.kind);
     const status=el('td');status.append(statusTag(task.status));tr.append(status);
     cell(tr,task.assigned_node?(String(task.assigned_node).slice(0,8)+' · GPU '+task.assigned_gpu_index):'等待 GPU');
     cell(tr,bytesMb(task.required_vram_mb));
     cell(tr,(task.attempts||0)+' / '+task.max_attempts);
-    cell(tr,task.result?JSON.stringify(task.result).slice(0,72):(task.error||'—'));
+    if(qwen&&typeof task.result?.text==='string'){
+      const details=el('details');details.dataset.taskId=task.id;details.open=expanded.has(task.id);
+      details.append(el('summary','','查看生成文本'),el('pre','gpu-task-output',task.result.text||'未生成可显示文本'));
+      cell(tr).append(details);
+    }else{
+      cell(tr,task.result?JSON.stringify(task.result).slice(0,72):(task.error||'—'));
+    }
     const actions=el('td'),group=el('div','task-actions');
-    if(['queued','leased','failed','cancelled'].includes(task.status)){
+    if(['queued','leased','failed','cancelled'].includes(task.status)
+        && !(qwen&&task.status==='cancelled'&&Number(task.lease_until)>Date.now()/1000)){
       const action=['queued','leased'].includes(task.status)?'cancel':'retry';
       const button=el('button','btn secondary small',action==='cancel'?'取消':'重试');
       button.addEventListener('click',()=>changeGpuTask(task.id,action,button));group.append(button);
@@ -181,7 +210,7 @@ async function changeGpuTask(id,action,button){
   button.disabled=true;
   try{
     const data=await api('/v0.7/gpu-tasks/'+encodeURIComponent(id)+'/'+action,{method:'POST'});
-    $('gpuTaskFeedback').textContent=action==='cancel'?'GPU 任务已取消，原租约已失效。':'GPU 任务已重新排队。';
+    $('gpuTaskFeedback').textContent=action==='cancel'?(data.lease_until?'GPU 任务已取消，等待 Worker 退出并释放显存。':'GPU 任务已取消。'):'GPU 任务已重新排队。';
     await loadGpuTasks();
   }catch(error){
     if(!error.stale)$('gpuTaskFeedback').textContent='GPU 任务操作失败：'+error.message;
@@ -216,22 +245,35 @@ async function connect(){
 $('disconnectBtn').addEventListener('click',()=>disconnect());$('connectBtn').addEventListener('click',connect);$('adminKey').addEventListener('keydown',e=>{if(e.key==='Enter')connect()});
 $('taskKind').addEventListener('change',()=>{const k=$('taskKind').value;$('sumField').classList.toggle('hidden',k!=='sum');$('textField').classList.toggle('hidden',k!=='sha256');$('matrixField').classList.toggle('hidden',k!=='matmul_checksum')});
 $('taskForm').addEventListener('submit',async e=>{e.preventDefault();if(!requireKey())return;const kind=$('taskKind').value;let payload={};try{if(kind==='sum'){const raw=$('sumInput').value.split(',').map(x=>x.trim());if(raw.some(x=>!x))throw new Error('请输入有效数字，不要留空项');const values=raw.map(Number);if(!values.length||values.some(x=>!Number.isFinite(x))||values.length>10000)throw new Error('请输入不超过 10000 个有效数字');payload={numbers:values}}else if(kind==='sha256'){const value=$('hashInput').value;if(!value||value.length>100000)throw new Error('请输入 1–100000 个字符');payload={text:value}}else{const size=Number($('matrixSize').value);if(!Number.isInteger(size)||size<1||size>64)throw new Error('矩阵边长必须为 1–64');payload={size:size}}const cpu=Number($('taskCpu').value),ram=Number($('taskRam').value);if(!Number.isInteger(cpu)||cpu<1||cpu>128||!Number.isInteger(ram)||ram<1||ram>1048576)throw new Error('资源需求超出允许范围');$('submitTask').disabled=true;const result=await api('/v0.3/tasks',{method:'POST',body:JSON.stringify({kind:kind,payload:payload,required_cpu:cpu,required_memory_mb:ram})});$('taskFeedback').textContent='任务已提交：'+result.id+' · 状态：'+result.status;toast('任务已加入队列');await loadCluster()}catch(err){if(err.stale)return;$('taskFeedback').textContent='提交失败：'+err.message;toast('提交失败：'+err.message)}finally{$('submitTask').disabled=false}});
+$('gpuTaskKind').addEventListener('change',updateGpuForm);
+$('gpuQwenModel').addEventListener('change',updateGpuForm);
 $('gpuTaskForm').addEventListener('submit',async e=>{
-  e.preventDefault();if(!requireKey())return;
-  const size=Number($('gpuTaskSize').value),vram=Number($('gpuTaskVram').value);
-  const estimated=64+Math.ceil(3*size*size*4/1048576);
-  if(!Number.isInteger(size)||size<16||size>512){$('gpuTaskFeedback').textContent='矩阵边长必须为 16–512';return}
-  if(!Number.isInteger(vram)||vram<Math.max(64,estimated)||vram>1048576){$('gpuTaskFeedback').textContent='预留显存不足，至少需要 '+Math.max(64,estimated)+' MB';return}
-  $('submitGpuTask').disabled=true;
+  e.preventDefault();if(!requireKey()||state.gpuSubmitting)return;
+  const kind=$('gpuTaskKind').value,epoch=state.epoch;
+  let request;
+  if(kind==='qwen2_generate'){
+    const model=$('gpuQwenModel').value,prompt=$('gpuQwenPrompt').value,steps=Number($('gpuQwenTokens').value);
+    if(!model||!prompt.trim()||prompt.length>4096||!Number.isInteger(steps)||steps<1||steps>64){
+      $('gpuTaskFeedback').textContent='请选择在线模型，输入提示词，并设置 1–64 个生成 Token。';return;
+    }
+    request={kind,payload:{model_id:model,prompt,max_new_tokens:steps}};
+  }else{
+    const size=Number($('gpuTaskSize').value),vram=Number($('gpuTaskVram').value);
+    if(!Number.isInteger(size)||size<16||size>512){$('gpuTaskFeedback').textContent='矩阵边长必须为 16–512';return}
+    const estimated=64+Math.ceil(3*size*size*4/1048576);
+    if(!Number.isInteger(vram)||vram<estimated||vram>1048576){$('gpuTaskFeedback').textContent='预留显存超出范围，至少需要 '+estimated+' MB';return}
+    request={kind,payload:{size},required_vram_mb:vram};
+  }
+  state.gpuSubmitting=true;updateGpuForm();
   try{
-    const result=await api('/v0.7/gpu-tasks',{method:'POST',body:JSON.stringify({
-      kind:'matmul_checksum',payload:{size:size},required_vram_mb:vram
-    })});
-    $('gpuTaskFeedback').textContent='GPU 任务已提交：'+result.id+' · 预留 '+bytesMb(vram);
+    const result=await api('/v0.7/gpu-tasks',{method:'POST',body:JSON.stringify(request)});
+    $('gpuTaskFeedback').textContent='GPU 任务已提交：'+result.id+' · 预留 '+bytesMb(result.required_vram_mb);
     toast('GPU 任务已加入队列');await loadGpuTasks();
   }catch(error){
     if(!error.stale){$('gpuTaskFeedback').textContent='提交失败：'+error.message;toast('GPU 任务提交失败：'+error.message)}
-  }finally{$('submitGpuTask').disabled=false}
+  }finally{
+    if(epoch===state.epoch){state.gpuSubmitting=false;updateGpuForm()}
+  }
 });
 $('inferenceForm').addEventListener('submit',async e=>{e.preventDefault();if(!requireKey()||!state.qwen?.enabled||!state.qwen?.running||state.inferenceBusy)return;const epoch=state.epoch;try{const client=$('clientId').value.trim(),raw=$('promptIds').value.split(',').map(x=>x.trim());if(!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/.test(client))throw new Error('客户端标识须为 1–64 位安全 ASCII 字符');if(!raw.length||raw.length>128||raw.some(x=>!/^\d+$/.test(x)))throw new Error('请输入 1–128 个逗号分隔的 Token ID');const ids=raw.map(Number);if(ids.some(x=>!Number.isSafeInteger(x)||x<0||x>2147483647))throw new Error('Token ID 超出有效范围');state.inferenceBusy=true;$('submitInference').disabled=true;const result=await api('/v0.5/requests',{method:'POST',headers:{'X-Client-ID':client},timeoutMs:130000,body:JSON.stringify({prompt_ids:ids})});$('inferenceResult').textContent=JSON.stringify(result,null,2);$('inferenceFeedback').textContent='推理完成 · 批次大小 '+(result.batch_size||'—');await loadQwen()}catch(err){if(err.stale)return;$('inferenceFeedback').textContent='请求失败：'+err.message;$('inferenceResult').textContent=err.message}finally{if(epoch===state.epoch){state.inferenceBusy=false;$('submitInference').disabled=!state.qwen?.enabled||!state.qwen?.running}}});
 $('refreshDevices').addEventListener('click',()=>{loadCluster();loadGpuInventory()});$('refreshTasks').addEventListener('click',()=>{loadCluster();loadGpuTasks()});$('refreshModels').addEventListener('click',loadModels);$('refreshInference').addEventListener('click',loadQwen);

@@ -9,6 +9,15 @@ from compute.qwen2_reference import generate_single_device
 from compute.qwen2_safetensors import inspect_directory
 
 
+def estimate_cuda_bytes(meta, plan, context):
+    weight_bytes = plan["rank_shard_estimated_bytes_fp32"] + plan["rank0_io_estimated_bytes_fp32"]
+    if meta["tied_embeddings"]:
+        weight_bytes -= 4 * meta["hidden"] * meta["vocab"]
+    kv_bytes = 8 * meta["layers"] * meta["kv_heads"] * meta["head_dim"] * context
+    attention_bytes = 16 * meta["heads"] * context**2
+    return weight_bytes + kv_bytes + attention_bytes + 256 * 1024**2
+
+
 def run(model_dir, prompt_ids, max_new_tokens, *, device="cuda:0", expected_sha256=None):
     if not 1 <= len(prompt_ids) <= 512 or not 1 <= max_new_tokens <= 64:
         raise ValueError("expected 1–512 prompt tokens and 1–64 new tokens")
@@ -31,13 +40,7 @@ def run(model_dir, prompt_ids, max_new_tokens, *, device="cuda:0", expected_sha2
     inspected = inspect_directory(model_dir, workers=1, expected_sha256=expected_sha256)
     meta, plan = inspected["manifest"], inspected["plan"]
     if device.type == "cuda":
-        weight_bytes = plan["rank_shard_estimated_bytes_fp32"] + plan["rank0_io_estimated_bytes_fp32"]
-        if meta["tied_embeddings"]:
-            weight_bytes -= 4 * meta["hidden"] * meta["vocab"]
-        context = len(prompt_ids) + max_new_tokens
-        kv_bytes = 8 * meta["layers"] * meta["kv_heads"] * meta["head_dim"] * context
-        attention_bytes = 16 * meta["heads"] * context**2
-        reserve = weight_bytes + kv_bytes + attention_bytes + 256 * 1024**2
+        reserve = estimate_cuda_bytes(meta, plan, len(prompt_ids) + max_new_tokens)
         free, _ = torch.cuda.mem_get_info(device)
         if free < reserve:
             raise ValueError(f"insufficient free CUDA memory (estimated {(reserve + 1024**2 - 1) // 1024**2} MiB)")
