@@ -254,7 +254,9 @@ class GPUTaskSchedulerTests(unittest.TestCase):
             ],
         }
         mapped = map_gpu_inventory_to_cuda(inventory, runtime)
-        self.assertEqual([item["index"] for item in mapped], [1, 0])
+        indices = {item["uuid"]: item["index"] for item in mapped}
+        self.assertEqual(indices["GPU-physical-a"], 1)
+        self.assertEqual(indices["GPU-physical-b"], 0)
         self.assertTrue(all(item["runtime"] == "pytorch_cuda" for item in mapped))
 
     def test_ambiguous_cuda_device_names_are_not_marked_schedulable(self):
