@@ -145,9 +145,27 @@
 </section>
 
 <section class="page" id="page-connect">
-  <div class="section-title"><div><h2>设备接入与 API</h2><p>将可信私有网络中的 CPU 设备注册为 Worker</p></div></div>
+  <div class="section-title"><div><h2>设备接入与 API</h2><p>让本机参与算力校验，查看在线节点</p></div></div>
+  <article class="card" style="margin-bottom:14px">
+    <div class="card-head">
+      <div><h3>公网设备接入</h3><p>运行一次校验，资源达标后自动加入</p></div>
+      <button class="btn secondary small" id="refreshPublicPool">刷新状态</button>
+    </div>
+    <p id="publicPoolStatus" class="muted" role="status">正在读取接入状态…</p>
+    <div id="publicPoolControls" hidden>
+      <div class="resource" id="publicPoolMetrics"></div>
+      <p class="muted">需要 Python 3.9+、至少 2 核 CPU 和 2 GB 内存。GPU 模式还需 NVIDIA CUDA 版 PyTorch 和至少 4 GB 显存。</p>
+      <div class="form-grid">
+        <div class="field"><label for="publicWorkerShell">命令环境</label><select id="publicWorkerShell"><option value="powershell">Windows PowerShell</option><option value="posix">Linux / macOS</option></select></div>
+        <div class="field"><label for="publicWorkerDevice">贡献算力</label><select id="publicWorkerDevice"><option value="cpu">CPU</option><option value="cuda">NVIDIA GPU</option></select></div>
+      </div>
+      <div class="form-actions"><a class="btn" id="downloadPublicWorker" href="/v0.8/public/worker.py" download="opencompute-worker.py">下载 Worker</a><button class="btn secondary" id="copyPublicWorker">复制启动命令</button></div>
+      <pre class="code" id="publicWorkerCommand" style="margin-top:12px"></pre>
+      <p class="muted tiny">在下载文件的目录运行命令并保持终端开启。公网节点执行固定校验任务，资源规格由设备上报。</p>
+    </div>
+  </article>
   <div class="grid two-col">
-    <article class="card"><div class="card-head"><div><h3>接入一台新设备</h3><p>在目标设备上运行 Worker Agent</p></div></div>
+    <article class="card"><div class="card-head"><div><h3>可信设备接入</h3><p>用于接收平台计算与模型推理任务</p></div></div>
       <ol class="muted" style="font-size:12px;line-height:2;padding-left:19px"><li>在服务端配置 OPENCOMPUTE_JOIN_KEY（至少 16 位）。</li><li>在可信私有网络中启动服务端，并确认设备可访问 API 地址。</li><li>在设备上安装仓库依赖，然后运行 Worker Agent。</li><li>返回本页刷新设备列表，确认节点在线。</li></ol>
       <div class="field"><label for="serverUrl">服务端 API 地址</label><input id="serverUrl" value="http://127.0.0.1:8000"></div><div class="field" style="margin-top:10px"><label for="workerName">设备名称</label><input id="workerName" value="my-cpu-worker"></div>
       <div class="field" style="margin-top:10px"><label for="workerShell">命令环境</label><select id="workerShell"><option value="posix">Linux / macOS Shell</option><option value="powershell">Windows PowerShell</option></select></div><div class="code" id="workerCommand" style="margin-top:12px">OPENCOMPUTE_API_URL=http://127.0.0.1:8000
@@ -169,7 +187,7 @@ GET  /v0.4/models
 GET  /v0.5/status
 POST /v0.5/requests</div><p class="muted tiny" style="line-height:1.8">Worker 节点使用 X-Join-Key 完成注册，之后使用节点令牌发送心跳、领取任务和提交结果。不要把管理员密钥或节点令牌写入公开网页、代码仓库或 URL。</p><a href="/docs" target="_blank" rel="noreferrer">打开 FastAPI 交互式 API 文档 ↗</a></article>
   </div>
-  <div class="notice warn" style="margin-top:14px">安全边界：当前版本适合本机或可信局域网研究测试，不是公网多租户服务。默认 Docker Compose 仅绑定 127.0.0.1。不要直接把未启用 TLS、强身份认证和资源隔离的 Worker API 暴露到互联网。</div>
+  <div class="notice warn" style="margin-top:14px">公网接入请使用站点的 HTTPS 地址。可信设备使用独立的加入密钥，服务端默认绑定 127.0.0.1。</div>
 </section>
 </main>
 </div>
