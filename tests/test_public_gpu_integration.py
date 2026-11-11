@@ -129,6 +129,14 @@ class PublicGPUIntegrationTests(unittest.TestCase):
         self.assertEqual(rejected.status_code, 200, rejected.text)
         self.assertEqual(rejected.json()["status"], "queued")
 
+        throttled = self.client.post(
+            f"/v0.7/nodes/{node_id}/gpu-claim",
+            headers={"X-Node-Token": token},
+        )
+        self.assertEqual(throttled.status_code, 200, throttled.text)
+        self.assertIsNone(throttled.json()["task"])
+        self.clock.advance(2.1)
+
         retried = self.client.post(
             f"/v0.7/nodes/{node_id}/gpu-claim",
             headers={"X-Node-Token": token},
