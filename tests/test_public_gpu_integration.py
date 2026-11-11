@@ -1,3 +1,5 @@
+import hashlib
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -63,6 +65,49 @@ class PublicGPUIntegrationTests(unittest.TestCase):
         })
         self.assertEqual(joined.status_code, 200, joined.text)
         return joined.json()
+
+    def test_existing_cluster_database_migrates_nodes_as_trusted(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "legacy.sqlite"
+            token = "legacy-node-token-0123456789"
+            now = 1_000_000.0
+            with sqlite3.connect(path) as conn:
+                conn.execute("""CREATE TABLE nodes (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    token_hash TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    cpu_cores INTEGER NOT NULL,
+                    ram_mb INTEGER NOT NULL,
+                    free_ram_mb INTEGER NOT NULL,
+                    cpu_load_pct REAL NOT NULL,
+                    compute_score REAL NOT NULL,
+                    slots INTEGER NOT NULL,
+                    capabilities TEXT NOT NULL,
+                    last_seen REAL NOT NULL,
+                    created REAL NOT NULL
+                )""")
+                conn.execute(
+                    "INSERT INTO nodes VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ("legacy-node", "legacy", hashlib.sha256(token.encode()).hexdigest(),
+                     "linux", 4, 8192, 4096, 5.0, 1.0, 1, '["sum"]', now, now),
+                )
+
+            store = ClusterStore(path, clock=lambda: now, heartbeat_ttl=30)
+            node = store.status()["nodes"][0]
+            self.assertEqual(node["id"], "legacy-node")
+            self.assertEqual(node["role"], "trusted")
+            self.assertEqual(node["capabilities"], ["sum"])
+            self.assertEqual(store.heartbeat(
+                "legacy-node", token, free_ram_mb=4096, cpu_load_pct=5.0
+            )["ok"], True)
+            with store._tx() as conn:
+                migrated = conn.execute(
+                    "SELECT gpu_claimed_at,gpu_reported_at FROM nodes WHERE id=?",
+                    ("legacy-node",),
+                ).fetchone()
+            self.assertEqual(migrated["gpu_claimed_at"], 0)
+            self.assertEqual(migrated["gpu_reported_at"], 0)
 
     def test_public_cuda_worker_joins_gpu_pool_but_not_trusted_cpu_pool(self):
         worker = self.admit_gpu_worker()
