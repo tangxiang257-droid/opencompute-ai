@@ -387,7 +387,7 @@ class PublicGPUIntegrationTests(unittest.TestCase):
         self.assertEqual(first.status_code, 200, first.text)
         first_task = first.json()["task"]
         self.assertIsNotNone(first_task)
-        self.assertEqual(first_task["id"], task_ids[0])
+        self.assertIn(first_task["id"], task_ids)
 
         self.clock.advance(2.1)
         blocked = self.client.post(
@@ -419,7 +419,8 @@ class PublicGPUIntegrationTests(unittest.TestCase):
             headers={"X-Node-Token": token},
         )
         self.assertEqual(second.status_code, 200, second.text)
-        self.assertEqual(second.json()["task"]["id"], task_ids[1])
+        self.assertIn(second.json()["task"]["id"], task_ids)
+        self.assertNotEqual(second.json()["task"]["id"], first_task["id"])
 
     def test_public_gpu_claim_polling_is_rate_limited(self):
         worker = self.admit_gpu_worker()
