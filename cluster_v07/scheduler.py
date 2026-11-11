@@ -215,6 +215,8 @@ class GPUScheduler:
                 ORDER BY created,id
             """, (capacity,))
             for job in queued:
+                if requester["role"] == "public_gpu" and job["kind"] != "matmul_checksum":
+                    continue
                 payload = json.loads(job["payload_json"])
                 device = next((row for _, available, _, _, _, row in devices
                                if available >= job["required_vram_mb"]
