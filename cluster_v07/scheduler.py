@@ -9,6 +9,8 @@ import math
 import secrets
 import uuid
 
+from cluster_v03.store import LeaseConflict
+
 
 GPU_TASK_KINDS = {"matmul_checksum"}
 GPU_TASK_STATUSES = ("queued", "leased", "completed", "failed", "cancelled")
