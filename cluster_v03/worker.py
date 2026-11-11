@@ -13,6 +13,7 @@ import psutil
 import requests
 
 from cluster_v03.store import validate_payload
+from cluster_v07.detection import detect_nvidia_gpus
 
 
 def execute_task(kind, payload):
@@ -72,12 +73,27 @@ def run(*, base_url, join_key, name, score=None, poll_seconds=2.0, once=False):
     node_id, node_token = registration["id"], registration["node_token"]
     key = {"X-Node-Token": node_token}
     print(f"registered {name} as {node_id[:8]} (score={score or 'auto'})", flush=True)
+
+    def report_gpu_inventory():
+        try:
+            devices = detect_nvidia_gpus()
+            result = post(f"/v0.7/nodes/{node_id}/gpus", {"devices": devices}, key)
+            print(f"GPU inventory reported: {result.get('reported', 0)} device(s)", flush=True)
+        except Exception as exc:
+            # GPU reporting is optional; it must not take a healthy CPU Worker offline.
+            print(f"GPU inventory unavailable: {type(exc).__name__}", flush=True)
+
+    report_gpu_inventory()
+    last_gpu_report = time.monotonic()
     while True:
         memory = psutil.virtual_memory()
         post(f"/v0.3/nodes/{node_id}/heartbeat", {
             "free_ram_mb": int(memory.available / 1048576),
             "cpu_load_pct": psutil.cpu_percent(interval=None),
         }, key)
+        if time.monotonic() - last_gpu_report >= 30:
+            report_gpu_inventory()
+            last_gpu_report = time.monotonic()
         job = post(f"/v0.3/nodes/{node_id}/claim", {}, key)["task"]
         if job:
             try:

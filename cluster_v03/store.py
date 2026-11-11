@@ -89,6 +89,22 @@ class ClusterStore:
                 );
                 CREATE INDEX IF NOT EXISTS tasks_status_created ON tasks(status, created);
                 CREATE INDEX IF NOT EXISTS tasks_assigned_status ON tasks(assigned_node, status);
+                CREATE TABLE IF NOT EXISTS gpu_devices (
+                    node_id TEXT NOT NULL,
+                    gpu_index INTEGER NOT NULL,
+                    uuid TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    vendor TEXT NOT NULL,
+                    backend TEXT NOT NULL,
+                    total_memory_mb INTEGER NOT NULL,
+                    free_memory_mb INTEGER NOT NULL,
+                    utilization_pct REAL NOT NULL,
+                    compute_capability TEXT,
+                    supported_dtypes TEXT NOT NULL,
+                    last_seen REAL NOT NULL,
+                    PRIMARY KEY(node_id, gpu_index)
+                );
+                CREATE INDEX IF NOT EXISTS gpu_devices_node ON gpu_devices(node_id);
             """)
 
     def _db(self):
@@ -322,6 +338,106 @@ class ClusterStore:
                 lease_token=NULL,lease_until=NULL,result_json=NULL,error=NULL,
                 attempts=0,updated=? WHERE id=?""", (self.clock(), task_id))
             return self._task_detail(conn, task_id)
+
+    def report_gpu_inventory(self, node_id, token, devices):
+        """Replace a node's reported GPU inventory after authenticating its node token.
+
+        GPU facts are device-reported telemetry, not cryptographic hardware attestation.
+        """
+        if not isinstance(devices, list) or len(devices) > 16:
+            raise ValueError("GPU inventory must contain at most 16 devices")
+        seen_indices, seen_uuids = set(), set()
+        for gpu in devices:
+            index = gpu.get("index")
+            if type(index) is not int or not 0 <= index < 16 or index in seen_indices:
+                raise ValueError("GPU indices must be unique integers in range 0..15")
+            seen_indices.add(index)
+            identifier = gpu.get("uuid")
+            if not isinstance(identifier, str) or not identifier or len(identifier) > 128:
+                raise ValueError("GPU UUID must be a non-empty string of at most 128 characters")
+            if identifier in seen_uuids:
+                raise ValueError("GPU UUIDs must be unique within a node")
+            seen_uuids.add(identifier)
+            if not isinstance(gpu.get("name"), str) or not 1 <= len(gpu["name"]) <= 128:
+                raise ValueError("GPU name must contain 1..128 characters")
+            if gpu.get("vendor") not in ("nvidia", "amd", "intel", "unknown"):
+                raise ValueError("unsupported GPU vendor")
+            if gpu.get("backend") not in ("cuda", "rocm", "xpu", "unknown"):
+                raise ValueError("unsupported GPU backend")
+            total, free = gpu.get("total_memory_mb"), gpu.get("free_memory_mb")
+            if type(total) is not int or not 1 <= total <= 1048576:
+                raise ValueError("invalid total GPU memory")
+            if type(free) is not int or not 0 <= free <= total:
+                raise ValueError("invalid free GPU memory")
+            utilization = gpu.get("utilization_pct")
+            if (isinstance(utilization, bool) or not isinstance(utilization, (int, float))
+                    or not math.isfinite(utilization) or not 0 <= utilization <= 100):
+                raise ValueError("invalid GPU utilization")
+            capability = gpu.get("compute_capability")
+            if capability is not None and (not isinstance(capability, str) or len(capability) > 16):
+                raise ValueError("invalid GPU compute capability")
+            dtypes = gpu.get("supported_dtypes", [])
+            if (not isinstance(dtypes, list) or len(dtypes) > 6
+                    or any(item not in ("fp32", "fp16", "bf16", "tf32", "int8", "int4")
+                           for item in dtypes)):
+                raise ValueError("invalid GPU precision capabilities")
+
+        now = self.clock()
+        with self._tx() as conn:
+            self._require_node(conn, node_id, token)
+            conn.execute("DELETE FROM gpu_devices WHERE node_id=?", (node_id,))
+            for gpu in devices:
+                conn.execute(
+                    """INSERT INTO gpu_devices(
+                        node_id,gpu_index,uuid,name,vendor,backend,total_memory_mb,
+                        free_memory_mb,utilization_pct,compute_capability,
+                        supported_dtypes,last_seen
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (node_id, gpu["index"], gpu["uuid"], gpu["name"], gpu["vendor"],
+                     gpu["backend"], gpu["total_memory_mb"], gpu["free_memory_mb"],
+                     float(gpu["utilization_pct"]), gpu.get("compute_capability"),
+                     json.dumps(sorted(set(gpu.get("supported_dtypes", [])))), now),
+                )
+        return {"ok": True, "reported": len(devices), "reported_at": now}
+
+    def gpu_status(self):
+        """Return GPU inventory and aggregate online capacity without exposing node tokens."""
+        with self._tx() as conn:
+            now = self.clock()
+            rows = conn.execute(
+                """SELECT g.node_id,g.gpu_index,g.uuid,g.name,g.vendor,g.backend,
+                          g.total_memory_mb,g.free_memory_mb,g.utilization_pct,
+                          g.compute_capability,g.supported_dtypes,g.last_seen,
+                          n.name AS node_name,n.last_seen AS node_last_seen
+                   FROM gpu_devices g JOIN nodes n ON n.id=g.node_id
+                   ORDER BY n.name,g.gpu_index"""
+            ).fetchall()
+            devices = []
+            for row in rows:
+                item = dict(row)
+                item["supported_dtypes"] = json.loads(item["supported_dtypes"])
+                item["online"] = (
+                    item["node_last_seen"] >= now - self.heartbeat_ttl
+                    and item["last_seen"] >= now - max(90.0, self.heartbeat_ttl * 3)
+                )
+                item["telemetry_age_seconds"] = max(0, int(now - item["last_seen"]))
+                item["verification"] = "self_reported"
+                item.pop("node_last_seen", None)
+                devices.append(item)
+            online = [item for item in devices if item["online"]]
+            summary = {
+                "registered": len(devices),
+                "online": len(online),
+                "offline": len(devices) - len(online),
+                "total_vram_mb": sum(item["total_memory_mb"] for item in online),
+                "free_vram_mb": sum(item["free_memory_mb"] for item in online),
+                "vendors": {
+                    vendor: sum(1 for item in online if item["vendor"] == vendor)
+                    for vendor in ("nvidia", "amd", "intel", "unknown")
+                },
+            }
+        return {"devices": devices, "summary": summary,
+                "heartbeat_ttl_seconds": self.heartbeat_ttl}
 
     def status(self):
         with self._tx() as conn:

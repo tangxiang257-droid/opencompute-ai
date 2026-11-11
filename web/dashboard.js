@@ -2,7 +2,7 @@
 (function(){
 'use strict';
 const $=id=>document.getElementById(id);
-const state={key:'',cluster:null,qwen:null,models:[],page:'overview',timer:null,epoch:0,controllers:new Set(),clusterBusy:false,inferenceBusy:false,detailId:null,qwenSequence:0,systemSequence:0};
+const state={key:'',cluster:null,qwen:null,models:[],page:'overview',timer:null,epoch:0,controllers:new Set(),clusterBusy:false,inferenceBusy:false,detailId:null,qwenSequence:0,systemSequence:0,gpuSequence:0,gpus:null};
 const titles={overview:['算力总览','OVERVIEW'],devices:['设备节点','DEVICES'],tasks:['任务队列','TASK QUEUE'],models:['模型中心','MODEL HUB'],inference:['推理实验','INFERENCE LAB'],system:['连接诊断','DIAGNOSTICS'],connect:['设备接入与 API','DEVELOPER']};
 function toast(message){const el=$('toast');el.textContent=message;el.classList.add('show');clearTimeout(toast.timer);toast.timer=setTimeout(()=>el.classList.remove('show'),3000)}
 function text(v){return String(v===undefined||v===null?'—':v)}
@@ -35,23 +35,23 @@ async function api(path,options={}){
 }
 function disconnect(message='已断开'){
   state.epoch++;clearTimeout(state.timer);state.controllers.forEach(c=>c.abort());state.controllers.clear();
-  state.key='';state.cluster=null;state.qwen=null;state.clusterBusy=false;state.inferenceBusy=false;state.detailId=null;storage('clear');
+  state.key='';state.cluster=null;state.qwen=null;state.gpus=null;state.gpuSequence++;state.clusterBusy=false;state.inferenceBusy=false;state.detailId=null;storage('clear');
   $('adminKey').value='';$('disconnectBtn').disabled=true;$('connectBtn').disabled=false;$('submitInference').disabled=true;
   ['kpiNodes','kpiCpu','kpiRam','kpiRunning'].forEach(id=>$(id).textContent='—');
-  ['resourceBars','taskBars','taskSummary','qwenStats'].forEach(id=>$(id).replaceChildren(el('div','empty','连接后读取实时数据')));
+  ['resourceBars','taskBars','taskSummary','qwenStats','gpuSummary'].forEach(id=>$(id).replaceChildren(el('div','empty','连接后读取实时数据')));
   [['overviewNodes',4],['overviewTasks',3],['deviceRows',8],['taskRows',8]].forEach(([id,n])=>{const row=el('tr');cell(row,'请先连接集群','muted').colSpan=n;$(id).replaceChildren(row)});
   $('taskDetailPanel').classList.add('hidden');$('taskDetail').textContent='';$('taskFeedback').textContent='';$('inferenceFeedback').textContent='';$('inferenceResult').textContent='尚未提交请求';
   $('qwenBadge').textContent='未检测';$('qwenBadge').className='status';$('taskLiveStatus').textContent='未连接';$('taskLiveStatus').className='status';
-  $('deviceCount').textContent='等待连接';$('kpiTaskFoot').textContent='等待集群连接';$('kpiNodesFoot').textContent='等待集群连接';
+  $('deviceCount').textContent='等待连接';$('gpuPoolState').textContent='等待数据';$('gpuPoolState').className='status wait';const gpuRow=el('tr');cell(gpuRow,'请先连接集群','muted').colSpan=7;$('gpuRows').replaceChildren(gpuRow);$('kpiTaskFoot').textContent='等待集群连接';$('kpiNodesFoot').textContent='等待集群连接';
   $('systemChecks').replaceChildren();$('systemState').textContent='未检测';$('systemState').className='status';$('systemHint').textContent='连接管理员密钥后读取服务器状态';
   connection(false,message);banner('');
 }
 async function poll(){
   const epoch=state.epoch;if(!state.key)return;
-  if(!document.hidden)await Promise.all([loadCluster(),loadQwen(),state.page==='system'?loadSystem():Promise.resolve()]);
+  if(!document.hidden)await Promise.all([loadCluster(),loadQwen(),loadGpuInventory(),state.page==='system'?loadSystem():Promise.resolve()]);
   if(epoch===state.epoch&&state.key)state.timer=setTimeout(poll,12000);
 }
-function go(page){if(!titles[page])return;state.page=page;document.querySelectorAll('.page').forEach(n=>n.classList.toggle('active',n.id==='page-'+page));document.querySelectorAll('[data-page]').forEach(n=>n.classList.toggle('active',n.dataset.page===page));$('pageTitle').textContent=titles[page][0];$('crumb').textContent=titles[page][1];$('sidebar').classList.remove('open');$('menuBtn').setAttribute('aria-expanded','false');if(page==='models')loadModels();if(page==='inference'&&state.key)loadQwen();if((page==='devices'||page==='tasks')&&state.key)loadCluster();if(page==='system'&&state.key)loadSystem()}
+function go(page){if(!titles[page])return;state.page=page;document.querySelectorAll('.page').forEach(n=>n.classList.toggle('active',n.id==='page-'+page));document.querySelectorAll('[data-page]').forEach(n=>n.classList.toggle('active',n.dataset.page===page));$('pageTitle').textContent=titles[page][0];$('crumb').textContent=titles[page][1];$('sidebar').classList.remove('open');$('menuBtn').setAttribute('aria-expanded','false');if(page==='models')loadModels();if(page==='inference'&&state.key)loadQwen();if((page==='devices'||page==='tasks')&&state.key)loadCluster();if(page==='devices'&&state.key)loadGpuInventory();if(page==='system'&&state.key)loadSystem()}
 document.querySelectorAll('[data-page]').forEach(n=>n.addEventListener('click',()=>go(n.dataset.page)));
 document.querySelectorAll('[data-goto]').forEach(n=>n.addEventListener('click',()=>go(n.dataset.goto)));
 $('menuBtn').addEventListener('click',()=>{$('sidebar').classList.toggle('open');$('menuBtn').setAttribute('aria-expanded',String($('sidebar').classList.contains('open')))});
@@ -91,6 +91,47 @@ async function loadCluster(){
   catch(e){if(!e.stale){connection(false,'连接中断');banner('集群读取失败：'+e.message+'。可点击连接重试；输入内容已保留。')}}
   finally{if(epoch===state.epoch)state.clusterBusy=false}
 }
+function renderGpuInventory(data){
+  const summary=data.summary||{},devices=data.devices||[],host=$('gpuSummary');
+  host.replaceChildren();
+  const online=Number(summary.online)||0,registered=Number(summary.registered)||0;
+  $('gpuPoolState').textContent=registered?online+' / '+registered+' 台 GPU 在线':'未发现 GPU';
+  $('gpuPoolState').className='status '+(online?'good':registered?'wait':'');
+  if(!registered){
+    host.append(el('div','empty','尚无 GPU 节点。安装 NVIDIA 驱动并运行带 GPU 检测功能的 Worker 后，资源会自动出现在这里。'));
+  }else{
+    [['在线 GPU',online+' / '+registered],['在线总显存',bytesMb(summary.total_vram_mb)],['可用显存',bytesMb(summary.free_vram_mb)],['离线 GPU',String(summary.offline||0)]].forEach(([label,value])=>{
+      const row=el('div','resource-row');row.append(el('span','',label),el('span'),el('strong','',value));host.append(row);
+    });
+  }
+  const body=$('gpuRows');body.replaceChildren();
+  if(!devices.length){const tr=el('tr');cell(tr,'暂未检测到 NVIDIA GPU。','muted').colSpan=7;body.append(tr);return}
+  devices.forEach(gpu=>{
+    const tr=el('tr');
+    cell(tr,(gpu.node_name||'未知节点')+' · '+String(gpu.node_id||'').slice(0,8),'node-name');
+    cell(tr,'GPU '+gpu.gpu_index+' · '+gpu.name);
+    cell(tr,(gpu.vendor||'—').toUpperCase()+' / '+(gpu.backend||'—').toUpperCase());
+    cell(tr,bytesMb(gpu.free_memory_mb)+' / '+bytesMb(gpu.total_memory_mb));
+    cell(tr,Number(gpu.utilization_pct||0).toFixed(1)+'%');
+    cell(tr,gpu.compute_capability||'—');
+    const status=el('td');status.append(statusTag(gpu.online?'online':'offline'));tr.append(status);body.append(tr);
+  });
+}
+async function loadGpuInventory(){
+  if(!state.key)return;
+  const sequence=++state.gpuSequence;
+  try{
+    const data=await api('/v0.7/gpus');
+    if(sequence!==state.gpuSequence)return;
+    state.gpus=data;renderGpuInventory(data);
+  }catch(error){
+    if(!error.stale&&sequence===state.gpuSequence){
+      $('gpuPoolState').textContent='读取失败';$('gpuPoolState').className='status bad';
+      $('gpuSummary').replaceChildren(el('div','empty','GPU 资源读取失败：'+error.message));
+      const row=el('tr');cell(row,'请检查服务端是否已部署 v0.7 GPU API。','muted').colSpan=7;$('gpuRows').replaceChildren(row);
+    }
+  }
+}
 async function loadModels(){
   try{const d=await api('/v0.4/models');state.models=d.models||[];const host=$('modelCards');host.replaceChildren();if(!state.models.length){host.append(el('div','empty','模型目录暂无条目'));return}
     state.models.forEach(m=>{const card=el('article','model-card'),ready=m.capability==='experimental';card.append(el('span','tag '+(ready?'ready':'planned'),ready?'实验引擎已实现':m.capability==='research'?'研究阶段':'待适配'),el('h3','',m.display_name||m.id),el('p','',m.description||'暂无说明'));const meta=el('div','model-meta');meta.append(el('span','tag',m.architecture||m.family||'模型'));(m.modes||[]).forEach(mode=>meta.append(el('span','tag',mode)));card.append(meta);host.append(card)})
@@ -113,7 +154,7 @@ async function connect(){
   if(!key){banner('请输入管理员密钥后连接。');$('adminKey').focus();return}
   if(location.protocol!=='https:'&&!['localhost','127.0.0.1','[::1]'].includes(location.hostname)){banner('此地址未使用 HTTPS。请使用 HTTPS 地址连接，以保护管理员密钥。');return}
   disconnect();state.key=key;const epoch=state.epoch;$('connectBtn').disabled=true;$('disconnectBtn').disabled=false;connection(false,'正在验证…');
-  try{const d=await api('/v0.3/status');state.cluster=d;storage('write',key);renderKpis(d);renderDevices(d.nodes||[]);renderTasks(d.tasks||[]);connection(true,'集群在线');banner('');await Promise.all([loadQwen(),loadModels()]);if(epoch!==state.epoch)return;if(state.page==='system')await loadSystem();state.timer=setTimeout(poll,12000)}
+  try{const d=await api('/v0.3/status');state.cluster=d;storage('write',key);renderKpis(d);renderDevices(d.nodes||[]);renderTasks(d.tasks||[]);connection(true,'集群在线');banner('');await Promise.all([loadQwen(),loadModels(),loadGpuInventory()]);if(epoch!==state.epoch)return;if(state.page==='system')await loadSystem();state.timer=setTimeout(poll,12000)}
   catch(e){if(!e.stale){disconnect('连接失败');banner('连接失败：'+e.message+'。请检查服务地址和管理员密钥。')}}
   finally{if(epoch===state.epoch)$('connectBtn').disabled=false}
 }
@@ -121,7 +162,7 @@ $('disconnectBtn').addEventListener('click',()=>disconnect());$('connectBtn').ad
 $('taskKind').addEventListener('change',()=>{const k=$('taskKind').value;$('sumField').classList.toggle('hidden',k!=='sum');$('textField').classList.toggle('hidden',k!=='sha256');$('matrixField').classList.toggle('hidden',k!=='matmul_checksum')});
 $('taskForm').addEventListener('submit',async e=>{e.preventDefault();if(!requireKey())return;const kind=$('taskKind').value;let payload={};try{if(kind==='sum'){const raw=$('sumInput').value.split(',').map(x=>x.trim());if(raw.some(x=>!x))throw new Error('请输入有效数字，不要留空项');const values=raw.map(Number);if(!values.length||values.some(x=>!Number.isFinite(x))||values.length>10000)throw new Error('请输入不超过 10000 个有效数字');payload={numbers:values}}else if(kind==='sha256'){const value=$('hashInput').value;if(!value||value.length>100000)throw new Error('请输入 1–100000 个字符');payload={text:value}}else{const size=Number($('matrixSize').value);if(!Number.isInteger(size)||size<1||size>64)throw new Error('矩阵边长必须为 1–64');payload={size:size}}const cpu=Number($('taskCpu').value),ram=Number($('taskRam').value);if(!Number.isInteger(cpu)||cpu<1||cpu>128||!Number.isInteger(ram)||ram<1||ram>1048576)throw new Error('资源需求超出允许范围');$('submitTask').disabled=true;const result=await api('/v0.3/tasks',{method:'POST',body:JSON.stringify({kind:kind,payload:payload,required_cpu:cpu,required_memory_mb:ram})});$('taskFeedback').textContent='任务已提交：'+result.id+' · 状态：'+result.status;toast('任务已加入队列');await loadCluster()}catch(err){if(err.stale)return;$('taskFeedback').textContent='提交失败：'+err.message;toast('提交失败：'+err.message)}finally{$('submitTask').disabled=false}});
 $('inferenceForm').addEventListener('submit',async e=>{e.preventDefault();if(!requireKey()||!state.qwen?.enabled||!state.qwen?.running||state.inferenceBusy)return;const epoch=state.epoch;try{const client=$('clientId').value.trim(),raw=$('promptIds').value.split(',').map(x=>x.trim());if(!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$/.test(client))throw new Error('客户端标识须为 1–64 位安全 ASCII 字符');if(!raw.length||raw.length>128||raw.some(x=>!/^\d+$/.test(x)))throw new Error('请输入 1–128 个逗号分隔的 Token ID');const ids=raw.map(Number);if(ids.some(x=>!Number.isSafeInteger(x)||x<0||x>2147483647))throw new Error('Token ID 超出有效范围');state.inferenceBusy=true;$('submitInference').disabled=true;const result=await api('/v0.5/requests',{method:'POST',headers:{'X-Client-ID':client},timeoutMs:130000,body:JSON.stringify({prompt_ids:ids})});$('inferenceResult').textContent=JSON.stringify(result,null,2);$('inferenceFeedback').textContent='推理完成 · 批次大小 '+(result.batch_size||'—');await loadQwen()}catch(err){if(err.stale)return;$('inferenceFeedback').textContent='请求失败：'+err.message;$('inferenceResult').textContent=err.message}finally{if(epoch===state.epoch){state.inferenceBusy=false;$('submitInference').disabled=!state.qwen?.enabled||!state.qwen?.running}}});
-$('refreshDevices').addEventListener('click',loadCluster);$('refreshTasks').addEventListener('click',loadCluster);$('refreshModels').addEventListener('click',loadModels);$('refreshInference').addEventListener('click',loadQwen);
+$('refreshDevices').addEventListener('click',()=>{loadCluster();loadGpuInventory()});$('refreshTasks').addEventListener('click',loadCluster);$('refreshModels').addEventListener('click',loadModels);$('refreshInference').addEventListener('click',loadQwen);
 function updateCommand(){
   const name=$('workerName').value.trim()||'my-cpu-worker',mode=$('workerShell').value;
   try{const url=new URL($('serverUrl').value.trim());if(!['http:','https:'].includes(url.protocol)||url.username||url.password||url.search||url.hash||url.pathname!=='/')throw new Error('请输入不含账户信息的完整服务源地址');
