@@ -9,19 +9,33 @@ from compute.qwen2_core import rms_norm, forward_layers
 from compute.qwen2_shards import manifest_from_config
 
 
-@torch.inference_mode()
 def generate_dense(state, config, prompt_ids, max_new_tokens=3,
-                   *, return_logits=True):
+                   *, return_logits=True, device="cpu"):
     meta = manifest_from_config(config, workers=1, source="dense-reference")
-    h, d, a, kv, inner = (meta["hidden"], meta["head_dim"], meta["heads"],
-                          meta["kv_heads"], meta["inner"])
+    return generate_single_device(state, meta, prompt_ids, max_new_tokens,
+                                  device=device, return_logits=return_logits)
+
+
+@torch.inference_mode()
+def generate_single_device(state, meta, prompt_ids, max_new_tokens, *,
+                           device, return_logits=False):
+    if (meta["workers"] != 1 or not prompt_ids or max_new_tokens < 1
+            or len(prompt_ids) + max_new_tokens - 1 > meta["positions"]):
+        raise ValueError("invalid single-device Qwen2 context or rank count")
+    if any(type(token) is not int or not 0 <= token < meta["vocab"]
+           for token in prompt_ids):
+        raise ValueError("invalid Qwen2 prompt token")
+    d, a, kv = meta["head_dim"], meta["heads"], meta["kv_heads"]
+
+    def get(key):
+        return state[key].to(device=device, dtype=torch.float32)
+
+    def bias(name, width):
+        return get(name) if name in state else torch.zeros(width, device=device, dtype=torch.float32)
+
     layers = []
     for index in range(meta["layers"]):
         prefix = f"model.layers.{index}."
-        def get(key):
-            return state[key].float()
-        def bias(name, width):
-            return get(name) if name in state else torch.zeros(width)
         layers.append({
             "input_norm": get(prefix + "input_layernorm.weight"),
             "post_norm": get(prefix + "post_attention_layernorm.weight"),
@@ -36,26 +50,22 @@ def generate_dense(state, config, prompt_ids, max_new_tokens=3,
             "up_w": get(prefix + "mlp.up_proj.weight"),
             "down_w": get(prefix + "mlp.down_proj.weight"),
         })
-    if (not prompt_ids or len(prompt_ids) + max_new_tokens - 1 > meta["positions"]):
-        raise ValueError("invalid dense reference prompt length")
-    for token in prompt_ids:
-        if type(token) is not int or not 0 <= token < meta["vocab"]:
-            raise ValueError("invalid dense reference token")
-    embed = state["model.embed_tokens.weight"].float()
-    output = (embed if meta["tied_embeddings"]
-              else state["lm_head.weight"].float())
-    norm = state["model.norm.weight"].float()
+    embed = get("model.embed_tokens.weight")
+    output = embed if meta["tied_embeddings"] else get("lm_head.weight")
+    norm = get("model.norm.weight")
     tokens = list(prompt_ids)
     new_ids = []
     logits = []
     caches = [None] * meta["layers"]
     for _ in range(max_new_tokens):
-        x = F.embedding(torch.tensor(tokens, dtype=torch.long), embed).unsqueeze(0)
+        token_tensor = torch.tensor(tokens, dtype=torch.long, device=device)
+        x = F.embedding(token_tensor, embed).unsqueeze(0)
         x, caches = forward_layers(x, layers, caches, meta)
         last = rms_norm(x[:, -1, :], norm, meta["rms_eps"])
         sample = F.linear(last, output)[0]
         new_id = int(torch.argmax(sample).item())
-        logits.append(sample.detach().clone())
+        if return_logits:
+            logits.append(sample)
         new_ids.append(new_id)
         tokens = [new_id]
     return {"generated_ids": new_ids,
