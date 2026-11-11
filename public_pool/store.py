@@ -199,8 +199,8 @@ class PublicPool:
             row = conn.execute("""
                 SELECT COUNT(CASE WHEN resource='cpu' THEN 1 END) AS cpu_workers,
                        COUNT(CASE WHEN resource='cuda' THEN 1 END) AS gpu_workers,
-                       COALESCE(SUM(cores),0) AS cpu_cores,
-                       COALESCE(SUM(vram_mb),0) AS gpu_vram_mb,
+                       COALESCE(SUM(CASE WHEN resource='cpu' THEN cores ELSE 0 END),0) AS cpu_cores,
+                       COALESCE(SUM(CASE WHEN resource='cuda' THEN vram_mb ELSE 0 END),0) AS gpu_vram_mb,
                        COALESCE(SUM(checks),0) AS verified_checks
                 FROM public_workers WHERE last_seen>?
             """, (self.clock() - OFFLINE_TTL,)).fetchone()
