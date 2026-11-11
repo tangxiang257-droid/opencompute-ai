@@ -6,6 +6,7 @@ on:
       - 'cluster_v031/**'
       - 'cluster_v04/**'
       - 'cluster_v05/**'
+      - 'cluster_v07/**'
       - 'compute/qwen2_*.py'
       - 'tests/test_qwen2_safetensors_v042.py'
       - 'tests/test_qwen2_*.py'
@@ -42,6 +43,9 @@ on:
       - 'scripts/**'
       - 'docs/v0.6-windows-local-launcher.md'
       - 'tests/test_windows_launcher_v06.py'
+      - 'tests/test_gpu_pool_v07.py'
+      - 'tests/test_gpu_scheduler_v071.py'
+      - 'docs/v0.7.1-gpu-task-scheduling.md'
       - 'Dockerfile.worker'
       - 'Dockerfile.tp-worker'
       - 'Dockerfile'
@@ -56,6 +60,7 @@ on:
       - 'cluster_v031/**'
       - 'cluster_v04/**'
       - 'cluster_v05/**'
+      - 'cluster_v07/**'
       - 'compute/qwen2_*.py'
       - 'tests/test_qwen2_safetensors_v042.py'
       - 'tests/test_qwen2_*.py'
@@ -92,6 +97,9 @@ on:
       - 'scripts/**'
       - 'docs/v0.6-windows-local-launcher.md'
       - 'tests/test_windows_launcher_v06.py'
+      - 'tests/test_gpu_pool_v07.py'
+      - 'tests/test_gpu_scheduler_v071.py'
+      - 'docs/v0.7.1-gpu-task-scheduling.md'
       - 'Dockerfile.worker'
       - 'Dockerfile.tp-worker'
       - 'Dockerfile'
@@ -124,7 +132,7 @@ jobs:
           OPENCOMPUTE_JOIN_KEY=ci-test-join-placeholder-long-only \
           docker compose config --quiet
       - name: Compile check source and regression tests
-        run: python -m compileall -q backend compute cluster_v03 cluster_v031 cluster_v04 cluster_v05 tests benchmarks
+        run: python -m compileall -q backend compute cluster_v03 cluster_v031 cluster_v04 cluster_v05 cluster_v07 tests benchmarks
       - name: v0.5.1 browser dashboard packaging regression
         run: python -m unittest discover -s tests -p 'test_web_dashboard_v051.py' -v
       - name: v0.6 Windows local launcher safety regression

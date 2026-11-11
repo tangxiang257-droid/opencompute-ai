@@ -101,11 +101,18 @@ class ClusterStore:
                     utilization_pct REAL NOT NULL,
                     compute_capability TEXT,
                     supported_dtypes TEXT NOT NULL,
+                    runtime TEXT NOT NULL DEFAULT 'unknown',
+                    runtime_version TEXT,
                     last_seen REAL NOT NULL,
                     PRIMARY KEY(node_id, gpu_index)
                 );
                 CREATE INDEX IF NOT EXISTS gpu_devices_node ON gpu_devices(node_id);
             """)
+            gpu_columns = {row["name"] for row in conn.execute("PRAGMA table_info(gpu_devices)")}
+            if "runtime" not in gpu_columns:
+                conn.execute("ALTER TABLE gpu_devices ADD COLUMN runtime TEXT NOT NULL DEFAULT 'unknown'")
+            if "runtime_version" not in gpu_columns:
+                conn.execute("ALTER TABLE gpu_devices ADD COLUMN runtime_version TEXT")
 
     def _db(self):
         conn = sqlite3.connect(self.path, timeout=10, isolation_level=None)
@@ -381,6 +388,12 @@ class ClusterStore:
                     or any(item not in ("fp32", "fp16", "bf16", "tf32", "int8", "int4")
                            for item in dtypes)):
                 raise ValueError("invalid GPU precision capabilities")
+            runtime = gpu.get("runtime", "unknown")
+            if runtime not in ("unknown", "pytorch_cuda"):
+                raise ValueError("unsupported GPU runtime")
+            runtime_version = gpu.get("runtime_version")
+            if runtime_version is not None and (not isinstance(runtime_version, str) or len(runtime_version) > 32):
+                raise ValueError("invalid GPU runtime version")
 
         now = self.clock()
         with self._tx() as conn:
@@ -391,12 +404,13 @@ class ClusterStore:
                     """INSERT INTO gpu_devices(
                         node_id,gpu_index,uuid,name,vendor,backend,total_memory_mb,
                         free_memory_mb,utilization_pct,compute_capability,
-                        supported_dtypes,last_seen
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        supported_dtypes,runtime,runtime_version,last_seen
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (node_id, gpu["index"], gpu["uuid"], gpu["name"], gpu["vendor"],
                      gpu["backend"], gpu["total_memory_mb"], gpu["free_memory_mb"],
                      float(gpu["utilization_pct"]), gpu.get("compute_capability"),
-                     json.dumps(sorted(set(gpu.get("supported_dtypes", [])))), now),
+                     json.dumps(sorted(set(gpu.get("supported_dtypes", [])))),
+                     gpu.get("runtime", "unknown"), gpu.get("runtime_version"), now),
                 )
         return {"ok": True, "reported": len(devices), "reported_at": now}
 
@@ -407,7 +421,8 @@ class ClusterStore:
             rows = conn.execute(
                 """SELECT g.node_id,g.gpu_index,g.uuid,g.name,g.vendor,g.backend,
                           g.total_memory_mb,g.free_memory_mb,g.utilization_pct,
-                          g.compute_capability,g.supported_dtypes,g.last_seen,
+                          g.compute_capability,g.supported_dtypes,g.runtime,
+                          g.runtime_version,g.last_seen,
                           n.name AS node_name,n.last_seen AS node_last_seen
                    FROM gpu_devices g JOIN nodes n ON n.id=g.node_id
                    ORDER BY n.name,g.gpu_index"""

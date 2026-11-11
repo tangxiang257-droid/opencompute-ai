@@ -14,6 +14,7 @@ import requests
 
 from cluster_v03.store import validate_payload
 from cluster_v07.detection import detect_nvidia_gpus
+from cluster_v07.worker import detect_torch_cuda_runtime, execute_gpu_task
 
 
 def execute_task(kind, payload):
@@ -77,6 +78,9 @@ def run(*, base_url, join_key, name, score=None, poll_seconds=2.0, once=False):
     def report_gpu_inventory():
         try:
             devices = detect_nvidia_gpus()
+            runtime = detect_torch_cuda_runtime()
+            for device in devices:
+                device.update(runtime)
             result = post(f"/v0.7/nodes/{node_id}/gpus", {"devices": devices}, key)
             print(f"GPU inventory reported: {result.get('reported', 0)} device(s)", flush=True)
         except Exception as exc:
@@ -84,6 +88,7 @@ def run(*, base_url, join_key, name, score=None, poll_seconds=2.0, once=False):
             print(f"GPU inventory unavailable: {type(exc).__name__}", flush=True)
 
     report_gpu_inventory()
+    gpu_runtime = detect_torch_cuda_runtime()
     last_gpu_report = time.monotonic()
     while True:
         memory = psutil.virtual_memory()
@@ -93,6 +98,7 @@ def run(*, base_url, join_key, name, score=None, poll_seconds=2.0, once=False):
         }, key)
         if time.monotonic() - last_gpu_report >= 30:
             report_gpu_inventory()
+            gpu_runtime = detect_torch_cuda_runtime()
             last_gpu_report = time.monotonic()
         job = post(f"/v0.3/nodes/{node_id}/claim", {}, key)["task"]
         if job:
@@ -106,6 +112,24 @@ def run(*, base_url, join_key, name, score=None, poll_seconds=2.0, once=False):
                 "result": result, "error": error,
             }, key, allow_stale_completion=True)
             print(f"processed {job['id'][:8]}: {completion.get('status') or error or 'completed'}", flush=True)
+        if gpu_runtime["runtime"] == "pytorch_cuda":
+            try:
+                gpu_job = post(f"/v0.7/nodes/{node_id}/gpu-claim", {}, key)["task"]
+                if gpu_job:
+                    try:
+                        gpu_result = execute_gpu_task(gpu_job)
+                        gpu_error = None
+                    except Exception as exc:
+                        gpu_result, gpu_error = {}, f"GPU execution failed: {type(exc).__name__}"
+                    gpu_completion = post(f"/v0.7/gpu-tasks/{gpu_job['id']}/complete", {
+                        "node_id": node_id, "gpu_index": gpu_job["gpu_index"],
+                        "lease_token": gpu_job["lease_token"],
+                        "result": gpu_result, "error": gpu_error,
+                    }, key, allow_stale_completion=True)
+                    print(f"GPU task {gpu_job['id'][:8]}: {gpu_completion.get('status') or gpu_error or 'completed'}", flush=True)
+            except Exception as exc:
+                # A missing/newer GPU API must not interrupt CPU-only operation.
+                print(f"GPU scheduler unavailable: {type(exc).__name__}", flush=True)
         if once:
             return
         time.sleep(poll_seconds)
