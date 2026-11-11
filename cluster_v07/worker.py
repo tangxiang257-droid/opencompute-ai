@@ -34,7 +34,8 @@ def map_gpu_inventory_to_cuda(devices, runtime):
     """Map nvidia-smi physical inventory to PyTorch logical CUDA indices.
 
     Prefer UUID matching. Fall back to a unique model-name match only when it
-    is unambiguous. Ambiguous devices remain visible but are not schedulable.
+    is unambiguous. Ambiguous devices remain visible only when their physical
+    index does not collide with a mapped CUDA logical index.
     """
     visible = runtime.get("devices", []) if runtime.get("runtime") == "pytorch_cuda" else []
     version = runtime.get("runtime_version")
@@ -49,8 +50,7 @@ def map_gpu_inventory_to_cuda(devices, runtime):
     for item in devices:
         inventory_name_counts[item["name"]] = inventory_name_counts.get(item["name"], 0) + 1
 
-    mapped = []
-    used_indices = set()
+    mapped, unmapped, used_indices = [], [], set()
     for device in devices:
         logical_index = uuid_to_index.get(str(device.get("uuid", "")))
         if logical_index is None:
@@ -60,19 +60,29 @@ def map_gpu_inventory_to_cuda(devices, runtime):
                 match = next((item for item in visible if item["name"] == name), None)
                 if match is not None:
                     logical_index = match["index"]
-        item = dict(device)
         if (type(logical_index) is int and 0 <= logical_index < 16
                 and logical_index not in used_indices):
+            item = dict(device)
             item["index"] = logical_index
             item["runtime"] = "pytorch_cuda"
             item["runtime_version"] = version
+            mapped.append(item)
             used_indices.add(logical_index)
         else:
+            unmapped.append(device)
+
+    # Preserve non-CUDA-visible hardware telemetry only when its physical index
+    # cannot collide with a mapped logical index or another reported device.
+    for device in unmapped:
+        physical_index = device.get("index")
+        if (type(physical_index) is int and 0 <= physical_index < 16
+                and physical_index not in used_indices):
+            item = dict(device)
             item["runtime"] = "unknown"
             item["runtime_version"] = None
-        mapped.append(item)
-    return mapped
-
+            mapped.append(item)
+            used_indices.add(physical_index)
+    return sorted(mapped, key=lambda item: item["index"])
 
 def execute_gpu_task(job):
     """Execute the fixed, bounded GPU matrix checksum task; never executes user code."""

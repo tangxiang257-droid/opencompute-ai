@@ -273,6 +273,24 @@ class GPUTaskSchedulerTests(unittest.TestCase):
         mapped = map_gpu_inventory_to_cuda(inventory, runtime)
         self.assertTrue(all(item["runtime"] == "unknown" for item in mapped))
 
+    def test_unmapped_physical_index_cannot_collide_with_mapped_cuda_index(self):
+        inventory = [
+            self.gpu(0, uuid="GPU-physical-a", name="NVIDIA A"),
+            self.gpu(1, uuid="GPU-physical-b", name="NVIDIA B"),
+        ]
+        runtime = {
+            "runtime": "pytorch_cuda",
+            "runtime_version": "2.6.0",
+            "devices": [
+                {"index": 0, "uuid": "GPU-physical-b", "name": "NVIDIA B"},
+            ],
+        }
+        mapped = map_gpu_inventory_to_cuda(inventory, runtime)
+        self.assertEqual(len(mapped), 1)
+        self.assertEqual(mapped[0]["uuid"], "GPU-physical-b")
+        self.assertEqual(mapped[0]["index"], 0)
+        self.assertEqual(mapped[0]["runtime"], "pytorch_cuda")
+
     def test_single_cuda_device_can_use_unambiguous_name_fallback(self):
         inventory = [self.gpu(3, uuid="GPU-physical-a", name="NVIDIA Single")]
         runtime = {
