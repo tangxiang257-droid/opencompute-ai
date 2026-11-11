@@ -272,14 +272,14 @@ def run(origin, resource):
                     except (ValueError, RuntimeError, ImportError) as exc:
                         error = str(exc)[:500]
                     try:
-                        post(f"/v0.7/gpu-tasks/{task['id']}/complete", {
+                        completion = post(f"/v0.7/gpu-tasks/{task['id']}/complete", {
                             "node_id": worker["node_id"],
                             "gpu_index": task["gpu_index"],
                             "lease_token": task["lease_token"],
                             "result": result,
                             "error": error,
                         }, node_token=worker["token"])
-                        outcome = "failed" if error else "completed"
+                        outcome = completion.get("status", "unknown")
                         print(f"GPU task {task['id'][:8]} {outcome}.", flush=True)
                     except HTTPError as exc:
                         if exc.code == 401:
