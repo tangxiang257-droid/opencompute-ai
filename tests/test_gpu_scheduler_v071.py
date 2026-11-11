@@ -229,7 +229,7 @@ class GPUTaskSchedulerTests(unittest.TestCase):
     def test_worker_offline_releases_gpu_lease(self):
         self.report()
         other = self.register("gpu-host-2")
-        self.report(node=other)
+        self.report(node=other, devices=[self.gpu(utilization_pct=95.0)])
         task = self.submit().json()
         first = self.claim().json()["task"]
         self.clock.advance(31)
