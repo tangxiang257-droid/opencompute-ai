@@ -40,6 +40,7 @@ def expected_checksum(seed):
 
 class PublicPool:
     def __init__(self, store):
+        self.store = store
         self.clock = store.clock
         self.path = store.path + ".public.sqlite"
         self.rate_lock = Lock()
@@ -141,6 +142,16 @@ class PublicPool:
                 ) VALUES(?,?,?,?,?,?,?,?,?,1)
             """, (seed, hashlib.sha256(token.encode()).hexdigest(), resource, cores, ram,
                   vram, next_seed, source_hash, now))
+        if resource == "cuda":
+            try:
+                self.store.register_public_gpu(
+                    seed, token, name=f"public-gpu-{seed[:8]}", platform="unknown",
+                    cpu_cores=cores, ram_mb=ram,
+                )
+            except (ValueError, PermissionError, sqlite3.IntegrityError) as exc:
+                with self._db(write=True) as conn:
+                    conn.execute("DELETE FROM public_workers WHERE id=?", (seed,))
+                raise AdmissionError(409, "Could not register public GPU Worker identity") from exc
         return {"node_id": seed, "token": token, "seed": next_seed,
                 "heartbeat_seconds": HEARTBEAT_SECONDS}
 
@@ -164,16 +175,24 @@ class PublicPool:
             if worker is None or worker["last_seen"] <= now - OFFLINE_TTL:
                 raise AdmissionError(401, "Public Worker session expired or invalid")
             if seed == worker["previous_seed"]:
-                return {"seed": worker["seed"]}
-            if seed != worker["seed"]:
-                raise AdmissionError(409, "Verification challenge has changed")
-            if now - worker["last_seen"] < HEARTBEAT_SECONDS / 2:
-                raise AdmissionError(429, "Verification was sent too early")
-            next_seed = secrets.token_hex(16)
-            conn.execute("""
-                UPDATE public_workers
-                SET seed=?,previous_seed=?,last_seen=?,checks=checks+1 WHERE id=?
-            """, (next_seed, seed, now, node_id))
+                next_seed = worker["seed"]
+            else:
+                if seed != worker["seed"]:
+                    raise AdmissionError(409, "Verification challenge has changed")
+                if now - worker["last_seen"] < HEARTBEAT_SECONDS / 2:
+                    raise AdmissionError(429, "Verification was sent too early")
+                next_seed = secrets.token_hex(16)
+                conn.execute("""
+                    UPDATE public_workers
+                    SET seed=?,previous_seed=?,last_seen=?,checks=checks+1 WHERE id=?
+                """, (next_seed, seed, now, node_id))
+                worker = dict(worker)
+                worker["resource"] = worker["resource"]
+        if worker["resource"] == "cuda":
+            try:
+                self.store.heartbeat_public_gpu(node_id, token)
+            except PermissionError as exc:
+                raise AdmissionError(401, "Public GPU Worker identity expired") from exc
         return {"seed": next_seed}
 
     def status(self):
