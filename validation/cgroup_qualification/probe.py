@@ -1,6 +1,5 @@
-"""Ephemeral hosted VM qualification only. No child creation or workload launch."""
-import ctypes
-import errno
+"""Unexecuted review candidate: one fixed native no-compute child."""
+import subprocess
 import json
 import os
 from pathlib import Path
@@ -15,7 +14,7 @@ def require(ok):
 
 def main():
     require(os.geteuid()==0 and platform.machine()=='x86_64')
-    uid=int(sys.argv[1]);gid=int(sys.argv[2]);require(uid>0 and gid>0)
+    binary=Path(sys.argv[1]);require(binary.is_absolute())
     entry=Path('/proc/self/cgroup').read_text().strip()
     require(entry.startswith('0::/'))
     relative=entry[3:]
@@ -39,31 +38,31 @@ def main():
         require((leaf/'cgroup.procs').read_text().strip()=='')
         require('populated 0' in (leaf/'cgroup.events').read_text().splitlines())
         require((leaf/'cgroup.kill').exists())
-        # Empty leaf delegation only, to the existing temporary runner identity.
-        for path in (leaf,leaf/'cgroup.procs',leaf/'cgroup.threads',leaf/'cgroup.subtree_control'):
-            os.chown(path,uid,gid)
+        directory=os.open(leaf,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        kill=os.open(leaf/'cgroup.kill',os.O_WRONLY|os.O_NOFOLLOW)
         try:
-            os.setegid(gid);os.seteuid(uid)
-            fd=os.open(leaf/'cgroup.procs',os.O_WRONLY|os.O_NOFOLLOW);os.close(fd)
-            writable=os.access(leaf,os.W_OK,effective_ids=True)
-        finally:os.seteuid(0);os.setegid(0)
-        require(writable)
-        # NULL and size zero MUST fail; never creates a process. x86_64 syscall 435.
-        libc=ctypes.CDLL(None,use_errno=True);ctypes.set_errno(0)
-        result=libc.syscall(ctypes.c_long(435),ctypes.c_void_p(0),ctypes.c_size_t(0))
-        code=ctypes.get_errno()
-        require(result==-1)
-        print(json.dumps({'empty_leaf_delegation':True,'clone3_invalid_probe_errno':code,
-            'clone3_handler_visible':code==errno.EINVAL,'atomic_entry_tested':False,
-            'launcher_verified':False,'gpu_stop_verified':False}),flush=True)
-        require(code==errno.EINVAL)
+            # No preexec_fn in Python. Native wrapper receives descriptors via
+            # pass_fds, and maps them itself before its only clone3 call.
+            result=subprocess.run([str(binary), '0::'+relative+'/probe\n',
+                str(directory),str(kill)],pass_fds=(directory,kill),
+                env={},timeout=10,check=False)
+            require(result.returncode==0)
+            require((leaf/'cgroup.procs').read_text().strip()=='')
+            require('populated 0' in (leaf/'cgroup.events').read_text().splitlines())
+            print('reaped_and_empty_same_domain',flush=True)
+        finally:
+            os.close(kill);os.close(directory)
     finally:
         # Only our empty leaf/manager are removed; systemd owns parent lifecycle.
-        if leaf.exists():leaf.rmdir()
+        if leaf.exists():
+            if 'populated 0' not in (leaf/'cgroup.events').read_text().splitlines():
+                (leaf/'cgroup.kill').write_text('1')
+                raise RuntimeError('scope retained for service cleanup')
+            leaf.rmdir()
         if enabled:(root/'cgroup.subtree_control').write_text('-cpu -memory -pids')
         if moved:(root/'cgroup.procs').write_text(str(os.getpid()))
         if manager.exists():manager.rmdir()
-    print('qualification_checks_complete_no_workload_started',flush=True)
+    print('atomic_entry_probe_complete_not_launcher_or_gpu_validation',flush=True)
 
 if __name__=='__main__':
     try:main()

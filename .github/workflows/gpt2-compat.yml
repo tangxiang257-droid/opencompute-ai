@@ -1,19 +1,24 @@
 # Dedicated branch version only; main's workflow is unchanged.
-name: Temporary cgroup environment qualification
+name: "Review candidate: one atomic cgroup entry"
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   qualify:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/cgroup-qualification-once' && github.run_attempt == 1
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/clone3-entry-review' && github.run_attempt == 1
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-      - name: Qualify bounded ephemeral cgroup environment
+      - name: Build fixed native probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -std=c11 -Wall -Wextra -Werror -O2 validation/cgroup_qualification/atomic_entry.c -o "$RUNNER_TEMP/atomic-entry"
+      - name: Verify one atomic cgroup entry
         shell: bash
         run: |
           set -euo pipefail
@@ -27,4 +32,4 @@ jobs:
             --property=TasksMax=16 --property=RuntimeMaxSec=60 \
             --property=TimeoutStopSec=10 --property=KillMode=control-group \
             /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 -I \
-            "$GITHUB_WORKSPACE/validation/cgroup_qualification/probe.py" "$(id -u)" "$(id -g)"
+            "$GITHUB_WORKSPACE/validation/cgroup_qualification/probe.py" "$RUNNER_TEMP/atomic-entry"
