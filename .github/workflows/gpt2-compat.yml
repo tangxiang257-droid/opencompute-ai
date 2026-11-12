@@ -1,46 +1,30 @@
-name: GPT-2 Hugging Face compatibility
+# Dedicated branch version only; main's workflow is unchanged.
+name: Temporary cgroup environment qualification
 on:
-  push:
-    paths:
-      - 'compute/gpt2_*.py'
-      - 'tests/test_hf_compat.py'
-      - 'benchmarks/validate_pretrained.py'
-      - '.github/workflows/gpt2-compat.yml'
   workflow_dispatch:
-
+permissions:
+  contents: read
 jobs:
-  offline-reference:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      HF_HUB_OFFLINE: '1'
-      OMP_NUM_THREADS: '1'
+  qualify:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/cgroup-qualification-once' && github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          python-version: '3.11'
-      - name: Install CPU dependencies
+          persist-credentials: false
+      - name: Qualify bounded ephemeral cgroup environment
+        shell: bash
         run: |
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install 'transformers>=4.48,<5'
-      - name: Match independent Hugging Face GPT-2 logits (no downloads)
-        run: python -m unittest tests.test_hf_compat -v
-
-  pretrained-checkpoint:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      OMP_NUM_THREADS: '1'
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install CPU dependencies
-        run: |
-          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-          python -m pip install 'transformers>=4.48,<5'
-      - name: Compare actual pretrained tiny GPT-2 against two Workers
-        run: python -m benchmarks.validate_pretrained --model sshleifer/tiny-gpt2 --workers 2 --new-tokens 2
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$(uname -m)" = x86_64
+          unit="opencompute-qual-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          trap 'sudo systemctl stop "$unit.service" >/dev/null 2>&1 || true' EXIT
+          sudo -n systemd-run --quiet --wait --pipe --collect --unit="$unit" \
+            --property=Delegate=yes --property=CPUQuota=25% \
+            --property=MemoryMax=128M --property=MemorySwapMax=0 \
+            --property=TasksMax=16 --property=RuntimeMaxSec=60 \
+            --property=TimeoutStopSec=10 --property=KillMode=control-group \
+            /usr/bin/env -i PATH=/usr/bin:/bin /usr/bin/python3 -I \
+            "$GITHUB_WORKSPACE/validation/cgroup_qualification/probe.py" "$(id -u)" "$(id -g)"
