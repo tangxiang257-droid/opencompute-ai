@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+from compute.bounded_json import parse_json_object
 
 MAX_FILE_BYTES = 512_000_000
 MAX_MANIFEST_BYTES = 16_384
@@ -110,9 +111,25 @@ def inspect_bundle(folder, manifest, *, expected=None):
     names = expected_files(manifest)
     indexes = {}
     for name in names:
-        cap = MAX_MANIFEST_BYTES if name == "manifest.json" else MAX_FILE_BYTES
-        indexes[name] = inspect_file(folder / name, max_size=cap)
-    actual = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+        if name != "manifest.json":
+            indexes[name] = inspect_file(folder / name, max_size=MAX_FILE_BYTES)
+    path = folder / "manifest.json"
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("checkpoint must be a regular, non-symlink file")
+    size = path.stat().st_size
+    if not 0 < size <= MAX_MANIFEST_BYTES:
+        raise ValueError("checkpoint file is empty or too large")
+    with path.open("rb") as stream:
+        raw = stream.read(MAX_MANIFEST_BYTES + 1)
+    if len(raw) != size or path.stat().st_size != size:
+        raise ValueError("checkpoint file changed during inspection")
+    # Hash exactly the bounded bytes parsed below, never a separate path read.
+    actual = parse_json_object(raw, MAX_MANIFEST_BYTES)
+    indexes["manifest.json"] = {
+        "name": "manifest.json", "size": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+    indexes = {name: indexes[name] for name in names}
     if actual != manifest:
         raise ValueError("stored manifest differs from expected model configuration")
     if expected is not None:

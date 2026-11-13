@@ -298,12 +298,13 @@ def export_local(model_dir, output, workers, *, expected_sha256=None,
         from cluster_v031.checkpoints import inspect_bundle
         inspect_bundle(target, manifest)
         return manifest
-    except BaseException:
-        # Never automatically erase preexisting user files.
-        if not target.exists():
-            raise
-        import shutil
-        shutil.rmtree(target, ignore_errors=True)
+    except BaseException as error:
+        # Path absence/creation does not prove ownership of later contents.
+        # Keep partial/unknown outputs; never recursively erase on failure.
+        try:
+            BaseException.add_note(error, 'Export failed; output may remain and was not automatically cleaned. 导出失败：可能残留，未自动清理。')
+        except BaseException:
+            pass  # Diagnostic failure must not replace the original exception.
         raise
 
 

@@ -178,9 +178,13 @@ def export_chunked(state, config, destination, workers=2, *,
         from cluster_v031.checkpoints import inspect_bundle
         inspect_bundle(output, meta)
         return meta
-    except BaseException:
-        # Created with exist_ok=False. Never erase a pre-existing folder.
-        shutil.rmtree(output, ignore_errors=True)
+    except BaseException as error:
+        # Path absence/creation does not prove ownership of later contents.
+        # Keep partial/unknown outputs; never recursively erase on failure.
+        try:
+            BaseException.add_note(error, 'Export failed; output may remain and was not automatically cleaned. 导出失败：可能残留，未自动清理。')
+        except BaseException:
+            pass  # Diagnostic failure must not replace the original exception.
         raise
 
 
