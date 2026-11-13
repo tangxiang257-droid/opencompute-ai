@@ -37,6 +37,31 @@ is not included in CLI JSON or the public inspection result. Inspection failure
 still prevents exporter invocation. This closes one configuration check/use gap,
 not the lazy weight-file races or whole-directory snapshot consistency.
 
+## Shared supported Qwen2 configuration semantics
+
+The existing `qwen2_shards.manifest_from_config` entry delegates to one pure
+standard-library parser. Its public arguments and valid manifest result format
+remain unchanged. Dimensions and worker counts must be positive exact integers
+(not booleans, strings or fractions), switches must be booleans, and epsilon/theta
+must be numeric non-booleans. Explicit zero/false/null head_dim is invalid;
+omission still derives hidden/heads. Huge numeric conversion overflow is reported
+as ValueError, not OverflowError. Missing dimensions now report ValueError.
+
+Only full attention is supported: layer_types may be absent or a list of exactly
+one full_attention value per layer. Null, unknown or sliding layer declarations
+reject. Existing default-RoPE and non-sliding restrictions remain. Inactive
+sliding_window/max_window_layers metadata does not by itself reject a stock
+non-sliding configuration. Unknown metadata is not globally forbidden; this is
+not a certification of arbitrary HF configurations or tokenizer/runtime versions.
+
+The current repository call sites are the v1 exporter/synthetic-state helper,
+Safetensors planner/inspector, v2 exporter and dense reference function. They
+continue using the existing import/entry point. No actual reference or model
+function is executed in these checks. The pure parser's validation is not model
+numerical correctness, real weight compatibility, weight provenance, or a promise
+that every accepted manifest meets the separate bundle consumer's tighter limits.
+Callers relying on coercion or malformed optional fields must supply valid types.
+
 ## Dependency-free targeted regression commands
 
 From the repository root, using Python 3.11 or newer:
@@ -45,6 +70,7 @@ From the repository root, using Python 3.11 or newer:
 python -m unittest discover -s tests -p 'test_export_failure_safety.py' -v
 python -m unittest discover -s tests -p 'test_bundle_manifest_json.py' -v
 python -m unittest discover -s tests -p 'test_export_config_snapshot.py' -v
+python -m unittest discover -s tests -p 'test_qwen2_config_contract.py' -v
 ```
 
 Six failure-retention tests exercise AST-extracted real export functions using
@@ -54,6 +80,10 @@ Five configuration tests additionally cover source replacement after inspection,
 private deep-copy isolation, unchanged public result/CLI shape, no second read
 in the real export function, and inspection failure before export. These use
 real function AST with controlled ordinary configuration/reader substitutes.
+Ten pure configuration tests cover the strict rejection boundary, a frozen
+12-case pre-change valid-output matrix (1/2/4 ranks, tied/untied, GQA/default KV,
+default RoPE variants), and static forwarding/import seams. All 29 targeted tests
+pass locally; this is not a run of all repository tests.
 Coverage includes replacement directories, unrelated files, partial/no output,
 interruption, original exception/cause preservation, successful fake output,
 duplicate/nested escaped keys, nonfinite JSON, invalid UTF-8/BOM/root, growth,

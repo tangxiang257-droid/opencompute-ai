@@ -2,6 +2,7 @@ import ast,builtins,json,shutil,tempfile,types,unittest
 from pathlib import Path
 from unittest.mock import patch
 import ast, math
+from compute.qwen2_config_contract import manifest_from_config as _parse_manifest
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 class Tensor:
@@ -16,7 +17,7 @@ def extract(file,name,env):
  node=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name==name)
  exec(compile(ast.Module(body=[node],type_ignores=[]),file,'exec'),env)
  return env[name]
-manifest_from_config=extract('compute/qwen2_shards.py','manifest_from_config',{'math':math,'FORMAT':'opencompute-qwen2-tp-v1'})
+manifest_from_config=extract('compute/qwen2_shards.py','manifest_from_config',{'math':math,'FORMAT':'opencompute-qwen2-tp-v1','_parse_manifest':_parse_manifest})
 expected_shapes=extract('compute/qwen2_safetensors.py','_expected_shapes',{})
 def fixture():
  c=dict(model_type='qwen2',hidden_size=4,num_attention_heads=2,num_key_value_heads=2,num_hidden_layers=2,intermediate_size=4,vocab_size=3,max_position_embeddings=8,tie_word_embeddings=False)
