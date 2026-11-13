@@ -43,7 +43,7 @@ def chunked_env(row):
  return function('compute/qwen2_chunked.py','export_chunked',env)
 
 def local_env(producer):
- env={'export_state':producer,'chunked':producer,'inspect_directory':lambda *a,**k:{'weights':{},'plan':{'exportable_under_current_limit':True,'chunked_v2_exportable_by_size':True}},'_json_file':lambda *a:fixture()[0],'MAX_CONFIG_BYTES':10000}
+ env={'export_state':producer,'chunked':producer,'_inspect_directory':lambda *a,**k:({'weights':{},'plan':{'exportable_under_current_limit':True,'chunked_v2_exportable_by_size':True}},fixture()[0]),'_json_file':lambda *a:fixture()[0],'MAX_CONFIG_BYTES':10000}
  return function('compute/qwen2_safetensors.py','export_local',env)
 
 class Tests(unittest.TestCase):

@@ -14,6 +14,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
+from copy import deepcopy
 from pathlib import Path
 
 from compute.qwen2_shards import export_state, manifest_from_config
@@ -179,6 +180,15 @@ class LazySafetensors(Mapping):
 
 def inspect_directory(model_dir, workers, *, verify_headers=True,
                       expected_sha256=None, storage_dtype="float32"):
+    """Preflight trusted local Qwen2 weights; preserve the public result shape."""
+    result, _ = _inspect_directory(
+        model_dir, workers, verify_headers=verify_headers,
+        expected_sha256=expected_sha256, storage_dtype=storage_dtype)
+    return result
+
+
+def _inspect_directory(model_dir, workers, *, verify_headers=True,
+                      expected_sha256=None, storage_dtype="float32"):
     """Preflight trusted local Qwen2 weights; no model download or eager HF load."""
     root = Path(model_dir).resolve(strict=True)
     if not root.is_dir():
@@ -259,7 +269,7 @@ def inspect_directory(model_dir, workers, *, verify_headers=True,
             raise ValueError("missing weight files or index keys")
     return {"manifest": meta, "plan": plan,
             "input_files": files, "tensor_count": len(mapping),
-            "weights": LazySafetensors(root, mapping, shapes)}
+            "weights": LazySafetensors(root, mapping, shapes)}, deepcopy(config)
 
 
 def export_local(model_dir, output, workers, *, expected_sha256=None,
@@ -267,7 +277,7 @@ def export_local(model_dir, output, workers, *, expected_sha256=None,
     """Export a trusted model in v1, or v2 chunked layout when requested."""
     if storage_dtype == "bfloat16" and not chunked:
         raise ValueError("BF16 output requires chunked Safetensors v2 format")
-    inspected = inspect_directory(model_dir, workers,
+    inspected, config = _inspect_directory(model_dir, workers,
                                   expected_sha256=expected_sha256,
                                   storage_dtype=storage_dtype)
     if chunked:
@@ -285,7 +295,6 @@ def export_local(model_dir, output, workers, *, expected_sha256=None,
     if target.is_symlink():
         raise ValueError("destination cannot be a symlink")
     # validate input *before* invoking torch.save via the existing exporter
-    config = _json_file(source / "config.json", MAX_CONFIG_BYTES)
     try:
         if chunked:
             from compute.qwen2_chunked import export_chunked

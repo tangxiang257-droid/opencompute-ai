@@ -27,6 +27,16 @@ consumer reads. Path checks still race with changes; trusted, stable local files
 remain required. A hash does not prove model origin, and checking metadata does
 not make serialized tensor data safe. No automatic recovery is introduced.
 
+## Configuration checked versus configuration exported
+
+`export_local` now receives an independent deep copy of the configuration from
+its internal directory-inspection call instead of reopening `config.json` after
+inspection. Both v1 and v2 consume those checked configuration values. The public
+`inspect_directory` signature and result fields are unchanged; the private copy
+is not included in CLI JSON or the public inspection result. Inspection failure
+still prevents exporter invocation. This closes one configuration check/use gap,
+not the lazy weight-file races or whole-directory snapshot consistency.
+
 ## Dependency-free targeted regression commands
 
 From the repository root, using Python 3.11 or newer:
@@ -34,11 +44,16 @@ From the repository root, using Python 3.11 or newer:
 ```
 python -m unittest discover -s tests -p 'test_export_failure_safety.py' -v
 python -m unittest discover -s tests -p 'test_bundle_manifest_json.py' -v
+python -m unittest discover -s tests -p 'test_export_config_snapshot.py' -v
 ```
 
 Six failure-retention tests exercise AST-extracted real export functions using
 ordinary object/serializer stand-ins and temporary marker files. Eight bundle
 tests exercise the real validator and bounded parser with ordinary marker bytes.
+Five configuration tests additionally cover source replacement after inspection,
+private deep-copy isolation, unchanged public result/CLI shape, no second read
+in the real export function, and inspection failure before export. These use
+real function AST with controlled ordinary configuration/reader substitutes.
 Coverage includes replacement directories, unrelated files, partial/no output,
 interruption, original exception/cause preservation, successful fake output,
 duplicate/nested escaped keys, nonfinite JSON, invalid UTF-8/BOM/root, growth,
