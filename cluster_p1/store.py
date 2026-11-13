@@ -1,5 +1,6 @@
 """SQLite metadata journal. This module never restores weights, activations or KV."""
 
+from dataclasses import dataclass, field
 from contextlib import contextmanager
 from collections.abc import Sequence
 import json
@@ -20,6 +21,27 @@ from pydantic import TypeAdapter
 
 class Conflict(ValueError):
     """Event identity, binding, epoch, sequence, or state conflict."""
+
+
+@dataclass(frozen=True, slots=True)
+class StageProgress:
+    stage_id: int
+    committed_tokens: int
+    next_tile_id: int
+    remaining_tokens: int
+    inflight_tile: Tile | None
+    inflight_state: str | None
+    upstream_tile: Tile | None
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineProgress:
+    session_id: str
+    epoch: int
+    state: State
+    expected_tokens: int
+    stages: tuple[StageProgress, ...]
+    execution_allowed: bool = field(default=False, init=False)
 
 
 def canonical(value):
@@ -444,6 +466,74 @@ class P1Store:
                 t = Tile.model_validate_json(row[0]) if row else None
                 prefixes.append(t.token_start + t.token_count if t else 0)
             return min(prefixes, default=0)
+
+    def pipeline_progress(self, session_id: str, epoch: int, *, owner_id: str):
+        """Owner-scoped, single read-transaction metadata observation only.
+
+        No claim/reservation, executor readiness, KV validity or resume permission
+        is issued. Results can be stale immediately after return. Existing mutating
+        APIs must still recheck epoch/state/dependencies in their own transaction.
+        A downstream upstream_tile is the exact next committed predecessor tile,
+        not a fabricated range inferred from the minimum whole-session prefix.
+        Terminal/interrupted sessions remain observable in their current epoch.
+        """
+        uri = Path(self.path).resolve().as_uri() + "?mode=ro"
+        c = sqlite3.connect(uri, uri=True, timeout=15, isolation_level=None)
+        try:
+            c.execute("PRAGMA query_only=ON")
+            c.execute("BEGIN")
+            session = self._load(c, "p1_sessions", session_id, Session)
+            if session.owner_id != owner_id:
+                raise PermissionError("session owner mismatch")
+            if type(epoch) is not int or epoch != session.epoch:
+                raise Conflict("stale/invalid epoch")
+            stages = []
+            for (stage_id,) in c.execute(
+                "SELECT stage_id FROM p1_stages WHERE session_id=? ORDER BY stage_id",
+                (session_id,),
+            ).fetchall():
+                last = c.execute(
+                    "SELECT body FROM p1_tiles WHERE session_id=? AND epoch=? "
+                    "AND stage_id=? ORDER BY tile_id DESC LIMIT 1",
+                    (session_id, epoch, stage_id),
+                ).fetchone()
+                tile = Tile.model_validate_json(last[0]) if last else None
+                prefix = tile.token_start + tile.token_count if tile else 0
+                next_id = tile.tile_id + 1 if tile else 0
+                rows = c.execute(
+                    "SELECT body,state FROM p1_tile_states WHERE session_id=? "
+                    "AND epoch=? AND stage_id=? AND state!='committed'",
+                    (session_id, epoch, stage_id),
+                ).fetchall()
+                if len(rows) > 1:
+                    raise Conflict("multiple in-flight stage tiles")
+                pending = Tile.model_validate_json(rows[0][0]) if rows else None
+                pending_state = rows[0][1] if rows else None
+                if pending is not None and (
+                    pending.tile_id != next_id or pending.token_start != prefix
+                    or pending_state not in ("received", "computed", "verified")
+                ):
+                    raise Conflict("inconsistent stage progress")
+                upstream = None
+                if stage_id and prefix < session.expected_tokens:
+                    row = c.execute(
+                        "SELECT body FROM p1_tiles WHERE session_id=? AND epoch=? "
+                        "AND stage_id=? AND tile_id=?",
+                        (session_id, epoch, stage_id - 1, next_id),
+                    ).fetchone()
+                    upstream = Tile.model_validate_json(row[0]) if row else None
+                    if upstream is not None and upstream.token_start != prefix:
+                        raise Conflict("inconsistent upstream prefix")
+                stages.append(StageProgress(
+                    stage_id, prefix, next_id, session.expected_tokens - prefix,
+                    pending, pending_state, upstream,
+                ))
+            return PipelineProgress(session_id, epoch, session.state,
+                                    session.expected_tokens, tuple(stages))
+        finally:
+            # No DML, event creation or schema initialization in this read path.
+            # Closing rolls back the read transaction and releases its snapshot.
+            c.close()
 
     def identify_interrupted(self, *, event_id: str) -> list[str]:
         """Explicit startup barrier: mark active metadata interrupted; no KV recovery.
