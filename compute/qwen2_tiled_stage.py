@@ -198,3 +198,93 @@ class TiledQwen2Stage:
                 or value.shape[1] != 1):
             raise ValueError('decode requires exactly one token')
         return self.prefill(value, token_start=token_start, stage_id=stage_id)
+
+
+def _owned_cpu_prefill_bytes(root, *, expected_sha256, expected_config_sha256,
+                            task, session, stages, tiles, stage_id):
+    """Private, explicit pinned-loader -> fixed-plan -> CPU bytes seam.
+
+    No caller-owned stage is accepted or returned. This is NOT authentication:
+    trusted pins/plan and live admission/commit fences remain caller duties.
+    Merely importing this module never calls this factory or loads weights.
+    """
+    import struct
+    import threading
+    from pydantic import TypeAdapter
+    from cluster_p1.contracts import Task, Session, Stage, State, Digest
+    from cluster_p1.tile_contract_v2 import (
+        TileV2, validate_prefill_plan, decode_input_payload, MAX_INPUT_BYTES,
+    )
+    TypeAdapter(Digest).validate_python(expected_sha256, strict=True)
+    TypeAdapter(Digest).validate_python(expected_config_sha256, strict=True)
+    if type(stage_id) is not int or stage_id not in (0, 1):
+        raise ValueError('invalid fixed stage')
+    if type(stages) is not tuple or len(stages) != 2 or type(tiles) is not tuple or not 2 <= len(tiles) <= 128:
+        raise ValueError('bounded complete plan required')
+    task=Task.model_validate(task); session=Session.model_validate(session)
+    stages=tuple(Stage.model_validate(s) for s in stages)
+    tiles=tuple(TileV2.model_validate(t) for t in tiles)
+    hidden=tiles[0].output.shape[-1]; vocab=tiles[1].output.shape[-1]
+    validate_prefill_plan(task,session,stages,tiles,hidden_size=hidden,vocab_size=vocab)
+    if (task.model_hash != expected_sha256 or session.model_hash != expected_sha256
+            or task.state != State.PREPARING or session.state != State.PREPARING):
+        raise ValueError('pinned preparing plan required')
+    owned=tuple(t for t in tiles if t.stage_id == stage_id)
+    # Validate both conversion allocations before reading pinned files or running
+    # any forward operation. Float output is never silently truncated/compressed.
+    for t in owned:
+        for d in (t.input,t.output):
+            size=8 if d.dtype=='int64' else 4
+            for dim in d.shape:
+                if size > MAX_INPUT_BYTES // dim:raise ValueError('byte conversion budget')
+                size*=dim
+    stage=TiledQwen2Stage.from_safetensors(root,
+        expected_sha256=expected_sha256,expected_config_sha256=expected_config_sha256,
+        stage_id=stage_id,split_layer=stages[0].layer_end,device='cpu')
+    declaration=stages[stage_id]
+    if (type(stage) is not TiledQwen2Stage or stage.device.type != 'cpu'
+            or stage.stage_id != stage_id or stage.cache_length != 0
+            or tuple(stage.layer_range) != (declaration.layer_start,declaration.layer_end)
+            or (stage.meta['hidden'],stage.meta['vocab'],stage.meta['layers']) != (hidden,vocab,task.total_layers)
+            or session.expected_tokens > stage.meta['positions']):
+        raise ValueError('loaded stage does not match fixed plan')
+    by_start={t.token_start:t for t in owned}
+    lock=threading.Lock();failed=False
+
+    def operation(value, *, token_start, stage_id):
+        nonlocal failed
+        if not lock.acquire(blocking=False):raise ValueError('stage already in use')
+        try:
+            if failed:raise ValueError('stage permanently isolated')
+            if (type(token_start) is not int or type(stage_id) is not int
+                    or stage_id != declaration.stage_id or token_start not in by_start
+                    or token_start != stage.cache_length):
+                raise ValueError('fixed plan range/stage mismatch')
+            tile=by_start[token_start]
+            decoded=decode_input_payload(tile,value,layout_version=2,vocab_size=vocab)
+            # torch.tensor(tuple, ...) makes an independent CPU value allocation;
+            # no frombuffer alias or implicit device conversion is used.
+            tensor=torch.tensor(decoded.values,
+                dtype=torch.int64 if decoded.dtype=='int64' else torch.float32,
+                device='cpu').reshape(decoded.shape)
+            output=stage.prefill(tensor,token_start=token_start,stage_id=stage_id)
+            if (not isinstance(output,torch.Tensor) or output.device.type!='cpu'
+                    or output.dtype!=torch.float32 or tuple(output.shape)!=tile.output.shape
+                    or not bool(torch.isfinite(output).all())):
+                raise ValueError('bounded stage output contract failed')
+            flat=output.reshape(-1).tolist()
+            result=struct.pack('<'+'f'*len(flat),*flat)
+            expected=4
+            for dim in tile.output.shape:expected*=dim
+            if len(result)!=expected or len(result)>MAX_INPUT_BYTES:
+                raise ValueError('output encoding length mismatch')
+            return result
+        except BaseException:
+            # prefill may already have advanced KV. Never reset or rerun after
+            # conversion/serialization/contract failure, even if its cause seems
+            # harmless. Live owner/authority must retire this attempt as well.
+            failed=True
+            raise
+        finally:
+            lock.release()
+    return operation
