@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass,asdict
 from contextlib import contextmanager
 from pydantic import TypeAdapter
-from .contracts import Identifier,Digest,Stage
+from .contracts import Identifier,Digest,Stage,Task,Session,State
 from .handoff import EdgeBinding,Receiver,MAX_FRAME_BYTES
 from .envelope import decode
 from .local_attempt import LocalAttemptJournal,_non_suppressing,MAX_RESERVED
@@ -31,6 +31,7 @@ class ReceiptAttemptJournal(LocalAttemptJournal):
     def create(cls,path,task,session,stages,*,authorize,execution_authorize,
                receipt_binding,expected_peer,peer_authorize,local_node,
                expected_config_sha256,enable_receipt_stage1=False):
+        task=Task.model_validate(task);session=Session.model_validate(session)
         if enable_receipt_stage1 is not True:raise Conflict('explicit receipt-stage opt-in required')
         if type(receipt_binding)is not EdgeBinding or type(expected_peer)is not PeerIdentity:
             raise TypeError('fixed edge and expected peer required')
@@ -65,8 +66,12 @@ class ReceiptAttemptJournal(LocalAttemptJournal):
         obj._receipt_edge=edge;obj._receipt_peer=peer;obj._receipt_fence=peer_fence
         obj._receipt_peer_provider=peer_authorize
         obj._receipt_stages=stage_body
+        # P1Store.bind_session performs exactly QUEUED -> PREPARING on Task.
+        obj._receipt_records=canonical({'task':task.model_copy(update={'state':State.PREPARING}).model_dump(mode='json'),
+                                        'session':session.model_dump(mode='json')})
         obj._receipt_context=canonical({'edge':asdict(edge),'peer':asdict(peer),
-            'local_node':local_node,'config_sha256':expected_config_sha256,'stages':json.loads(stage_body)})
+            'local_node':local_node,'config_sha256':expected_config_sha256,'stages':json.loads(stage_body),
+            'records':json.loads(obj._receipt_records)})
         try:
             with obj._authorized(),peer_fence(),obj._store._tx() as c:
                 c.execute('CREATE TABLE p1_receipt_context(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL)')
@@ -85,6 +90,11 @@ class ReceiptAttemptJournal(LocalAttemptJournal):
         raise Conflict('receipt journal cannot execute stage 0')
 
     def _context(self,c):
+        task=self._store._load(c,'p1_tasks',self._task_id,Task)
+        session=self._store._load(c,'p1_sessions',self._session_id,Session)
+        current=canonical({'task':task.model_dump(mode='json'),'session':session.model_dump(mode='json')})
+        if current!=self._receipt_records:
+            raise Conflict('complete task/session declarations changed')
         if c.execute('SELECT body FROM p1_receipt_context WHERE id=1').fetchone()!=(self._receipt_context,):
             raise Conflict('receipt context changed')
         stages=[Stage.model_validate_json(r[0]) for r in c.execute(
