@@ -83,6 +83,7 @@ class InputDeclarationReader:
     def __init__(self, *, service=None, model=None,
                  preprocessing_version=None, contract_sha256=None):
         self._service = None
+        self._authority = None
         if service is None:
             _need(model is None and preprocessing_version is None and contract_sha256 is None)
             return
@@ -103,6 +104,7 @@ class InputDeclarationReader:
             self._preprocessing_version = preprocessing_version
             self._contract_sha256 = contract_sha256
             self._service = service
+            self._authority = service._authority
             return
         except Exception:
             pass
@@ -121,47 +123,66 @@ class InputDeclarationReader:
         _need(service is not None)
         owner = service._download_owner(credential)
         application._task(task_id)
-        authority = service._authority
+        authority = self._authority
+        _need(service._authority is authority)
         async with authority._lock:
-            _need(service._download_owner(credential) == owner)
-            ledger = authority._middle_ledger()  # Includes live/path trust gates.
-            _need(type(ledger) is TextInputLedger)
-            with ledger._transaction():
-                row = ledger._db.execute(
-                    'SELECT state FROM stored_tasks WHERE task_id=? AND owner_id=?',
-                    (task_id, owner)).fetchone()
-                _need(row == ('STORED',))
-                source = ledger._db.execute(
-                    'SELECT owner_id,draft_id,draft_version,text_sha256,render_sha256,'
-                    'token_blob_sha256,contract_sha256,snapshot_digest,'
-                    'tokenizer_status,model_status FROM text_input_sources WHERE task_id=?',
-                    (task_id,)).fetchone()
-                _need(source is not None)
-                (source_owner, draft, version, text_hash, render_hash, token_hash,
-                 contract_hash, snapshot_hash, tokenizer_status, model_status) = source
-                _need(source_owner == owner)
-                _id(draft)
-                _need(type(version) is int and 1 <= version <= 2147483647)
-                for value in (text_hash, render_hash, token_hash, contract_hash, snapshot_hash):
-                    _hash(value)
-                _need(tokenizer_status == 'internal_metadata_only'
-                      and model_status == 'unverified_declared')
-                _need(ledger._db.execute('SELECT 1 FROM structural_plans WHERE task_id=?',
-                                         (task_id,)).fetchone() is None)
-                task, binding = ledger._metadata(owner, task_id)
-                _need(task.state == 'STORED' and task.snapshot.digest == snapshot_hash)
-                _need(binding.preprocessing_sha256 == contract_hash == self._contract_sha256)
-                _need(binding.preprocessing_version == self._preprocessing_version)
-                _need(binding.model_digest == self._model_record_digest)
-                stored = read_input(ledger._directory, task.snapshot, binding)
-                _need(stored.token_blob_sha256 == token_hash)
-                value = InputDeclaration(
-                    task_id, owner, task.request_id, draft, version, text_hash,
-                    render_hash, snapshot_hash, token_hash, len(stored.tokens),
-                    binding.vocab_size, binding.preprocessing_version, contract_hash,
-                    self._model_record_digest, self._model)
-            # No await or external sink between final recheck and return. This
-            # still does not grant future execution or cross-store uniqueness.
-            _need(service._download_owner(credential) == owner)
-            authority._check()
-            return value
+            return self._read_locked(credential, task_id, owner)
+
+    def _read_locked(self, credential, task_id, expected_owner):
+        """Private synchronous core; callers own Authority's lock, never await.
+
+        A locked asyncio.Lock is a misuse check, not proof of which task owns it.
+        Only the trusted reader/bridge assembly calls this method. No public
+        already-locked flag or claim of hostile same-UID isolation is provided.
+        """
+        service = self._service
+        _need(service is not None)
+        authority = self._authority
+        _need(service._authority is authority)
+        _need(authority._lock.locked())
+        authority._check()
+        application._task(task_id)
+        owner = expected_owner
+        _need(service._download_owner(credential) == owner)
+        ledger = authority._middle_ledger()  # Includes live/path trust gates.
+        _need(type(ledger) is TextInputLedger)
+        with ledger._transaction():
+            row = ledger._db.execute(
+                'SELECT state FROM stored_tasks WHERE task_id=? AND owner_id=?',
+                (task_id, owner)).fetchone()
+            _need(row == ('STORED',))
+            source = ledger._db.execute(
+                'SELECT owner_id,draft_id,draft_version,text_sha256,render_sha256,'
+                'token_blob_sha256,contract_sha256,snapshot_digest,'
+                'tokenizer_status,model_status FROM text_input_sources WHERE task_id=?',
+                (task_id,)).fetchone()
+            _need(source is not None)
+            (source_owner, draft, version, text_hash, render_hash, token_hash,
+             contract_hash, snapshot_hash, tokenizer_status, model_status) = source
+            _need(source_owner == owner)
+            _id(draft)
+            _need(type(version) is int and 1 <= version <= 2147483647)
+            for value in (text_hash, render_hash, token_hash, contract_hash, snapshot_hash):
+                _hash(value)
+            _need(tokenizer_status == 'internal_metadata_only'
+                  and model_status == 'unverified_declared')
+            _need(ledger._db.execute('SELECT 1 FROM structural_plans WHERE task_id=?',
+                                     (task_id,)).fetchone() is None)
+            task, binding = ledger._metadata(owner, task_id)
+            _need(task.state == 'STORED' and task.snapshot.digest == snapshot_hash)
+            _need(binding.preprocessing_sha256 == contract_hash == self._contract_sha256)
+            _need(binding.preprocessing_version == self._preprocessing_version)
+            _need(binding.model_digest == self._model_record_digest)
+            stored = read_input(ledger._directory, task.snapshot, binding)
+            _need(stored.token_blob_sha256 == token_hash)
+            value = InputDeclaration(
+                task_id, owner, task.request_id, draft, version, text_hash,
+                render_hash, snapshot_hash, token_hash, len(stored.tokens),
+                binding.vocab_size, binding.preprocessing_version, contract_hash,
+                self._model_record_digest, self._model)
+        # No await or external sink between final recheck and return. This
+        # still does not grant future execution or cross-store uniqueness.
+        _need(service._download_owner(credential) == owner)
+        _need(service._authority is authority)
+        authority._check()
+        return value
