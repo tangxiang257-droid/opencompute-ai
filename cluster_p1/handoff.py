@@ -47,7 +47,7 @@ class EdgeBinding:
         if self.sender_node==self.receiver_node:raise ValueError('distinct stage endpoints required')
 
 class Receiver:
-    def __init__(self,journal,binding,*,authenticate_peer,input_layout_version=None,input_layout_wire_version=None):
+    def __init__(self,journal,binding,*,authenticate_peer,input_layout_version=None,input_layout_wire_version=None,retain_payload=False):
         if type(binding) is not EdgeBinding or not callable(authenticate_peer):
             raise TypeError('explicit trusted binding and peer context required')
         # Revalidate even a caller-mutated frozen instance; keep an independent copy.
@@ -58,6 +58,14 @@ class Receiver:
               or type(input_layout_wire_version) is not int or input_layout_wire_version<2
               or input_layout_wire_version!=binding.layout_version):
             raise ValueError('explicit new wire-to-input encoding binding required')
+        if type(retain_payload)is not bool:raise TypeError('explicit retain flag required')
+        if retain_payload:
+            from .receipt_attempt import ReceiptAttemptJournal
+            if (type(journal)is not ReceiptAttemptJournal or input_layout_version!=2
+                    or journal._receipt_edge!=binding
+                    or authenticate_peer is not journal._receipt_fence):
+                raise TypeError('receipt journal and fixed V2 mapping required')
+        self._retain_payload=retain_payload
         self._input_layout=input_layout_version;self._input_wire=input_layout_wire_version
         self._journal=journal;self._peer=authenticate_peer
 
@@ -112,4 +120,5 @@ class Receiver:
                 event='v2:receipt:'+hashlib.sha256(canonical([b.plan_digest,e.tile_id]).encode()).hexdigest()
                 if c.execute('SELECT 1 FROM p1_events WHERE id=?',(event,)).fetchone():raise Conflict('event identity conflict')
                 j._record_event(c,event,canonical(['receipt_v2',b.plan_digest,e.tile_id,digest]),{'recorded':True,'execution_allowed':False})
+            if self._retain_payload:j._retain_frame(c,frame,b,duplicate=bool(old))
             return {'frame_digest':digest,'duplicate':bool(old),'execution_allowed':False,'computed':False}
