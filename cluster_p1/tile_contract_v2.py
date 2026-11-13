@@ -148,3 +148,54 @@ def assess_record(raw):
         return RecordAssessment('v2_structure_only')
     except (ValueError, TypeError, AttributeError, OverflowError):
         return RecordAssessment('unsupported')
+
+# Encoding version is independent of Envelope's deployment layout_version.
+INPUT_LAYOUT_V2 = 'p1-input-v2-le-c-batch1'
+MAX_INPUT_BYTES = 65536
+MAX_INPUT_VALUES = MAX_INPUT_BYTES // 4
+
+@dataclass(frozen=True, slots=True)
+class DecodedInput:
+    encoding: str
+    dtype: str
+    shape: tuple[int, ...]
+    values: tuple[int | float, ...]
+    execution_allowed: bool = field(default=False, init=False)
+
+
+def decode_input_payload(tile, payload, *, layout_version, vocab_size):
+    """Bounded ordinary-value decode, not Tensor construction or execution.
+
+    layout_version names this INPUT encoding (exact 2), not a wire deployment
+    version. A trusted caller must bind those independently. No endian guessing.
+    """
+    import math
+    import struct
+    failed=False
+    try:
+        if type(layout_version) is not int or layout_version!=2:
+            raise ValueError()
+        if type(vocab_size) is not int or not 1<=vocab_size<=262144:
+            raise ValueError()
+        if type(payload) is not bytes or not 0<len(payload)<=MAX_INPUT_BYTES:
+            raise ValueError()
+        t=TileV2.model_validate(tile);d=t.input
+        if t.stage_id==1 and d.shape[2]>4096:raise ValueError()
+        width=8 if d.dtype=='int64' else 4
+        count=1
+        for dim in d.shape:
+            if count>MAX_INPUT_BYTES//width//dim:raise ValueError()
+            count*=dim
+        if count>MAX_INPUT_VALUES or count*width!=len(payload):raise ValueError()
+        # Explicit little-endian scalars in C row-major flattening order. No
+        # alignment/native byteorder dependence and no unbounded recursive decode.
+        values=tuple(x[0] for x in struct.iter_unpack('<q' if width==8 else '<f',payload))
+        if width==8:
+            if any(x<0 or x>=vocab_size for x in values):raise ValueError()
+        elif any(not math.isfinite(x) for x in values):raise ValueError()
+        result=DecodedInput(INPUT_LAYOUT_V2,d.dtype,d.shape,values)
+    except (ValueError,TypeError,OverflowError,AttributeError):
+        failed=True
+    if failed:
+        raise ContractRejected() from None
+    return result

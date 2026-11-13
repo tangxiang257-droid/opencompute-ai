@@ -9,7 +9,7 @@ import json
 from pydantic import TypeAdapter
 from .contracts import Identifier, Digest, Task, Session, Stage, State
 from .store import Conflict, canonical
-from .tile_contract_v2 import validate_prefill_plan, TileV2
+from .tile_contract_v2 import validate_prefill_plan, TileV2, decode_input_payload, INPUT_LAYOUT_V2
 from .envelope import decode
 
 MAX_FRAME_BYTES=65536
@@ -34,11 +34,18 @@ class EdgeBinding:
         if self.sender_node==self.receiver_node:raise ValueError('distinct stage endpoints required')
 
 class Receiver:
-    def __init__(self,journal,binding,*,authenticate_peer):
+    def __init__(self,journal,binding,*,authenticate_peer,input_layout_version=None,input_layout_wire_version=None):
         if type(binding) is not EdgeBinding or not callable(authenticate_peer):
             raise TypeError('explicit trusted binding and peer context required')
         # Revalidate even a caller-mutated frozen instance; keep an independent copy.
         self._binding=EdgeBinding(**asdict(binding))
+        if input_layout_version is None:
+            if input_layout_wire_version is not None:raise ValueError('unbound input encoding')
+        elif (type(input_layout_version) is not int or input_layout_version!=2
+              or type(input_layout_wire_version) is not int or input_layout_wire_version<2
+              or input_layout_wire_version!=binding.layout_version):
+            raise ValueError('explicit new wire-to-input encoding binding required')
+        self._input_layout=input_layout_version;self._input_wire=input_layout_wire_version
         self._journal=journal;self._peer=authenticate_peer
 
     def receive_bytes(self,frame):
@@ -74,7 +81,14 @@ class Receiver:
             tile=matches[0];desc=tile.output
             if (e.model_hash,e.token_range,e.tensor_shape,e.dtype)!=(tile.model_hash,(tile.token_start,tile.token_start+tile.token_count),desc.shape,desc.dtype):
                 raise Conflict('descriptor mismatch')
-            binding=canonical(asdict(b))
+            binding_body=asdict(b)
+            if self._input_layout is not None:
+                downstream=tiles[2*e.tile_id+1]
+                decode_input_payload(downstream,e.payload,layout_version=self._input_layout,
+                                     vocab_size=plan['vocab_size'])
+                binding_body['payload_encoding']={'name':INPUT_LAYOUT_V2,
+                    'input_version':self._input_layout,'wire_version':self._input_wire}
+            binding=canonical(binding_body)
             edge=c.execute('SELECT body FROM p1_v2_edges WHERE plan_digest=?',(b.plan_digest,)).fetchone()
             if edge and edge[0]!=binding:raise Conflict('edge binding already fixed')
             old=c.execute('SELECT digest FROM p1_v2_receipts WHERE plan_digest=? AND tile_id=?',(b.plan_digest,e.tile_id)).fetchone()
