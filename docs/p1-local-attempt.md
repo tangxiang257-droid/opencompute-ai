@@ -1,9 +1,10 @@
-# Fresh-only local stage-0 attempt slice
+# Fresh-only local attempts with opt-in serial stage 1
 
 Explicit LocalAttemptJournal.create creates a new local journal and dedicated
 attempt table; existing V2 creation, legacy tables and public gates are unchanged.
-Only stage 0 and complete fixed local token bytes are supported. No stage-1
-receipt, transport delivery or remote peer is promoted into execution permission.
+By default only stage 0 and complete fixed local token bytes are supported.
+Explicit opt-in adds the serial stage-1 path described below. No stage-1 receipt,
+transport delivery or remote peer is promoted into execution permission.
 No model, node, forward or Tensor is exercised by this slice.
 
 make_owner connects the real StageOwner callbacks to SQLite. It derives binding,
@@ -55,3 +56,42 @@ or output mismatch from becoming successful authorization/commit. Context exit
 errors still fail closed; post-commit exit errors remain uncertain and require query.
 This does not protect against malicious callbacks that directly mutate the database
 or perform other side effects; callbacks remain trusted and nonreentrant.
+
+## Reconstructed opt-in serial stage 0 → stage 1
+
+This increment was reconstructed from fixed PR #21 head
+`7bfbe9f1c966442bfd1064817f5ad8ba86d49be5`. It is not a recovery or
+revalidation of the unavailable earlier local candidate.
+
+`create(..., enable_stage1=True)` creates an additional fresh attempt table.
+The default remains false and creates no stage-1 table. `make_stage1_owner`
+requires the complete stage-0 output prefix, reads actual immutable BLOBs,
+checks their committed events and matching plan/epoch/descriptors, and binds
+those exact bytes. At each admission and output commit it repeats the source
+checks in the same SQLite transaction as the write, and compares them to the
+fixed snapshot. A matching replacement digest alone cannot change bound input.
+Callers must supply those actual committed bytes to the returned owner.
+
+Both stages share the existing 256 KiB logical input plus reserved-output
+budget. Stage-1 input copies count again. No quota increase, automatic release,
+retry, reopening, recovery, migration, public gate or default executor change.
+The maximum per object remains 64 KiB and per stage 64 attempts. Limits do not
+bound SQLite file/WAL growth, Python snapshots/copies, process RSS or model KV.
+Complete stage 0 must finish before stage 1 can bind: no interleaved pipeline,
+network transfer, model inference, speedup or production isolation is proven.
+
+Owner and execution contexts still must hold trusted external revocation
+fences; SQLite does not create them. Same-UID storage and callbacks are trusted.
+Body failures cannot be swallowed into successful admission. Output/context
+failure after admission leaves a possibly executed attempt; an exit failure
+may occur after output commit. Query historical state, never blindly retry.
+Closing the journal does not stop owners. Synchronous SQLite retains its
+15-second busy timeout; callers must stop and await owners before release.
+
+Reconstruction tests use only ordinary bytes and temporary SQLite. The first
+15 feature cases failed because the opt-in API was absent, then passed after
+implementation; four additional boundary regressions cover stale epoch, live
+execution revocation, output rollback and post-commit context-exit failure.
+The scaled budget boundary is 968 bytes (520 upstream + 448 downstream), not
+an exact 256 KiB stress or physical-memory measurement. A framework-import
+blocker is applied; broad model/node test discovery is deliberately not run.
