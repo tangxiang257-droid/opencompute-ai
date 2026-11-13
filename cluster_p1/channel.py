@@ -177,11 +177,25 @@ class Channel:
         finally:
             self._abort()
 
-    async def send(self, envelope):
-        envelope.validate()
-        if not any((g.permits(envelope) for g in self.grants)):
+    async def send(self, envelope, *, max_frame_bytes=None):
+        # Serialize before credit reservation or wire I/O. The exact bytes checked
+        # here are sent after the await, never a second potentially changed encoding.
+        frame = envelope.encode()
+        if type(frame) is not bytes:
+            raise ValueError('immutable encoded envelope required')
+        if max_frame_bytes is not None:
+            if (type(max_frame_bytes) is not int
+                    or not 1 <= max_frame_bytes <= MAX_PAYLOAD + MAX_HEADER + PREFIX.size + 32):
+                raise ValueError('invalid complete envelope bound')
+            if len(frame) > max_frame_bytes:
+                raise ValueError('complete envelope exceeds receiver bound')
+        # Caller fields / dynamic encode overrides are not an authority. Decode
+        # the frozen bytes and use only that wire identity and payload for grants
+        # and credits. A valid but different encoding gets no caller privilege.
+        wire_envelope = decode(frame)
+        if not any((g.permits(wire_envelope) for g in self.grants)):
             raise ChannelError('unauthorized context')
-        size = len(envelope.payload)
+        size = len(wire_envelope.payload)
 
         async def reserve():
             async with self._condition:
@@ -197,7 +211,7 @@ class Channel:
                     await self._condition.wait()
         await asyncio.wait_for(reserve(), self.timeout)
         try:
-            await self._frame(b'D', envelope.encode())
+            await self._frame(b'D', frame)
         except BaseException:
             self._abort()
             raise

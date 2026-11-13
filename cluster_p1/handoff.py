@@ -14,6 +14,19 @@ from .envelope import decode
 
 MAX_FRAME_BYTES=65536
 
+async def send_handoff(channel, envelope):
+    """Send with the unchanged complete-envelope receiver cap.
+
+    No execution grant, plan registration, retry or chunking is performed.
+    Channel remains responsible for TLS peer/grant validation and credit flow.
+    Oversize is rejected before its send reserves credit or writes to the wire.
+    """
+    from .channel import Channel
+    if type(channel) is not Channel:
+        raise TypeError('real Channel required')
+    return await channel.send(envelope, max_frame_bytes=MAX_FRAME_BYTES)
+
+
 @dataclass(frozen=True, slots=True)
 class EdgeBinding:
     task_id: str
