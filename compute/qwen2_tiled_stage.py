@@ -287,4 +287,7 @@ def _owned_cpu_prefill_bytes(root, *, expected_sha256, expected_config_sha256,
             raise
         finally:
             lock.release()
-    return operation
+    from cluster_p1.stage_ownership import StageBinding, _PlannedOperation
+    binding=StageBinding(task.task_id,session.session_id,session.epoch,stage_id,
+                         task.model_hash,session.layout_hash)
+    return _PlannedOperation(binding,tuple((t.token_start,t.token_count) for t in owned),operation)

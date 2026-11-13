@@ -130,6 +130,47 @@ class Tests(unittest.TestCase):
             finally:await owner.close()
             self.assertEqual(len(result),256);self.assertEqual(len(commits),1)
         asyncio.run(scenario())
+    def test_real_owner_rejects_wrong_count_before_admission(self):
+        import asyncio
+        from cluster_p1.stage_ownership import StageOwner,StageBinding,OwnershipError
+        op=self.make();authorized=[];commits=[]
+        async def scenario():
+            owner=StageOwner(StageBinding('t','s',1,1,'a'*64,'a'*64),op,
+                authorize=lambda spec:authorized.append(spec) or True,
+                commit=lambda spec,result:commits.append(spec))
+            try:
+                with self.assertRaises(OwnershipError):
+                    await owner.call(b'\0'*192,token_start=0,token_count=1)
+                self.assertEqual(owner.state.status,'retired')
+            finally:await owner.close()
+        asyncio.run(scenario())
+        self.assertEqual(self.calls,[]);self.assertEqual(authorized,[]);self.assertEqual(commits,[])
+    def test_fixed_binding_and_actual_bytes_digest(self):
+        from cluster_p1.stage_ownership import CallSpec,StageBinding,OwnershipError
+        from dataclasses import replace
+        import hashlib
+        op=self.make();value=b'\0'*192
+        spec=CallSpec(StageBinding('t','s',1,1,'a'*64,'a'*64),0,2,hashlib.sha256(value).hexdigest())
+        op._validate(value,spec)
+        for field,bad in [('task_id','other'),('session_id','other'),('epoch',2),
+                          ('stage_id',0),('model_hash','b'*64),('layout_hash','b'*64)]:
+            with self.subTest(field=field),self.assertRaises(OwnershipError):
+                op._validate(value,replace(spec,binding=replace(spec.binding,**{field:bad})))
+        for bad in [replace(spec,token_start=1),replace(spec,token_count=1),
+                    replace(spec,input_digest='b'*64)]:
+            with self.assertRaises(OwnershipError):op._validate(value,bad)
+        with self.assertRaises(OwnershipError):op._validate(b'1'+value[1:],spec)
+        self.assertEqual(self.calls,[])
+    def test_private_subclass_not_silently_ordinary(self):
+        import asyncio
+        from cluster_p1.stage_ownership import StageOwner,StageBinding,_PlannedOperation
+        class Derived(_PlannedOperation):pass
+        async def scenario():
+            binding=StageBinding('t','s',1,1,'a'*64,'a'*64)
+            with self.assertRaises(TypeError):
+                StageOwner(binding,Derived(binding,((0,2),),lambda *a,**k:b'x'),
+                           authorize=lambda spec:True,commit=lambda spec,result:None)
+        asyncio.run(scenario())
     def test_old_module_ast_unchanged(self):
         import hashlib
         tree=ast.parse(SOURCE.read_text())

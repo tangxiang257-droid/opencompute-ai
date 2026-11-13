@@ -61,3 +61,24 @@ A new real-forward/loader experiment requires separately scoped authorization.
 The existing loader still uses its original JSON parsing behavior. This increment
 does not provide strict configuration JSON parsing or incorporate the other #19
 configuration/export fixes. Pinned bytes alone do not establish model provenance.
+
+## Fixed count admission repair
+The private factory returns an internal planned callable containing an independent
+StageBinding and immutable start/count pairs derived from that same validated plan.
+StageOwner recognizes its exact type and validates CallSpec identity, epoch, model,
+layout, start/count and SHA256 of the actual immutable input bytes before invoking
+live authorize or submitting the operation. A subclass is rejected, not silently
+handled as an ordinary callback. An inconsistent count formerly advanced model KV
+by the payload's real count while advancing Owner.next_token by the caller count;
+this now retires the owner without operation, authorization or commit calls.
+
+This is a trusted in-process assembly convention, not capability authentication:
+wrapping the callable as a generic function, direct private access or hostile Python
+mutation can bypass that convention. Production wiring must pass the factory result
+unchanged to StageOwner, with explicit trusted live authorize and commit callbacks.
+No default authorization or no-op commit is supplied. Existing ordinary callable
+APIs remain unchanged. Direct calls retain their prior private interface and do not
+constitute authorized execution. No V2 attempt/output journal or database state is
+added, changed, reset or cleared by this check. Receipt/commit uncertainty and
+historical replay semantics remain unchanged. Tests use ordinary AST stand-ins,
+not another real CPU forward or real loader experiment.

@@ -49,12 +49,37 @@ def _sync(value):
         raise OwnershipError('synchronous callbacks required')
     return value
 
+class _PlannedOperation:
+    """Private trusted assembly only; Python introspection is not a security wall."""
+    __slots__=('_binding','_ranges','_operation')
+    def __init__(self,binding,ranges,operation):
+        if type(binding) is not StageBinding or not callable(operation):
+            raise TypeError('fixed operation binding required')
+        self._binding=StageBinding(binding.task_id,binding.session_id,binding.epoch,
+            binding.stage_id,binding.model_hash,binding.layout_hash)
+        self._ranges=tuple(ranges)
+        if (not self._ranges or any(type(p) is not tuple or len(p)!=2 or
+            type(p[0]) is not int or type(p[1]) is not int or p[0]<0 or p[1]<1
+            for p in self._ranges) or len({p[0] for p in self._ranges})!=len(self._ranges)):
+            raise OwnershipError('fixed ranges required')
+        self._operation=operation
+    def _validate(self,value,spec):
+        if (type(spec) is not CallSpec or spec.binding!=self._binding
+            or (spec.token_start,spec.token_count) not in self._ranges
+            or type(value) is not bytes
+            or hashlib.sha256(value).hexdigest()!=spec.input_digest):
+            raise OwnershipError('fixed plan call mismatch')
+    def __call__(self,value,*,token_start,stage_id):
+        return self._operation(value,token_start=token_start,stage_id=stage_id)
+
 class StageOwner:
     def __init__(self,binding,operation,*,authorize,commit):
         if type(binding) is not StageBinding:raise TypeError('StageBinding required')
         binding=StageBinding(binding.task_id,binding.session_id,binding.epoch,binding.stage_id,binding.model_hash,binding.layout_hash)
         if not all(callable(f) and not inspect.iscoroutinefunction(f) for f in (operation,authorize,commit)):
             raise TypeError('synchronous trusted callbacks required')
+        if isinstance(operation,_PlannedOperation) and type(operation) is not _PlannedOperation:
+            raise TypeError('exact private planned operation required')
         self._binding=binding;self._operation=operation;self._authorize=authorize;self._commit=commit
         self._loop=asyncio.get_running_loop();self._state=OwnerState('idle',0)
         self._stop=threading.Event();self._done=None
@@ -85,6 +110,8 @@ class StageOwner:
             # On this loop there is no await between authorization and enqueue.
             # Trusted authorize must grant one admitted call, not return cached
             # metadata or imply instantaneous authority at eventual CPU start.
+            if type(self._operation) is _PlannedOperation:
+                self._operation._validate(value,spec)
             if _sync(self._authorize(spec)) is not True:raise OwnershipError('admission denied')
             if self._stop.is_set():raise OwnershipError('instance closing')
             # Keep the concurrent Future, not merely an asyncio wrapper whose
