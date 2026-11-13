@@ -74,7 +74,10 @@ class ChannelIdentity:
 
 class Channel:
 
-    def __init__(self, r, w, config, grants, capacity_bytes=MAX_PAYLOAD, capacity_tiles=8, timeout=10):
+    def __init__(self, r, w, config, grants, capacity_bytes=MAX_PAYLOAD, capacity_tiles=8, timeout=10, *, _gate_receipt=False):
+        if type(_gate_receipt)is not bool:raise TypeError('explicit receipt gate flag required')
+        self._receipt_state='unprepared' if _gate_receipt else None
+        self._receipt_h_started=False
         obj = w.get_extra_info('ssl_object')
         if obj is None or obj.context.verify_mode != ssl.CERT_REQUIRED:
             raise ChannelError('TLS certificate validation is required')
@@ -137,6 +140,17 @@ class Channel:
         self._abort()
 
     async def start(self):
+        if self._receipt_state is not None:
+            # Opt-in only: reserve before the first await, even if the write lock
+            # or drain blocks. A cancelled/unknown advertisement is never retried.
+            if self._receipt_state!='ready' or self._receipt_h_started:
+                raise ChannelError('receipt capacity not ready or already advertised')
+            self._receipt_h_started=True
+            try:
+                await self._frame(b'H',struct.pack('!QI',self.capacity_bytes,self.capacity_tiles))
+            except BaseException:
+                self._abort();raise
+            return self
         await self._frame(b'H', struct.pack('!QI', self.capacity_bytes, self.capacity_tiles))
         return self
 
@@ -153,6 +167,7 @@ class Channel:
 
     def _abort(self):
         with self._identity_lock:
+            if self._receipt_state is not None:self._receipt_state='closed'
             self._identity_revoked = True
             if not self._closed:
                 self._closed = True
@@ -169,7 +184,13 @@ class Channel:
                 header = await asyncio.wait_for(self.r.readexactly(5), self.timeout)
                 kind = header[:1]
                 n = struct.unpack('!I', header[1:])[0]
+                # Latch rejection at D-header observation, before any body await.
+                # Buffered bytes processed only after ready cannot reveal send time.
+                if kind==b'D' and self._receipt_state not in (None,'ready'):
+                    raise ChannelError('receipt receiver is not prepared')
                 bound = MAX_PAYLOAD + MAX_HEADER + PREFIX.size + 32 if kind == b'D' else 20
+                if kind==b'D' and self._receipt_state is not None:
+                    bound=min(bound,65536)  # private receipt complete-frame cap, not RSS
                 if n > bound or kind not in (b'H', b'C', b'D'):
                     raise ChannelError('frame bound/type')
                 if kind == b'D' and (self._used_tiles >= self.capacity_tiles or n > self.capacity_bytes - self._used_bytes + MAX_HEADER + PREFIX.size + 32):
