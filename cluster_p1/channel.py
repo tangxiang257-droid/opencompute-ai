@@ -4,6 +4,9 @@ from dataclasses import dataclass
 import hashlib
 import ssl
 import struct
+import secrets
+import threading
+from contextlib import contextmanager
 from typing import Protocol
 from .envelope import Envelope, decode, MAX_PAYLOAD, MAX_HEADER, PREFIX
 
@@ -63,6 +66,12 @@ class Delivery:
         await self._channel._release(self._size)
     commit = release
 
+@dataclass(frozen=True, slots=True)
+class ChannelIdentity:
+    node_id: str
+    certificate_sha256: str
+    connection_generation: str
+
 class Channel:
 
     def __init__(self, r, w, config, grants, capacity_bytes=MAX_PAYLOAD, capacity_tiles=8, timeout=10):
@@ -80,6 +89,10 @@ class Channel:
             raise ChannelError('unauthenticated node')
         if not 1 <= capacity_bytes <= MAX_PAYLOAD or not 1 <= capacity_tiles <= 1024:
             raise ChannelError('capacity bounds')
+        self._identity_lock = threading.RLock()
+        self._identity_loop = asyncio.get_running_loop()
+        self._identity_revoked = False
+        self._identity = ChannelIdentity(nodes[0], fp, secrets.token_hex(16))
         self.peer_node = nodes[0]
         self.r = r
         self.w = w
@@ -101,6 +114,28 @@ class Channel:
         self._error = None
         self._task = asyncio.create_task(self._reader())
 
+    def _identity_loop_check(self):
+        if asyncio.get_running_loop() is not self._identity_loop:
+            raise ChannelError('identity fence requires owning loop')
+
+    @property
+    def authenticated_identity(self):
+        self._identity_loop_check()
+        return self._identity
+
+    @contextmanager
+    def identity_fence(self, expected):
+        self._identity_loop_check()
+        with self._identity_lock:
+            if (type(expected) is not ChannelIdentity or expected != self._identity
+                    or self._identity_revoked or self._closed or self.w.is_closing()):
+                raise PermissionError('channel identity unavailable')
+            yield self._identity
+
+    def revoke_identity(self):
+        self._identity_loop_check()
+        self._abort()
+
     async def start(self):
         await self._frame(b'H', struct.pack('!QI', self.capacity_bytes, self.capacity_tiles))
         return self
@@ -117,10 +152,12 @@ class Channel:
                 raise
 
     def _abort(self):
-        if not self._closed:
-            self._closed = True
-            self.w.close()
-            asyncio.create_task(self._wake())
+        with self._identity_lock:
+            self._identity_revoked = True
+            if not self._closed:
+                self._closed = True
+                self.w.close()
+                asyncio.create_task(self._wake())
 
     async def _wake(self):
         async with self._condition:

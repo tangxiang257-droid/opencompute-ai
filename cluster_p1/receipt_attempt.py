@@ -58,20 +58,22 @@ class ReceiptAttemptJournal(LocalAttemptJournal):
         def execute(spec):
             with peer_fence(),_non_suppressing(execution_authorize(spec)) as principal:
                 yield principal
-        # Peer context remains held through fresh bootstrap and persistent binding.
-        with peer_fence():
-            obj=super().create(path,task,session,fixed_stages,authorize=authorize,execution_authorize=execute,enable_stage1=True)
-            obj._receipt_edge=edge;obj._receipt_peer=peer;obj._receipt_fence=peer_fence
-            obj._receipt_stages=stage_body
-            obj._receipt_context=canonical({'edge':asdict(edge),'peer':asdict(peer),
-                'local_node':local_node,'config_sha256':expected_config_sha256,'stages':json.loads(stage_body)})
-            try:
-                with obj._authorized(),obj._store._tx() as c:
-                    c.execute('CREATE TABLE p1_receipt_context(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL)')
-                    c.execute('INSERT INTO p1_receipt_context VALUES(1,?)',(obj._receipt_context,))
-                    c.execute('CREATE TABLE p1_received_frames(tile INTEGER PRIMARY KEY,frame BLOB NOT NULL CHECK(typeof(frame)=\'blob\' AND length(frame) BETWEEN 1 AND 65536))')
-            except BaseException:
-                obj.close();raise
+        # Preflight peer alone; never acquire journal/owner while holding peer.
+        # Bootstrap may leave a fresh partial file if subsequent live checks fail.
+        with peer_fence():pass
+        obj=super().create(path,task,session,fixed_stages,authorize=authorize,execution_authorize=execute,enable_stage1=True)
+        obj._receipt_edge=edge;obj._receipt_peer=peer;obj._receipt_fence=peer_fence
+        obj._receipt_peer_provider=peer_authorize
+        obj._receipt_stages=stage_body
+        obj._receipt_context=canonical({'edge':asdict(edge),'peer':asdict(peer),
+            'local_node':local_node,'config_sha256':expected_config_sha256,'stages':json.loads(stage_body)})
+        try:
+            with obj._authorized(),peer_fence(),obj._store._tx() as c:
+                c.execute('CREATE TABLE p1_receipt_context(id INTEGER PRIMARY KEY CHECK(id=1),body TEXT NOT NULL)')
+                c.execute('INSERT INTO p1_receipt_context VALUES(1,?)',(obj._receipt_context,))
+                c.execute('CREATE TABLE p1_received_frames(tile INTEGER PRIMARY KEY,frame BLOB NOT NULL CHECK(typeof(frame)=\'blob\' AND length(frame) BETWEEN 1 AND 65536))')
+        except BaseException:
+            obj.close();raise
         return obj
 
     def make_receiver(self):
@@ -138,12 +140,15 @@ class ReceiptAttemptJournal(LocalAttemptJournal):
         return s,plan,tiles,tuple(values)
 
     def make_stage1_owner(self,operation,*,instance_id):
-        with self._receipt_fence():
-            with self._authorized() as owner,self._store._tx() as c:
-                s,plan,tiles,inputs=self._sources(c,owner)
-                if c.execute('SELECT 1 FROM p1_local_stage1_attempts LIMIT 1').fetchone():
-                    raise Conflict('prior attempt; no new-owner continuation')
-                need=sum(len(v)+4*math.prod(t.output.shape) for t,v in zip(tiles,inputs))
-                if self._used(c)+need>MAX_RESERVED:raise Conflict('complete stage retained budget')
-            return self._make_owner(operation,inputs,instance_id=instance_id,stage_id=1,
-                                   source_snapshot=(s.epoch,plan,inputs))
+        # Uniform order: journal/owner -> peer -> store. Release these before
+        # _make_owner reacquires journal/owner; no peer->journal reverse edge.
+        with self._authorized() as owner,self._receipt_fence(),self._store._tx() as c:
+            s,plan,tiles,inputs=self._sources(c,owner)
+            if c.execute('SELECT 1 FROM p1_local_stage1_attempts LIMIT 1').fetchone():
+                raise Conflict('prior attempt; no new-owner continuation')
+            need=sum(len(v)+4*math.prod(t.output.shape) for t,v in zip(tiles,inputs))
+            if self._used(c)+need>MAX_RESERVED:raise Conflict('complete stage retained budget')
+        # Preparation is not execution authority. Every later admission/commit
+        # independently rechecks peer, execution authority and bound source bytes.
+        return self._make_owner(operation,inputs,instance_id=instance_id,stage_id=1,
+                               source_snapshot=(s.epoch,plan,inputs))
