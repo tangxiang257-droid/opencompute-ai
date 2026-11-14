@@ -144,20 +144,30 @@ class _Owner:
    raise
   if cancelled is not None:raise cancelled
 
+def _stage_preflight(config,store,d,*,identity=None,authorize=None,resources=None,completion=None,runtime=None):
+ _need(type(config)is LaunchConfig and config.data['role'] in ('A','B'))
+ config.bound(d);c=config.data
+ _need(not os.path.lexists(config.path('claim')))
+ _need(type(store)is RoleInstallStore and type(resources)is RoleResources and store.resources is resources)
+ _need(type(runtime)is dict and set(runtime)=={'instance','layer_range','authority','resources','ticket','device','loader','factories'})
+ _need(runtime['resources'] is resources and runtime['instance']==d['instance'] and runtime['ticket'] is not None)
+ for provider in (identity,authorize):_methods(provider,('hold',))
+ _methods(completion,('check','begin','finish','quarantine'))
+ _methods(runtime['authority'],('hold_load',)+(('hold_stage0',) if c['role']=='A' else ('hold_call','finalize')))
+ _methods(runtime['device'],('hold_load','open_scope','require_open','materialize','finish_scope','require_finished','quarantine'))
+ _methods(runtime['loader'],('load','quarantine'));store.ready();resources.ready()
+ _methods(resources,('hold','hold_control','verify_stage','quarantine'))
+ stage=d['declaration']['stages'][d['stage']]
+ _need(type(runtime['instance'])is str and type(runtime['layer_range'])is tuple and runtime['layer_range']==(stage['layer_start'],stage['layer_end']))
+ _need(runtime['factories'] is None or callable(runtime['factories']))
+ return c
+
 class StageLauncher(_Owner):
  def __init__(self):raise TypeError('use await create')
  @classmethod
  async def create(cls,config,reader,writer,tls,grants,store,d,*,identity=None,authorize=None,resources=None,completion=None,runtime=None):
-  _need(cls is StageLauncher and type(config)is LaunchConfig and config.data['role'] in ('A','B'))
-  config.bound(d);c=config.data
-  _need(type(store)is RoleInstallStore and type(resources)is RoleResources and store.resources is resources)
-  _need(type(runtime)is dict and set(runtime)=={'instance','layer_range','authority','resources','ticket','device','loader','factories'})
-  _need(runtime['resources'] is resources and runtime['instance']==d['instance'] and runtime['ticket'] is not None)
-  for provider in (identity,authorize):_methods(provider,('hold',))
-  _methods(completion,('check','begin','finish','quarantine'))
-  _methods(runtime['authority'],('hold_load',)+(('hold_stage0',) if c['role']=='A' else ('hold_call','finalize')))
-  _methods(runtime['device'],('hold_load','open_scope','require_open','materialize','finish_scope','require_finished','quarantine'))
-  _methods(runtime['loader'],('load','quarantine'));store.ready();resources.ready()
+  _need(cls is StageLauncher)
+  c=_stage_preflight(config,store,d,identity=identity,authorize=authorize,resources=resources,completion=completion,runtime=runtime)
   _need(not getattr(writer,'_launcher_owned',False))
   config.claim();self=object.__new__(cls);self._init_owner(config);writer._launcher_owned=True
   self.startup=None;self.installed=None;self.operation=None;self.control=None;self.gate=None
