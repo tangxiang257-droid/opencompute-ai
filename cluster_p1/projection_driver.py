@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from dataclasses import asdict,dataclass,field
 import hashlib,inspect,json,os,re,sqlite3,struct,threading,uuid
 from cluster_p1.local_attempt import _non_suppressing
+from .owner_encoding import valid_owner
 
 class Denied(ValueError):pass
 
@@ -40,7 +41,8 @@ class Spec:
     vocab:int
     inputs:tuple
     def __post_init__(self):
-        for value in (self.owner,self.request,self.session):need(type(value)is str and re.fullmatch('[A-Za-z0-9_-]{1,64}',value) is not None)
+        need(valid_owner(self.owner))
+        for value in (self.request,self.session):need(type(value)is str and re.fullmatch('[A-Za-z0-9_-]{1,64}',value) is not None)
         need(integer(self.epoch) and self.epoch<2**31)
         need(integer(self.hidden) and self.hidden*4<=65536 and integer(self.vocab))
         need(type(self.inputs)is tuple and 1<=len(self.inputs)<=3)

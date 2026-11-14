@@ -13,6 +13,7 @@ import re
 import sqlite3
 import struct
 import threading
+from .owner_encoding import valid_owner
 
 CHUNK=32768
 MANIFEST=32768
@@ -42,7 +43,8 @@ class Binding:
     plan_digest:str
     def __post_init__(self):
         need(type(self.epoch)is int and 1<=self.epoch<2**31)
-        for name in ('owner','task','session_nonce','attempt','connection'):
+        need(valid_owner(self.owner))
+        for name in ('task','session_nonce','attempt','connection'):
             value=getattr(self,name)
             need(type(value)is str and re.fullmatch(r'[A-Za-z0-9_-]{1,64}',value) is not None)
         for name in ('model','layout','input_snapshot','token_digest','preprocessing','plan_digest'):
