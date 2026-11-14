@@ -145,7 +145,9 @@ class InputDeclarationReader:
         owner = expected_owner
         _need(service._download_owner(credential) == owner)
         ledger = authority._middle_ledger()  # Includes live/path trust gates.
-        _need(type(ledger) is TextInputLedger)
+        if type(ledger) is not TextInputLedger:
+            from private_task_consent import ConsentLedger
+            _need(type(ledger) is ConsentLedger)
         with ledger._transaction():
             row = ledger._db.execute(
                 'SELECT state FROM stored_tasks WHERE task_id=? AND owner_id=?',
