@@ -2,8 +2,12 @@
 import asyncio
 from dataclasses import dataclass
 import hashlib
+import inspect
 import ssl
 import struct
+import secrets
+import threading
+from contextlib import contextmanager
 from typing import Protocol
 from .envelope import Envelope, decode, MAX_PAYLOAD, MAX_HEADER, PREFIX
 
@@ -15,7 +19,7 @@ class Transport(Protocol):
     async def send(self, envelope: Envelope):
         ...
 
-    async def receive(self):
+    async def receive(self,*,_session_owner=None):
         ...
 
     async def close(self):
@@ -63,9 +67,21 @@ class Delivery:
         await self._channel._release(self._size)
     commit = release
 
+@dataclass(frozen=True, slots=True)
+class ChannelIdentity:
+    node_id: str
+    certificate_sha256: str
+    connection_generation: str
+
 class Channel:
 
-    def __init__(self, r, w, config, grants, capacity_bytes=MAX_PAYLOAD, capacity_tiles=8, timeout=10):
+    def __init__(self, r, w, config, grants, capacity_bytes=MAX_PAYLOAD, capacity_tiles=8, timeout=10, *, _gate_receipt=False, _single_start=False):
+        if type(_gate_receipt)is not bool:raise TypeError('explicit receipt gate flag required')
+        if type(_single_start)is not bool:raise TypeError('explicit single-start flag required')
+        self._single_start=_single_start
+        self._receipt_state='unprepared' if _gate_receipt else None
+        self._receipt_h_started=False
+        self._start_attempted=False
         obj = w.get_extra_info('ssl_object')
         if obj is None or obj.context.verify_mode != ssl.CERT_REQUIRED:
             raise ChannelError('TLS certificate validation is required')
@@ -80,6 +96,10 @@ class Channel:
             raise ChannelError('unauthenticated node')
         if not 1 <= capacity_bytes <= MAX_PAYLOAD or not 1 <= capacity_tiles <= 1024:
             raise ChannelError('capacity bounds')
+        self._identity_lock = threading.RLock()
+        self._identity_loop = asyncio.get_running_loop()
+        self._identity_revoked = False
+        self._identity = ChannelIdentity(nodes[0], fp, secrets.token_hex(16))
         self.peer_node = nodes[0]
         self.r = r
         self.w = w
@@ -87,6 +107,7 @@ class Channel:
         self.capacity_bytes = capacity_bytes
         self.capacity_tiles = capacity_tiles
         self.timeout = timeout
+        self._session_idle_owner=None;self._idle_changed=asyncio.Event()
         self._used_bytes = 0
         self._used_tiles = 0
         self._credits_bytes = 0
@@ -101,38 +122,119 @@ class Channel:
         self._error = None
         self._task = asyncio.create_task(self._reader())
 
+    def _identity_loop_check(self):
+        if asyncio.get_running_loop() is not self._identity_loop:
+            raise ChannelError('identity fence requires owning loop')
+
+    @property
+    def authenticated_identity(self):
+        self._identity_loop_check()
+        return self._identity
+
+    @contextmanager
+    def identity_fence(self, expected):
+        self._identity_loop_check()
+        if self._session_idle_owner is not None:self._session_idle_owner.check()
+        with self._identity_lock:
+            if (type(expected) is not ChannelIdentity or expected != self._identity
+                    or self._identity_revoked or self._closed or self.w.is_closing()):
+                raise PermissionError('channel identity unavailable')
+            yield self._identity
+
+    def revoke_identity(self):
+        self._identity_loop_check()
+        self._abort()
+
     async def start(self):
-        await self._frame(b'H', struct.pack('!QI', self.capacity_bytes, self.capacity_tiles))
+        self._identity_loop_check()
+        if self._closed or self.w.is_closing():raise ChannelError('disconnected')
+        if self._start_attempted and (self._single_start or self._receipt_state is not None):
+            raise ChannelError('local capacity advertisement already attempted')
+        if self._receipt_state is not None and (self._receipt_state!='ready' or self._receipt_h_started):
+            # An early call cannot bypass preparation or burn its future ready H.
+            raise ChannelError('receipt capacity not ready')
+        # Track every real H attempt, before any lock/drain await. Private
+        # single-start and receipt paths reject duplicates without aborting the
+        # first caller. Legacy ordinary Channels retain repeat-start behavior.
+        self._start_attempted=True
+        if self._receipt_state is not None:self._receipt_h_started=True
+        try:
+            await self._frame(b'H',struct.pack('!QI',self.capacity_bytes,self.capacity_tiles))
+        except BaseException:
+            self._abort();raise
         return self
 
-    async def _frame(self, kind, data):
+    async def _frame(self, kind, data, *, write_fence=None):
         async with self._write:
             if self._closed:
                 raise ChannelError('disconnected')
             try:
-                self.w.write(kind + struct.pack('!I', len(data)) + data)
+                if write_fence is None:
+                    self.w.write(kind + struct.pack('!I', len(data)) + data)
+                else:
+                    from .local_attempt import _non_suppressing
+                    if not callable(write_fence):raise ChannelError('synchronous write fence required')
+                    context=write_fence()
+                    if inspect.isawaitable(context):
+                        if inspect.iscoroutine(context):context.close()
+                        raise ChannelError('synchronous write fence required')
+                    with _non_suppressing(context) as allowed:
+                        if allowed is not None:raise ChannelError('write fence must yield None')
+                        self.w.write(kind + struct.pack('!I', len(data)) + data)
                 await asyncio.wait_for(self.w.drain(), self.timeout)
             except BaseException:
                 self._abort()
                 raise
 
     def _abort(self):
-        if not self._closed:
-            self._closed = True
-            self.w.close()
-            asyncio.create_task(self._wake())
+        with self._identity_lock:
+            if self._receipt_state is not None:self._receipt_state='closed'
+            self._identity_revoked = True
+            if not self._closed:
+                self._closed = True
+                self.w.close()
+                asyncio.create_task(self._wake())
 
     async def _wake(self):
         async with self._condition:
             self._condition.notify_all()
 
+    async def _header(self):
+        loop=asyncio.get_running_loop();deadline=loop.time()+self.timeout
+        first=asyncio.create_task(self.r.readexactly(1));change=asyncio.create_task(self._idle_changed.wait())
+        try:
+            while True:
+                owner=self._session_idle_owner
+                if owner is not None:owner.check()
+                remaining=None if owner is not None else max(0,deadline-loop.time())
+                done,_=await asyncio.wait((first,change),timeout=remaining,return_when=asyncio.FIRST_COMPLETED)
+                if owner is None and loop.time()>=deadline:raise TimeoutError()
+                if first in done:
+                    lead=first.result();break
+                if change in done:
+                    self._idle_changed.clear();change=asyncio.create_task(self._idle_changed.wait());continue
+                raise TimeoutError()
+            budget=self.timeout if owner is not None else max(0,deadline-loop.time())
+            return lead+await asyncio.wait_for(self.r.readexactly(4),budget)
+        finally:
+            for task in (first,change):
+                if not task.done():task.cancel()
+            await asyncio.gather(first,change,return_exceptions=True)
+
     async def _reader(self):
         try:
             while True:
-                header = await asyncio.wait_for(self.r.readexactly(5), self.timeout)
+                if getattr(self,"_online_issuance_claimed",False):header = await self._header()
+                else:header = await asyncio.wait_for(self.r.readexactly(5), self.timeout)
                 kind = header[:1]
                 n = struct.unpack('!I', header[1:])[0]
+                # Latch rejection at D-header observation, before any body await.
+                # Buffered bytes processed only after ready cannot reveal send time.
+                if kind==b'D' and self._receipt_state not in (None,'ready'):
+                    raise ChannelError('receipt receiver is not prepared')
                 bound = MAX_PAYLOAD + MAX_HEADER + PREFIX.size + 32 if kind == b'D' else 20
+                if kind==b'D' and self._receipt_state is not None:
+                    bound=min(bound,65536)  # private receipt complete-frame cap, not RSS
                 if n > bound or kind not in (b'H', b'C', b'D'):
                     raise ChannelError('frame bound/type')
                 if kind == b'D' and (self._used_tiles >= self.capacity_tiles or n > self.capacity_bytes - self._used_bytes + MAX_HEADER + PREFIX.size + 32):
@@ -177,11 +279,25 @@ class Channel:
         finally:
             self._abort()
 
-    async def send(self, envelope):
-        envelope.validate()
-        if not any((g.permits(envelope) for g in self.grants)):
+    async def send(self, envelope, *, max_frame_bytes=None, write_fence=None):
+        # Serialize before credit reservation or wire I/O. The exact bytes checked
+        # here are sent after the await, never a second potentially changed encoding.
+        frame = envelope.encode()
+        if type(frame) is not bytes:
+            raise ValueError('immutable encoded envelope required')
+        if max_frame_bytes is not None:
+            if (type(max_frame_bytes) is not int
+                    or not 1 <= max_frame_bytes <= MAX_PAYLOAD + MAX_HEADER + PREFIX.size + 32):
+                raise ValueError('invalid complete envelope bound')
+            if len(frame) > max_frame_bytes:
+                raise ValueError('complete envelope exceeds receiver bound')
+        # Caller fields / dynamic encode overrides are not an authority. Decode
+        # the frozen bytes and use only that wire identity and payload for grants
+        # and credits. A valid but different encoding gets no caller privilege.
+        wire_envelope = decode(frame)
+        if not any((g.permits(wire_envelope) for g in self.grants)):
             raise ChannelError('unauthorized context')
-        size = len(envelope.payload)
+        size = len(wire_envelope.payload)
 
         async def reserve():
             async with self._condition:
@@ -197,12 +313,13 @@ class Channel:
                     await self._condition.wait()
         await asyncio.wait_for(reserve(), self.timeout)
         try:
-            await self._frame(b'D', envelope.encode())
+            if write_fence is None:await self._frame(b'D', frame)
+            else:await self._frame(b'D', frame,write_fence=write_fence)
         except BaseException:
             self._abort()
             raise
 
-    async def receive(self):
+    async def receive(self,*,_session_owner=None):
 
         async def get():
             async with self._condition:
@@ -211,7 +328,11 @@ class Channel:
                         raise ChannelError('disconnected') from self._error
                     await self._condition.wait()
                 return self._queue.get_nowait()
-        return await asyncio.wait_for(get(), self.timeout)
+        budget=self.timeout
+        if _session_owner is not None:
+            if _session_owner is not self._session_idle_owner:raise ChannelError("foreign session owner")
+            _session_owner.check();budget=max(0,_session_owner.deadline-asyncio.get_running_loop().time())
+        return await asyncio.wait_for(get(), budget)
 
     async def _release(self, size):
         self._used_bytes -= size
@@ -234,12 +355,66 @@ class Channel:
         except Exception:
             pass
 
-async def accept(reader, writer, config, grants, **kwargs):
+async def _failed_owned_stream(error, channel, writer, timeout):
+    """Retain and join local cleanup even if its caller is cancelled again."""
+    async def cleanup():
+        errors=[]
+        if channel is not None:
+            channel._identity_loop_check()
+            try:await channel.close()
+            except BaseException as exc:
+                errors.append(exc)
+                try:await asyncio.wait_for(writer.wait_closed(),timeout)
+                except BaseException as wait_error:errors.append(wait_error)
+            finally:
+                if not channel._task.done():channel._task.cancel()
+                await asyncio.gather(channel._task,return_exceptions=True)
+        else:
+            try:writer.close()
+            except BaseException as exc:errors.append(exc)
+            try:await asyncio.wait_for(writer.wait_closed(),timeout)
+            except BaseException as exc:errors.append(exc)
+        if errors:raise BaseExceptionGroup('supplied transport cleanup failed',errors)
+    task=asyncio.create_task(cleanup());cancelled=None
+    while not task.done():
+        try:await asyncio.shield(task)
+        except asyncio.CancelledError as exc:cancelled=exc
+        except BaseException:break
+    errors=[error]
+    try:task.result()
+    except BaseException as exc:errors.append(exc)
+    if cancelled is not None and cancelled is not error:errors.append(cancelled)
+    if len(errors)>1:raise BaseExceptionGroup('transport construction/start failed',errors)
+    raise error
+
+
+async def _accept_unstarted(reader, writer, config, grants, **kwargs):
+    """Private supplied-stream seam: validates TLS, starts reader, sends NO H.
+
+    Ownership transfers to this helper, including on constructor failure. It does
+    not mark a B receipt gate ready. PreparedReceipt alone owns that transition.
+    """
     try:
-        return await Channel(reader, writer, config, grants, **kwargs).start()
-    except BaseException:
-        writer.close()
-        raise
+        kwargs.setdefault('_single_start',True)
+        return Channel(reader,writer,config,grants,**kwargs)
+    except BaseException as error:
+        await _failed_owned_stream(error,None,writer,kwargs.get('timeout',10))
+
+
+async def _connect_unstarted(host, port, config, grants, server_hostname, **kwargs):
+    """Private TLS dial returning a Channel before local H; no retry policy."""
+    r,w=await asyncio.wait_for(asyncio.open_connection(host,port,ssl=config.context(),
+        server_hostname=server_hostname),kwargs.get('timeout',10))
+    return await _accept_unstarted(r,w,config,grants,**kwargs)
+
+
+async def accept(reader, writer, config, grants, **kwargs):
+    kwargs.setdefault('_single_start',False) # preserve legacy ordinary repeat-start
+    channel=await _accept_unstarted(reader,writer,config,grants,**kwargs)
+    try:return await channel.start()
+    except BaseException as error:
+        await _failed_owned_stream(error,channel,writer,kwargs.get('timeout',10))
+
 
 async def connect(host, port, config, grants, server_hostname, **kwargs):
     r, w = await asyncio.wait_for(asyncio.open_connection(host, port, ssl=config.context(), server_hostname=server_hostname), kwargs.get('timeout', 10))
