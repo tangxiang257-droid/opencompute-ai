@@ -7,7 +7,8 @@ Caller owns and must cancel/join any task invoking install; close retires transp
 and journals, including a journal awaiting the B preparation barrier.
 """
 import asyncio
-from .channel import _accept_unstarted
+from contextlib import contextmanager
+from .channel import _accept_unstarted,Channel,ChannelIdentity
 from .online_issuance import RoleInstallStore
 from .online_issuance_transport import IssuanceClient, _copy
 from .prepared_receipt import PreparedReceiptConnection, _retire_failed
@@ -17,6 +18,32 @@ from .delivery_receipt import _with_cleanup
 
 def _methods(provider,names):
     _need(provider is not None and all(callable(getattr(provider,n,None)) for n in names))
+
+def _installation_identity_mode(identity,mode):
+    _need(mode is None or type(mode)is str and mode=='channel')
+    if mode is None:_methods(identity,('hold',))
+    else:_need(identity is None)
+
+class _InstallationIdentity:
+    """Exact issuer connection -> principal; not node policy or task permission."""
+    def __init__(self,channel,node,certificate):
+        _need(type(channel)is Channel);peer=channel.authenticated_identity
+        _need((peer.node_id,peer.certificate_sha256)==(node,certificate))
+        self.channel=channel;self.peer=peer;self.principal=node;self.retired=False
+        self._pin=(channel,channel.r,channel.w,peer,node,channel.identity_fence)
+        with channel.identity_fence(peer):self._check()
+    def _check(self):
+        c=self.channel
+        _need(not self.retired and self._pin==(c,c.r,c.w,self.peer,self.principal,c.identity_fence))
+        _need(c.authenticated_identity==self.peer)
+    @contextmanager
+    def hold(self,actual):
+        try:
+            self._check();_need(type(actual)is ChannelIdentity and actual==self.peer)
+            with self._pin[-1](self.peer):
+                self._check();yield self.principal;self._check()
+                with self._pin[-1](self.peer):self._check()
+        except BaseException:self.retired=True;raise
 
 async def _close_channel(channel):
     try:await channel.close()
@@ -29,10 +56,11 @@ class RoleStartup:
 
     @classmethod
     async def create(cls,reader,writer,config,grants,store,descriptor,*,
-                     issuer_node,issuer_certificate,identity=None,authorize=None,
+                     issuer_node,issuer_certificate,identity=None,identity_mode=None,authorize=None,
                      resources=None,completion=None,runtime=None):
         """Take ownership of supplied writer even on rejected construction."""
         obj=object.__new__(cls);obj.client=None;obj.channel=None;obj.journal=None
+        obj._channel_identity=None
         obj.prepared=None;obj.descriptor=None;obj._close_task=None;delegated=False
         obj._attempted=False;obj._closed=False;obj.store=store;obj.runtime=None
         obj.stage=descriptor.get('stage') if type(descriptor)is dict else None
@@ -44,13 +72,17 @@ class RoleStartup:
             _need(type(runtime)is dict);obj.runtime=dict(runtime)
             obj.descriptor=_copy(descriptor)
             obj._preflight()
-            for p in (identity,authorize,resources):_methods(p,('hold',))
+            _installation_identity_mode(identity,identity_mode)
+            for p in (authorize,resources):_methods(p,('hold',))
             _methods(completion,('check','begin','finish','quarantine'))
             delegated=True
             obj.channel=await _accept_unstarted(reader,writer,config,grants,capacity_bytes=32768,capacity_tiles=1)
+            if identity_mode=='channel':
+                identity=_InstallationIdentity(obj.channel,issuer_node,issuer_certificate);obj._channel_identity=identity
             obj.client=IssuanceClient(obj.channel,store,descriptor,issuer_node=issuer_node,
                 issuer_certificate=issuer_certificate,identity=identity,authorize=authorize,
                 resources=resources,completion=completion)
+            if identity_mode=='channel':_need(obj.client.identity is identity and obj._channel_identity is identity)
             return obj
         except BaseException as error:
             if delegated and obj.channel is None:raise
@@ -58,6 +90,10 @@ class RoleStartup:
 
     def _preflight(self):
         _need(not self._closed);self.store.ready();_methods(self.store.resources,('hold_control',))
+        if self._channel_identity is not None:
+            _need(self.client.identity is self._channel_identity and self._channel_identity.channel is self.channel)
+            self.client.ready()
+            self._channel_identity._check()
         r=self.runtime
         d=self.descriptor;stage=d['declaration']['stages'][self.stage]
         _need(r.get('instance')==d['instance'] and r.get('layer_range')==(stage['layer_start'],stage['layer_end']))

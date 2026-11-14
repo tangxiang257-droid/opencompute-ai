@@ -10,7 +10,7 @@ import asyncio,hashlib,os,re,stat
 from pathlib import Path
 from .control_exchange import _need
 from .online_issuance_transport import _json,_parse
-from .role_startup import RoleStartup,_methods,_close_channel
+from .role_startup import _installation_identity_mode,RoleStartup,_methods,_close_channel
 from .role_assembly import InstalledStageRole
 from .role_resources import RoleResources
 from .online_issuance import RoleInstallStore
@@ -144,14 +144,14 @@ class _Owner:
    raise
   if cancelled is not None:raise cancelled
 
-def _stage_preflight(config,store,d,*,identity=None,authorize=None,resources=None,completion=None,runtime=None):
+def _stage_preflight(config,store,d,*,identity=None,identity_mode=None,authorize=None,resources=None,completion=None,runtime=None):
  _need(type(config)is LaunchConfig and config.data['role'] in ('A','B'))
  config.bound(d);c=config.data
  _need(not os.path.lexists(config.path('claim')))
  _need(type(store)is RoleInstallStore and type(resources)is RoleResources and store.resources is resources)
  _need(type(runtime)is dict and set(runtime)=={'instance','layer_range','authority','resources','ticket','device','loader','factories'})
  _need(runtime['resources'] is resources and runtime['instance']==d['instance'] and runtime['ticket'] is not None)
- for provider in (identity,authorize):_methods(provider,('hold',))
+ _installation_identity_mode(identity,identity_mode);_methods(authorize,('hold',))
  _methods(completion,('check','begin','finish','quarantine'))
  _methods(runtime['authority'],('hold_load',)+(('hold_stage0',) if c['role']=='A' else ('hold_call','finalize')))
  _methods(runtime['device'],('hold_load','open_scope','require_open','materialize','finish_scope','require_finished','quarantine'))
@@ -165,9 +165,9 @@ def _stage_preflight(config,store,d,*,identity=None,authorize=None,resources=Non
 class StageLauncher(_Owner):
  def __init__(self):raise TypeError('use await create')
  @classmethod
- async def create(cls,config,reader,writer,tls,grants,store,d,*,identity=None,authorize=None,resources=None,completion=None,runtime=None):
+ async def create(cls,config,reader,writer,tls,grants,store,d,*,identity=None,identity_mode=None,authorize=None,resources=None,completion=None,runtime=None):
   _need(cls is StageLauncher)
-  c=_stage_preflight(config,store,d,identity=identity,authorize=authorize,resources=resources,completion=completion,runtime=runtime)
+  c=_stage_preflight(config,store,d,identity=identity,identity_mode=identity_mode,authorize=authorize,resources=resources,completion=completion,runtime=runtime)
   _need(not getattr(writer,'_launcher_owned',False))
   config.claim();self=object.__new__(cls);self._init_owner(config);writer._launcher_owned=True
   self.startup=None;self.installed=None;self.operation=None;self.control=None;self.gate=None
@@ -175,7 +175,10 @@ class StageLauncher(_Owner):
   self._install_attempted=False;self._installed_ready=False;self._attached_ready=False;self._attach_attempted=False;self._operation_attempted=False
   self._providers=(identity,authorize,resources,completion);self._runtime=dict(runtime)
   async def create():
-   self.startup=await RoleStartup.create(reader,writer,tls,grants,store,d,issuer_node=c['issuer_node'],issuer_certificate=c['issuer_certificate'],identity=identity,authorize=authorize,resources=resources,completion=completion,runtime=runtime)
+   self.startup=await RoleStartup.create(reader,writer,tls,grants,store,d,issuer_node=c['issuer_node'],issuer_certificate=c['issuer_certificate'],identity=identity,identity_mode=identity_mode,authorize=authorize,resources=resources,completion=completion,runtime=runtime)
+   if identity_mode=='channel':
+    _need(self.startup.client.identity is self.startup._channel_identity and self.startup._channel_identity is not None)
+    self._providers=(self.startup._channel_identity,authorize,resources,completion)
    self._watch(self.startup.channel);return self
   return await self._run(create)
  def check(self):

@@ -63,6 +63,8 @@ class _IssuanceEndpoint(_HistoryEndpoint):
         _need(type(scope['epoch'])is int and scope['epoch']==1 and type(scope['stage'])is int and scope['stage'] in (0,1))
         _hex(scope['model']);self._scope=_copy(scope)
         self.identity=identity;self.authorize=authorize;self.resources=resources
+        _need(callable(getattr(identity,'hold',None)))
+        self._identity_callback=(identity,identity.hold);self._identity_retired=False
         self._attempted=False;self._principal=None;self._session=None;self._installed=False
         _need(not getattr(channel,'_online_issuance_claimed',False) and not channel._start_attempted)
         self.ready();channel._single_start=True;channel._online_issuance_claimed=True
@@ -76,18 +78,23 @@ class _IssuanceEndpoint(_HistoryEndpoint):
         finally:await super()._close_transport()
     def ready(self):
         self.current();_need(not self._closed)
+        if self._identity_callback!=(self.identity,getattr(self.identity,'hold',None)):self._identity_retired=True
+        _need(not self._identity_retired)
         for provider in (self.identity,self.authorize,self.resources):
             _need(callable(getattr(provider,'hold',None)))
     @contextmanager
     def fence(self,binding,action,*,expected_principal=None):
         self.ready()
-        with self.channel.identity_fence(self._identity),_context(self.identity.hold(self._identity)) as principal:
+        with self.channel.identity_fence(self._identity),_context(self._identity_callback[1](self._identity)) as principal:
+            self.ready()
             _need(type(principal)is str and 0<len(principal)<=128)
             if expected_principal is not None:_need(principal==expected_principal)
             if self._principal is None:self._principal=principal
             else:_need(principal==self._principal)
             with _context(self.authorize.hold(principal,self._identity,_copy(binding),action)) as allowed:
-                _nothing(allowed);yield principal
+                _nothing(allowed);self.ready();yield principal;self.ready()
+            self.ready()
+        self.ready()
     async def send(self,body,sequence):
         self.current()
         await self.channel.send(self.envelope(self._scope,sequence,_json(body)),max_frame_bytes=65536,write_fence=getattr(self,'_write_fence',None))

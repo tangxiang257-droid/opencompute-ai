@@ -13,12 +13,12 @@ from .prepared_receipt import _retire_failed
 from .delivery_receipt import _with_cleanup
 from .tls_material import load_context
 
-async def dial_stage(config,host,port,tls,grants,store,d,*,material=None,material_pin=None,server_hostname=None,enabled=False,timeout=10,identity=None,authorize=None,resources=None,completion=None,runtime=None):
+async def dial_stage(config,host,port,tls,grants,store,d,*,material=None,material_pin=None,server_hostname=None,enabled=False,timeout=10,identity=None,identity_mode=None,authorize=None,resources=None,completion=None,runtime=None):
  _need(enabled is True)
  _need(type(material)is bytes and type(material_pin)is str)
  for value in (host,server_hostname):_need(type(value)is str and 0<len(value)<=253 and not any(c.isspace() or ord(c)<32 for c in value))
  _need(type(port)is int and 1<=port<=65535 and type(timeout) in (int,float) and math.isfinite(timeout) and 0<timeout<=10)
- opts=dict(identity=identity,authorize=authorize,resources=resources,completion=completion,runtime=runtime)
+ opts=dict(identity=identity,identity_mode=identity_mode,authorize=authorize,resources=resources,completion=completion,runtime=runtime)
  c=_stage_preflight(config,store,d,**opts)
  _need(type(tls)is TLSConfig and tls.peers=={c['issuer_node']:c['issuer_certificate']})
  _need(type(grants)is dict and set(grants)=={c['issuer_node']} and type(grants[c['issuer_node']]) in (set,frozenset) and bool(grants[c['issuer_node']]))
