@@ -55,6 +55,7 @@ def _import(value,b,stage,charge):
 
 async def announce_control(launcher):
  """Role-local only. Requires installed operation/control and attached action gate."""
+ need(not getattr(launcher,'_control_assembly_pending',False) or asyncio.current_task() is launcher._control_assembly_task)
  need(type(launcher)is StageLauncher and launcher._attached_ready and launcher._actions_ready and asyncio.current_task() not in launcher._jobs)
  installed=launcher.installed;service=installed.role._service;channel=service.channel
  need(not getattr(channel,'_descriptor_bootstrap_attempted',False) and service._sequence==0 and not service._running and installed._active is None)
@@ -160,4 +161,66 @@ async def receive_control(a,credential,pid,sha,stage,channel,*,identity=None,res
   a._unknown(pid);cleanup=asyncio.create_task(_close_channel(channel))
   try:await _settle(cleanup)
   except BaseException as cleanup:raise _with_cleanup(error,cleanup)
+  raise
+
+async def bind_control_ready(launcher,reader,writer,tls,grants,action_channel,*,enabled=False,identity=None,authorize=None,action_identity=None,clock=None,authority_node=None,authority_certificate=None):
+ """Role-local attach/actions/announce, using existing owners and records.
+
+ Trusted bootstrap supplies providers and authenticated streams. No provider
+ discovery, process/listener, credential or execution authority is created.
+ Before take, supplied streams remain caller-owned on rejection. After take,
+ every failure closes adopted and unadopted transports; eligibility/charge stay
+ consumed/unknown. READY does not prove central receipt or physical device stop.
+ """
+ need(enabled is True and type(launcher)is StageLauncher)
+ need(not getattr(launcher,'_control_assembly_attempted',False) and asyncio.current_task() not in launcher._jobs)
+ launcher.check()
+ need(launcher._installed_ready and launcher.operation is not None and not launcher._attach_attempted and not launcher._actions_attempted)
+ session=launcher.startup.client._session
+ need(session is not None and session.active);session.check()
+ for p in (identity,authorize,action_identity):need(callable(getattr(p,'hold',None)))
+ need(callable(getattr(clock,'sample',None)))
+ from private_experiment_actions import sample
+ sample(clock)
+ need(type(authority_node)is str and authority_node==launcher.config.data['issuer_node'])
+ need(authority_certificate==launcher.config.data['issuer_certificate'])
+ need(type(action_channel)is Channel and not action_channel._start_attempted and writer is not action_channel.w)
+ need(not any(getattr(action_channel,k,False) or getattr(action_channel.w,k,False) for k in _FLAGS))
+ launcher._available_writer(writer);launcher._available_writer(action_channel.w)
+ # Existing complete purpose checks and ownership happen before any await.
+ launcher._take_channel(action_channel)
+ launcher._control_assembly_attempted=True;launcher._control_assembly_pending=True;launcher._control_assembly_task=asyncio.current_task()
+ try:
+  role=await launcher.attach(reader,writer,tls,grants,identity=identity,authorize=authorize)
+  control=launcher.control;service=role.role._service
+  need(control.w is writer and service.channel is control and launcher.installed is role)
+  await launcher._attach_taken_actions(action_channel,authority_node=authority_node,authority_certificate=authority_certificate,identity=action_identity,clock=clock)
+  await announce_control(launcher)
+  launcher.check();session.check()
+  need(launcher.installed is role and launcher.control is control and role.role._service is service and service.channel is control)
+  need(launcher._control_assembly_task is asyncio.current_task())
+  control._descriptor_bootstrap_pending=False;launcher._control_assembly_pending=False;launcher._control_assembly_task=None
+  return role
+ except BaseException as error:
+  errors=[]
+  # All adopted transports already belong to launcher. Never create a second
+  # task which joins an external close that is itself waiting for this caller.
+  if not getattr(writer,'_launcher_owned',False):
+   async def orphan():
+    failures=[]
+    try:writer.close()
+    except BaseException as failure:failures.append(failure)
+    try:await asyncio.wait_for(writer.wait_closed(),10)
+    except BaseException as failure:failures.append(failure)
+    if failures:raise BaseExceptionGroup('unadopted control stream cleanup unknown',failures)
+   try:await _settle(asyncio.create_task(orphan()))
+   except BaseException as failure:errors.append(failure)
+  close=launcher._close_task
+  try:
+   if close is None or launcher._close_caller is asyncio.current_task():await launcher.close()
+   elif close.done():close.result()
+   # Otherwise the original external owner retains/joins close; this caller
+   # must exit so that owner's snapshot of jobs can settle. No refund/stop ACK.
+  except BaseException as failure:errors.append(failure)
+  if errors:raise _with_cleanup(error,BaseExceptionGroup('role control assembly cleanup unknown',errors))
   raise

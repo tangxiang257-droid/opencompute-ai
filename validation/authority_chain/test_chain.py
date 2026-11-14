@@ -150,7 +150,8 @@ class Chain(InputBase):
    @contextmanager
    def owner(*args):yield self.owner
    args=dict(execution_authorize=owner) if stage==0 else dict(prepared=prepared)
-   await asyncio.gather(service.serve_once(),launch.install(**args))
+   policy=getattr(self,'installation_session_policy',None)
+   await asyncio.gather(service.serve_once(session_policy=policy),launch.install(**args,session_policy=policy))
  async def register_role(self,stage,spec,operation,*,bind=True):
   launch=self.launchers[stage];node=self.body['placements'][stage]['node'];cr,cw,sr,sw=wire.streams('controller',node)
   g=Grant(spec.request,spec.session,1,stage,(0,1),spec.model,2)

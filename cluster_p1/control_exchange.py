@@ -188,6 +188,7 @@ class ControlService(_Endpoint):
     def _fail(self,binding):
         with self.fence(binding,'fail'):return self.journal.fail(*self._call[:3])
     async def serve_once(self):
+        _need(not getattr(self.channel,'_descriptor_bootstrap_pending',False))
         _need(not getattr(self.channel,'_descriptor_bootstrap_attempted',False) or getattr(self.channel,'_descriptor_bootstrap_ready',False))
         self.ready();_need(not self._running and self._call is not None and self._operation is not None)
         self._running=True;delivery=None;consumed=False;binding=self._call[2]

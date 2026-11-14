@@ -1,16 +1,11 @@
 """Same actual A/B/C pipeline with explicit original-install session policy; LAB."""
 import unittest
-from unittest.mock import patch
 from validation.control_bootstrap.test_topology import Topology
-from cluster_p1.role_launcher import StageLauncher
-from cluster_p1.online_issuance_transport import IssuanceService
 from cluster_p1.installation_session import SessionPolicy
 class Pipeline(Topology):
  async def install_stages(self):
-  policy=SessionPolicy();a=StageLauncher.install;b=IssuanceService.serve_once
-  async def role(obj,**kw):return await a(obj,**dict(kw,session_policy=policy))
-  async def issuer(obj,**kw):return await b(obj,**dict(kw,session_policy=policy))
-  with patch.object(StageLauncher,'install',role),patch.object(IssuanceService,'serve_once',issuer):await super().install_stages()
+  self.installation_session_policy=SessionPolicy()
+  await super().install_stages()
  async def test_actual_chain_uses_active_original_sessions(self):
   await self.run_chain()
   for stage in (0,1):

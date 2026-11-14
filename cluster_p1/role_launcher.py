@@ -202,6 +202,7 @@ class StageLauncher(_Owner):
   self._attach_attempted=True;writer._launcher_owned=True
   async def attach():
    self.control=await _accept_unstarted(reader,writer,tls,grants,capacity_bytes=32768,capacity_tiles=1)
+   if getattr(self,'_control_assembly_pending',False):self.control._descriptor_bootstrap_pending=True
    c=self.config.data
    self.installed=await InstalledStageRole.attach(self.startup,self.operation,self.control,self.config.path('control'),coordinator_node=c['coordinator_node'],charge=c['charge'],control_budget=c['control_budget'],identity=identity,authorize=authorize)
    self._watch(self.control);await self.control.start();self.check();self._attached_ready=True;return self.installed
@@ -218,11 +219,20 @@ class StageLauncher(_Owner):
   Does not create identity, execution/resource authority or device providers.
   Missing/failed attachment permanently seals this launcher, with no retry.
   """
-  from private_experiment_actions import ActionGate
+  _need(not getattr(self,'_control_assembly_pending',False) or asyncio.current_task() is self._control_assembly_task)
   try:
    self.check();_need(self._attached_ready and self.installed is not None and not self._actions_attempted)
-   self._actions_attempted=True
    self._take_channel(channel)
+   return await self._attach_taken_actions(channel,authority_node=authority_node,authority_certificate=authority_certificate,identity=identity,clock=clock)
+  except BaseException:self._seal();raise
+ async def _attach_taken_actions(self,channel,*,authority_node=None,authority_certificate=None,identity=None,clock=None):
+  """Finish only a transport already exclusively taken by this launcher."""
+  from private_experiment_actions import ActionGate
+  _need(not getattr(self,'_control_assembly_pending',False) or asyncio.current_task() is self._control_assembly_task)
+  try:
+   self.check();_need(self._attached_ready and self.installed is not None and not self._actions_attempted)
+   _need(any(channel is owned for owned in self._extra_channels) and not channel._start_attempted)
+   self._actions_attempted=True
    self.actions=ActionGate(channel,authority_node=authority_node,authority_certificate=authority_certificate,identity=identity,clock=clock)
    self._actions_pin=self.actions;self.actions.attach_installed(self.installed)
    async def attach():
@@ -230,6 +240,7 @@ class StageLauncher(_Owner):
    return await self._run(attach)
   except BaseException:self._seal();raise
  async def serve_once(self):
+  _need(not getattr(self,'_control_assembly_pending',False))
   self.check();_need(self._attached_ready and self.installed is not None)
   _need(not self._actions_attempted or self._actions_ready)
   return await self._run(self.installed.serve_once)
