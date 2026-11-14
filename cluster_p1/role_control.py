@@ -68,6 +68,9 @@ class RegisteredRole:
         obj=object.__new__(cls)
         obj._service=service;obj._operation=operation;obj._completion=completion
         obj._scope=None;obj._quarantined=False;obj._descriptor=descriptor
+        bind_control=getattr(completion,'bind_control',None)
+        if bind_control is not None:
+            _need(callable(bind_control));_nothing(bind_control(service.journal,descriptor))
         service.bind(spec,obj._invoke,command,reservation,charge)
         return obj
     def _quarantine(self):

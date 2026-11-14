@@ -131,6 +131,7 @@ class _Resources:
     def quarantine(self,spec,ticket,scope):nothing(self.p.quarantine(spec,ticket,scope))
 
 class _BoundAuthority:
+    def __getattr__(self,name):return getattr(self.parent,name)
     def __init__(self,parent,check):self.parent=parent;self.check=check
     @contextmanager
     def hold_call(self,spec,token):
@@ -176,8 +177,15 @@ async def run_one_token(*,spec,policy,sender,receiver,artifacts,source_book,dest
     need(type(artifacts)is _Ledger)
     if asynchronous:conduit.validate_journal(receiver)
     need(type(source_book)is Book and type(destination_book)is Book)
+    from .local_stage_operations import StageAOperation,StageBOperation
     required=policy.requirements(spec);factory=factories or _factories
-    ticket=None;reservation_started=False;bridge=CompletionBridge(device);driver=None;sink=None;owner0=None;backends=[];spool=None;scope0=None;journal=None;load_started=False;result=None
+    class LegacyResources:
+        # Existing full-pipeline reservation already covers both stages. This
+        # adapter preserves the legacy verifier; split roles require verify_stage.
+        def verify_stage(self,actual,ticket,stage):nothing(resources.verify_stage1(actual,ticket))
+        def quarantine(self,*args):nothing(resources.quarantine(*args))
+    local_resources=LegacyResources();op_a=None;op_b=None
+    ticket=None;reservation_started=False;sink=None;spool=None;journal=None;result=None
     @contextmanager
     def authority_scope(factory):
         if control is None:
@@ -254,19 +262,15 @@ async def run_one_token(*,spec,policy,sender,receiver,artifacts,source_book,dest
                 need(c.execute('SELECT 1 FROM assembly_calls WHERE id=?',(result_key,)).fetchone() is None)
                 c.execute('INSERT INTO assembly_calls VALUES(?,?)',(result_key,spec.digest))
             async def stage0_body():
-                nonlocal load_started,owner0,scope0
+                nonlocal op_a
                 source_context();need(sender.query(0) is None)
-                load_started=True
-                with _non_suppressing(authority.hold_load(spec,0)) as value,_non_suppressing(device.hold_load(spec,0)) as completed:
-                    nothing(value);nothing(completed);loaded=synchronous(loader.load(0,spec));need(type(loaded)is Loaded and loaded.model==spec.model and loaded.layout==spec.layout and loaded.instance==assignments[0][3] and loaded.layer_range==ranges[0])
-                    backend0=factory(0,loaded,spec,bridge);backends.append((backend0,spec))
-                scope0=uuid.uuid4().hex;bridge.open_scope(spec,0,scope0)
-                owner0=sender.make_owner(lambda value,**kw:backend0.operation(scope0,value,**kw),(tokens,),instance_id=loaded.instance)
+                op_a=StageAOperation(spec,policy,sender,tokens,instance=assignments[0][3],layer_range=ranges[0],
+                    authority=authority,resources=local_resources,ticket=ticket,device=device,loader=loader,factories=factory)
+                scope=uuid.uuid4().hex;op_a.begin(scope)
                 with authority_scope(lambda:authority.hold_stage0(spec)) as value:
-                    nothing(value);await owner0.call(tokens,token_start=0,token_count=1)
-                await owner0.close();owner0=None
-                row=sender.query(0);need(row is not None and row['state']=='OUTPUT_COMMITTED')
-                return {'output_digest':hashlib.sha256(row['output']).hexdigest()}
+                    nothing(value);metadata=await op_a(scope)
+                op_a.finish(scope)
+                return metadata
             if control is None:await stage0_body()
             else:
                 descriptor=control.describe(0,spec)
@@ -280,21 +284,20 @@ async def run_one_token(*,spec,policy,sender,receiver,artifacts,source_book,dest
             need(type(received)is bytes and received==raw)
             if not asynchronous:receiver.make_receiver().receive_bytes(received)
             hidden=committed_hidden();actual=replace(spec,inputs=(hashlib.sha256(hidden).hexdigest(),))
-            def stage1_body():
-                nonlocal driver,sink,journal,spool,result
+            async def stage1_body():
+                nonlocal op_b,sink,journal,spool,result
                 need(committed_hidden()==hidden)
-                nothing(resources.verify_stage1(actual,ticket))
-                with _non_suppressing(authority.hold_load(actual,1)) as value,_non_suppressing(device.hold_load(actual,1)) as completed:
-                    nothing(value);nothing(completed);loaded=synchronous(loader.load(1,actual));need(type(loaded)is Loaded and loaded.model==spec.model and loaded.layout==spec.layout and loaded.instance==assignments[1][3] and loaded.layer_range==ranges[1])
-                    backend1=factory(1,loaded,actual,bridge);backends.append((backend1,actual))
-                spool=Spool(spool_root,source_book,destination_book,result_key,bp);sink=_PushSpool(spool,actual)
-                journal=Journal(journal_path,actual)
-                driver=Driver(journal,actual,policy,authority=_BoundAuthority(authority,lambda:need(committed_hidden()==hidden)),
-                              resources=_Resources(resources,ticket),backend=backend1,completion=bridge,sink=sink)
-                result=driver.run(0,hidden)
-                need(result.output_digest==sink.digest.hexdigest())
-                return {'output_digest':result.output_digest}
-            if control is None:stage1_body()
+                spool=Spool(spool_root,source_book,destination_book,result_key,bp)
+                op_b=StageBOperation(actual,policy,receiver,spool,journal_path=journal_path,
+                    instance=assignments[1][3],layer_range=ranges[1],
+                    authority=_BoundAuthority(authority,lambda:need(committed_hidden()==hidden)),
+                    resources=local_resources,ticket=ticket,device=device,loader=loader,factories=factory)
+                scope=uuid.uuid4().hex;op_b.begin(scope)
+                try:
+                    metadata=await op_b(scope);op_b.finish(scope)
+                    return metadata
+                finally:sink,journal,result=op_b.sink,op_b.journal,op_b.result
+            if control is None:await stage1_body()
             else:
                 descriptor=control.describe(1,actual)
                 nothing(await resources.bind_control(actual,ticket,1,descriptor))
@@ -336,7 +339,7 @@ async def run_one_token(*,spec,policy,sender,receiver,artifacts,source_book,dest
             return {'manifest_digest':digest,'output_bytes':spec.output_bytes,'execution_allowed':False,'computation_verified':False}
     except BaseException as error:
         failures=[]
-        for action in ([lambda:driver.retire()] if driver else [])+([lambda:sink.quarantine()] if sink else [])+([lambda:bridge.quarantine(scope0)] if scope0 else [])+([lambda:resources.quarantine(spec,ticket,None)] if reservation_started else [])+([lambda:loader.quarantine(spec)] if load_started else [])+([lambda:source_book.isolate(result_key),lambda:destination_book.isolate(result_key)] if reservation_started else [])+[lambda b=b,s=s:b.retire(s) for b,s in backends]:
+        for action in ([op_a.quarantine] if op_a is not None else [])+([op_b.quarantine] if op_b is not None else [])+([lambda:resources.quarantine(spec,ticket,None)] if reservation_started else [])+([lambda:source_book.isolate(result_key),lambda:destination_book.isolate(result_key)] if reservation_started else []):
             try:action()
             except BaseException as e:failures.append(e)
         if control is not None:
@@ -348,7 +351,4 @@ async def run_one_token(*,spec,policy,sender,receiver,artifacts,source_book,dest
         if failures:raise BaseExceptionGroup('pipeline failed; quarantine may be unknown',[error,*failures]) from None
         raise
     finally:
-        try:
-            if owner0 is not None:await owner0.close()
-        finally:
-            if journal is not None:journal.close()
+        if journal is not None:journal.close()

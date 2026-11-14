@@ -137,14 +137,16 @@ class Driver:
         journal.bind(spec,self.instance)
         self.authority=authority;self.resources=resources;self.backend=backend;self.completion=completion;self.sink=sink
         self._stop=threading.Event();self._lock=threading.Lock();self._thread=None
-        self._next=0;self._ticket=None;self._reservation_started=False;self._scope=None;self._backend_touched=False;self._admitted=False
+        self._next=0;self._ticket=None;self._reservation_started=False;self._scope=None;self._backend_touched=False;self._admitted=False;self._used_scopes=set()
     def retire(self):self._stop.set();self.journal.retire()
     def check(self,token):
         need(not self._stop.is_set());self.journal.check(self.spec,self.instance,token)
-    def run(self,token,value):
+    def run(self,token,value,*,scope=None):
         if not self._lock.acquire(blocking=False):self.retire();raise Denied('busy stage retired')
         try:
             self.check(self._next)
+            need(scope is None or (type(scope)is str and re.fullmatch('[A-Za-z0-9_-]{1,128}',scope) is not None))
+            need(scope is None or scope not in self._used_scopes)
             need(type(token)is int and token==self._next and 0<=token<len(self.spec.inputs))
             need(all(x is not None for x in (self.authority,self.resources,self.backend,self.completion,self.sink)))
             if self._thread is None:self._thread=threading.get_ident()
@@ -161,7 +163,8 @@ class Driver:
                     need(self._ticket is not None and type(self._ticket)is not bool)
                 nothing(self.resources.verify_token(self.spec,self._ticket,token))
                 self.check(token);self.journal.admit(self.spec,self.instance,token,self.spec.inputs[token]);self._admitted=True
-                self._scope=uuid.uuid4().hex
+                self._scope=uuid.uuid4().hex if scope is None else scope
+                self._used_scopes.add(self._scope)
                 nothing(self.completion.open_scope(self.spec,token,self._scope))
                 self.check(token);self._backend_touched=True;nothing(self.backend.check_binding(self.spec))
                 handle=synchronous(self.backend.prepare_token(self._scope,value,token))
