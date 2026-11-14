@@ -66,6 +66,18 @@ class LaunchConfig:
   # Permanent local occupancy, not authority. Never delete or resume this marker.
   self.check()
 
+def _cleanup_failure(error):
+ # Cancellation is harmless only when its entire retained exception graph is.
+ pending=[error];seen=set()
+ while pending:
+  item=pending.pop()
+  if id(item) in seen:continue
+  seen.add(id(item))
+  if isinstance(item,BaseExceptionGroup):pending.extend(item.exceptions)
+  elif not isinstance(item,asyncio.CancelledError):return True
+  pending.extend(x for x in (item.__cause__,item.__context__) if x is not None)
+ return False
+
 class _Owner:
  def _init_owner(self,config):
   self.config=config;self._loop=asyncio.get_running_loop();self._closing=False;self._close_task=None;self._jobs=set();self._watches=[];self._extra_channels=[];self._raw_writers=[]
@@ -118,8 +130,13 @@ class _Owner:
     # _run error paths must not join this same cleanup task recursively.
     errors=[]
     if tasks:
-     results=await asyncio.gather(*tasks,return_exceptions=True)
-     errors.extend(x for x in results if isinstance(x,BaseException) and not isinstance(x,asyncio.CancelledError))
+     await asyncio.wait(tasks)
+     # gather can synthesize cancellation and discard its original cause.
+     # Observe each original outcome exactly once before it loses evidence.
+     for task in tasks:
+      try:task.result()
+      except BaseException as error:
+       if _cleanup_failure(error):errors.append(error)
     try:await self._close_owned()
     except BaseException as error:errors.append(error)
     for channel in self._extra_channels:
