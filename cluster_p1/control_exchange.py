@@ -7,6 +7,7 @@ execution/resume, remote bootstrap and globally unique admission are NOT supplie
 """
 import asyncio
 from contextlib import contextmanager
+from contextlib import nullcontext
 from dataclasses import asdict
 import hashlib
 import inspect
@@ -149,6 +150,9 @@ class ControlService(_Endpoint):
         self._scope=None;self._declaration=None;self._operation=None;self._call=None;self._running=False
     def ready(self):
         self.current();self.journal.require_ready()
+        if getattr(self,'_action_gate_pin',None) is not None:
+            from private_experiment_actions import ActionGate
+            _need(type(getattr(self,'_action_gate',None))is ActionGate and self._action_gate is self._action_gate_pin)
         _need(self._identity.node_id==self.coordinator_node)
         _need(self.identity is not None and callable(getattr(self.identity,'hold',None))
               and self.authorize is not None and callable(getattr(self.authorize,'hold',None)))
@@ -222,16 +226,22 @@ class ControlService(_Endpoint):
             await delivery.release();delivery.envelope=None;delivery=None
             if consumed:
                 try:
+                    action_gate=getattr(self,'_action_gate_pin',None)
+                    if action_gate is not None:await action_gate.prepare('start')
                     with self.fence(binding,'execute-start'):
                         if self.journal.require_receiving_gate:self._receiver_gate.check(self,binding)
                         receipt=self.journal.revalidate_consumed(command,reservation,binding)
                         _receipt(receipt,command,reservation,binding,charge)
                         _need(receipt['state']=='CONSUMED' and receipt['retired'] is False)
                     if self.journal.require_receiving_gate:self._receiver_gate.check(self,binding)
+                    # Final synchronous once-only check; no lock crosses body await.
+                    if action_gate is not None:
+                        with action_gate.fence('start'):pass
                     value=self._operation()
                     if inspect.isawaitable(value):value=await value
                     digest=result_digest(value)
-                    with self.fence(binding,'complete'):
+                    if action_gate is not None:await action_gate.prepare('commit',digest)
+                    with self.fence(binding,'complete'),(action_gate.fence('commit') if action_gate is not None else nullcontext()):
                         receipt=self.journal.complete(command,reservation,binding,digest)
                 except asyncio.CancelledError as cancelled:
                     try:self._fail(binding)

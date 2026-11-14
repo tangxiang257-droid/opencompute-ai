@@ -51,6 +51,8 @@ class ExperimentConfirmationApp:
   c=body['c_input_copy'];r=body['receiver'];p=body['policy']
   page='<h1>Review this single-token experiment</h1><p>Status: '+html.escape(state)+'. Confirmation and registration do not start devices or grant remote execution.</p>'
   page+='<p>Cost cap: '+str(p['max_cost_microunits'])+' micro-units '+html.escape(p['currency'])+'; privacy: '+html.escape(p['privacy'])+'; result retention: '+str(r['retention_seconds'])+' seconds.</p>'
+  if 'runtime_profile' in body:
+   page+='<p>Experimental online profile: only explicitly public, non-sensitive input. Nodes can read input, activations and results. No billing or credits. Separately admitted start or commit actions may finish after cancellation. Silence is detected by lease expiry; cancellation does not prove a device stopped.</p>'
   page+='<p>Input and model are registered declarations; tokenizer/model correctness has not been verified.</p><details open><summary>Exact input, plan, roles, issuer and policy</summary><pre>'+html.escape(json.dumps(body,indent=2,ensure_ascii=True))+'</pre></details>'
   if challenge is None:return page+'<p>History only; no live confirmation or retry qualification.</p>'
   if state=='PENDING':

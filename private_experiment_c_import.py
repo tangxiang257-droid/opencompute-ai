@@ -51,7 +51,7 @@ class LocalCInputImporter:
    need(not self.retired and self.pid==os.getpid() and self.loop is asyncio.get_running_loop())
    need(all(x is y for x,y in zip((self.admission,self.artifacts,self.identity,self.capacity),self._pins[:4])) and self.overhead==self._pins[4] and getattr(self.identity,'hold',None)==self._pins[5] and getattr(self.capacity,'hold',None)==self._pins[6])
    need(callable(self._pins[5]) and callable(self._pins[6]) and self._directories()==self.target and self.artifacts._db is self.connection and self._database()==self.database)
-   self.admission._ready();need(self.admission.schema_version==2)
+   self.admission._ready();need(self.admission.schema_version in (2,3))
   except BaseException:self.retired=True;raise
  def _fail(self,pid):
   self.retired=True;self.admission.retired=True;self.admission.published.clear()

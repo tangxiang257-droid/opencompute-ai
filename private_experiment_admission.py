@@ -18,6 +18,7 @@ from cluster_p1.local_attempt import _non_suppressing
 from cluster_p1.projection_driver import nothing
 
 PURPOSE='confirm-isolated-single-token-execution'
+SHORT_ACTION_PROFILE='phase1-online-public-short-actions-v1'
 @dataclass(frozen=True)
 class Confirmation:
  proposal_id:str
@@ -45,11 +46,12 @@ class ExperimentAdmission(_Database):
   try:
    with self._tx() as c:
     if self.fresh:
-     c.execute('CREATE TABLE config(version INTEGER,domain TEXT)');c.execute('INSERT INTO config VALUES(2,?)',(source_domain,))
+     c.execute('CREATE TABLE config(version INTEGER,domain TEXT)');c.execute('INSERT INTO config VALUES(3,?)',(source_domain,))
      c.execute('CREATE TABLE revoked(owner TEXT,source TEXT,PRIMARY KEY(owner,source))')
      c.execute("CREATE TABLE experiments(id TEXT PRIMARY KEY,owner TEXT,source TEXT,task TEXT UNIQUE,body TEXT,digest TEXT,boot TEXT,state TEXT CHECK(state IN('PENDING','CONFIRMING','CONFIRMED','DISPATCHING','REGISTERED','REVOKED','UNKNOWN')),registration TEXT,UNIQUE(owner,source))")
      c.execute("CREATE TABLE c_import_slots(experiment TEXT PRIMARY KEY REFERENCES experiments(id),binding TEXT NOT NULL,charge INTEGER NOT NULL,files INTEGER NOT NULL,state TEXT NOT NULL CHECK(state IN('CLAIMED','IMPORTED','UNKNOWN')))")
-    config=c.execute('SELECT version,domain FROM config').fetchall();need(config in ([(1,source_domain)],[(2,source_domain)]));self.schema_version=config[0][0]
+     c.execute('CREATE TABLE short_actions(experiment TEXT,stage INTEGER,action TEXT,scope TEXT,PRIMARY KEY(experiment,stage,action))')
+    config=c.execute('SELECT version,domain FROM config').fetchall();need(config in ([(1,source_domain)],[(2,source_domain)],[(3,source_domain)]));self.schema_version=config[0][0]
   except BaseException:self.close();raise
  def _ready(self,write=True):
   try:
@@ -92,12 +94,14 @@ class ExperimentAdmission(_Database):
   try:
    with self._tx() as c:c.execute("UPDATE experiments SET state='UNKNOWN' WHERE id=? AND state!='REVOKED'",(pid,))
   except BaseException:pass # In-memory poison remains even if durable write is unknown.
- async def prepare(self,credential,source_task,declaration,policy,placements,*,receiver,c_input_copy,issuer):
+ async def prepare(self,credential,source_task,declaration,policy,placements,*,receiver,c_input_copy,issuer,runtime_profile=None):
   self._ready();text(source_task);c=self.consent;owner=c.service._download_owner(credential)
   need(type(issuer)is IssuanceAuthority and issuer.require_consent and issuer.source_provider is self and issuer.authorize is self)
   need(self._issuer is None or self._issuer is issuer);issuer.ready()
   self._issuer=issuer;self._issuer_pin=(issuer.namespace,issuer.incarnation);self._issuer_resources=issuer.resources
   d,p,places=c._proposal(declaration,policy,placements)
+  if runtime_profile is not None:
+   need(runtime_profile==SHORT_ACTION_PROFILE and p['privacy']=='L1' and p['offline'] is False)
   need(d['task']['owner_id']==owner and d['task']['task_id']==source_task and d['session']['expected_tokens']==1)
   need(p['privacy'] in ('L1','L2','L3') and d['task']['privacy_level']==p['privacy'])
   need(Decimal(str(d['task']['cost_cap']))==Decimal(p['max_cost_microunits'])/1000000 and d['task']['deadline']==p['expires_at'])
@@ -122,6 +126,8 @@ class ExperimentAdmission(_Database):
      for tile in d['plan']['tiles']:tile.update(task_id=execution,session_id=nonce)
      d=_make_declaration(d['task'],d['session'],d['stages'],d['plan']['tiles'],d['plan']['hidden_size'],d['plan']['vocab_size'],d['config_sha256'])
      body=dict(version=2,purpose=PURPOSE,source_domain=self.domain,source_task=source_task,source_revision=revision,issuer=dict(namespace=issuer.namespace,incarnation=issuer.incarnation),execution_task=execution,owner=owner,source=source,source_status=dict(tokenizer=s.tokenizer_status,model=s.model_status,computation_verified=False),declaration=d,policy=p,placements=places,receiver=receiver,c_input_copy=copy)
+     if runtime_profile is not None:
+      body['runtime_profile']=dict(name=runtime_profile,public_non_sensitive_only=True,online_only=True,billing=False,credits=False,authority_ms=5000,role_margin_ms=1000,rpc_ms=1000)
      raw=canonical(body);need(len(raw.encode())<=30000);sha=digest(body)
      with self._policy_scope(body,'prepare'):
       with self._tx() as db:
