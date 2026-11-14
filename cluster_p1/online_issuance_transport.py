@@ -63,9 +63,17 @@ class _IssuanceEndpoint(_HistoryEndpoint):
         _need(type(scope['epoch'])is int and scope['epoch']==1 and type(scope['stage'])is int and scope['stage'] in (0,1))
         _hex(scope['model']);self._scope=_copy(scope)
         self.identity=identity;self.authorize=authorize;self.resources=resources
-        self._attempted=False;self._principal=None
+        self._attempted=False;self._principal=None;self._session=None;self._installed=False
         _need(not getattr(channel,'_online_issuance_claimed',False) and not channel._start_attempted)
         self.ready();channel._single_start=True;channel._online_issuance_claimed=True
+    def current(self):
+        session=getattr(self,"_session",None)
+        if session is not None:session.check()
+        super().current()
+    async def _close_transport(self):
+        try:
+            if self._session is not None:await self._session.stop()
+        finally:await super()._close_transport()
     def ready(self):
         self.current();_need(not self._closed)
         for provider in (self.identity,self.authorize,self.resources):
@@ -132,8 +140,9 @@ class IssuanceClient(_IssuanceEndpoint):
         with self.fence(d,action) as principal,_context(self.resources.hold(d['resource_id'],_copy(d))) as allowed:
             _nothing(allowed);_nothing(self._completion.check(_copy(d)));yield principal
     def live_guard(self):
+        if self._session is not None:_need(self._session.active)
         with self.admission('live-installation'):pass
-    async def install(self):
+    async def install(self,*,session_policy=None):
         try:
             self.once()
             with self.admission('begin-install'):pass
@@ -168,8 +177,13 @@ class IssuanceClient(_IssuanceEndpoint):
             # scopes cover the actual synchronous durable acceptance transaction.
             with self.admission('accept'):
                 self._verified_delivery=(self._pending,_json(response))
-                try:return self._store.accept(self._pending,response,self.channel,self)
+                try:handle=self._store.accept(self._pending,response,self.channel,self)
                 finally:self._verified_delivery=None
+            self._installed=True
+            if session_policy is not None:
+                from .installation_session import open_session
+                await open_session(self,session_policy)
+            return handle
         except BaseException as error:await self._failed(error)
 
 
@@ -188,7 +202,7 @@ class IssuanceService(_IssuanceEndpoint):
         d=self._descriptor
         with self.fence(d,action) as principal,_context(self.resources.hold(d['resource_id'],_copy(d))) as allowed:
             _nothing(allowed);yield principal
-    async def serve_once(self):
+    async def serve_once(self,*,session_policy=None):
         try:
             self.once();d=self._descriptor
             with self.admission('hello'):
@@ -217,6 +231,10 @@ class IssuanceService(_IssuanceEndpoint):
             with self.admission('issued-send'):pass
             reply=dict(response,kind='issued',reply_to=_hash(request),role_challenge=request['role_challenge'],issuer_challenge=issuer)
             await self.send(reply,1)
+            self._installed=True
+            if session_policy is not None:
+                from .installation_session import open_session
+                await open_session(self,session_policy)
             # Ordinary status only, no role qualification or factory callback.
             return _copy(response)
         except BaseException as error:await self._failed(error)

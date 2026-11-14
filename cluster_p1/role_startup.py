@@ -70,7 +70,7 @@ class RoleStartup:
         _methods(r['loader'],('load','quarantine'))
         _methods(r['authority'],('hold_load',)+(('hold_stage0',) if self.stage==0 else ('hold_call','finalize')))
 
-    async def install(self,path,*,execution_authorize=None,prepared=None,prepare_fence=None):
+    async def install(self,path,*,execution_authorize=None,prepared=None,prepare_fence=None,session_policy=None):
         _need(not self._attempted and not self._closed);self._attempted=True
         try:
             self._preflight()
@@ -78,7 +78,7 @@ class RoleStartup:
             else:
                 _need(type(prepared)is PreparedReceiptConnection and execution_authorize is None)
                 self.prepared=prepared
-            handle=await self.client.install()
+            handle=await self.client.install(session_policy=session_policy)
             self._preflight();self.client.live_guard()
             d=handle.pending.request;stage=d['declaration']['stages'][self.stage]
             _need(self.runtime['instance']==d['instance'] and self.runtime['layer_range']==(stage['layer_start'],stage['layer_end']))

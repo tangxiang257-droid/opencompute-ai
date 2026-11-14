@@ -113,6 +113,8 @@ class _Endpoint:
 class ControlClient(_Endpoint):
     """Wire client; has no operation, permit or local compute fallback."""
     async def request(self,action,command,reservation,binding,charge):
+        _need(not getattr(self.channel,'_descriptor_bootstrap_attempted',False) or getattr(self.channel,'_descriptor_bootstrap_ready',False))
+        self.channel._control_requests_started=True
         self.current();sequence=self._sequence;self._sequence+=1
         request=dict(version=1,sequence=sequence,action=action,command=command,
                      reservation=reservation,binding=binding,charge=charge)
@@ -186,6 +188,7 @@ class ControlService(_Endpoint):
     def _fail(self,binding):
         with self.fence(binding,'fail'):return self.journal.fail(*self._call[:3])
     async def serve_once(self):
+        _need(not getattr(self.channel,'_descriptor_bootstrap_attempted',False) or getattr(self.channel,'_descriptor_bootstrap_ready',False))
         self.ready();_need(not self._running and self._call is not None and self._operation is not None)
         self._running=True;delivery=None;consumed=False;binding=self._call[2]
         try:

@@ -178,10 +178,10 @@ class StageLauncher(_Owner):
     _need(self.actions is self._actions_pin and self.actions._installed is self.installed)
     self.actions.check()
   except BaseException:self._seal();raise
- async def install(self,*,execution_authorize=None,prepared=None,prepare_fence=None):
+ async def install(self,*,execution_authorize=None,prepared=None,prepare_fence=None,session_policy=None):
   self.check();_need(not self._install_attempted);self._install_attempted=True
   async def install():
-   result=await self.startup.install(self.config.path('journal'),execution_authorize=execution_authorize,prepared=prepared,prepare_fence=prepare_fence)
+   result=await self.startup.install(self.config.path('journal'),execution_authorize=execution_authorize,prepared=prepared,prepare_fence=prepare_fence,session_policy=session_policy)
    self.check();self._installed_ready=True;return result
   return await self._run(install)
  def build_operation(self,spec,policy,*,tokens=None,spool=None):

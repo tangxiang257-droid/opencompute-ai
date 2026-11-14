@@ -49,17 +49,74 @@ class Chain(InputBase):
   self.spec=Spec(self.owner,self.body['execution_task'],s['session_id'],1,s['model_hash'],s['layout_hash'],src['input_snapshot'],src['preprocessing'],d['plan_digest'],src['token_digest'],24,100,(src['token_digest'],))
   self.pipe_policy=Policy(100,200,300,1000000,524288,2097152,2097152)
   self.channels=[];self.owned=[];self.jobs=[];self.launchers={};self.controls={};self.action_servers={};self.calls=[[],[]];self.loaders=[];self.clock=Clock()
-  self.addAsyncCleanup(self.shutdown)
+  self.cleanup_errors=[];self.observed_business_outcomes=[];self._dependency_closers=[];self._runtime_cleanup_task=None
+  self.addAsyncCleanup(self._cleanup_runtime)
   self.cp=await CReceivingPolicy.create_experiment(self.importer,self.token,self.receipt.proposal_id,self.receipt.proposal_digest,parent=LabProvider(),maintenance=LabProvider())
   await self.install_stages()
+ async def _cleanup_runtime(self):
+  # These services are borrowed by live owners. One retained cleanup task drains
+  # owners before closing their dependencies, even if the caller is cancelled.
+  if self._runtime_cleanup_task is None:
+   async def finish():
+    errors=[]
+    try:await self.shutdown()
+    except BaseException as error:self.cleanup_errors.append(error)
+    # Negative tests may acknowledge only their exact injected error object.
+    # Everything else remains reported and dependencies stay available/owned.
+    expected=getattr(self,'expected_cleanup_error',None)
+    errors.extend(e for e in self.cleanup_errors if e is not expected)
+    if not all(t.done() for t in self.jobs) or not all(c._task.done() for c in getattr(self,'channels',[])):
+     error=RuntimeError('fixture owned work did not settle');self.cleanup_errors.append(error);errors.append(error)
+    if errors:raise BaseExceptionGroup('fixture runtime cleanup unknown; dependencies retained',errors)
+    for close in reversed(self._dependency_closers):
+     try:close()
+     except BaseException as error:errors.append(error)
+    self.cleanup_errors.extend(errors)
+    if errors:raise BaseExceptionGroup('fixture dependency cleanup uncertain',errors)
+   self._runtime_cleanup_task=asyncio.create_task(finish())
+  cancelled=None
+  while not self._runtime_cleanup_task.done():
+   try:await asyncio.shield(self._runtime_cleanup_task)
+   except asyncio.CancelledError as error:cancelled=error
+   except BaseException:break
+  self._runtime_cleanup_task.result()
+  if cancelled is not None:raise cancelled
  async def shutdown(self):
-  for t in self.jobs:
-   if not t.done():t.cancel()
-  await asyncio.gather(*self.jobs,return_exceptions=True)
+  pending=[t for t in self.jobs if not t.done()]
+  for t in pending:t.cancel()
+  if pending:await asyncio.wait(pending)
+  # gather(return_exceptions=True) synthesizes CancelledError and can discard
+  # its cleanup cause. Inspect each owned task's original outcome instead.
+  for task in self.jobs:
+   try:task.result()
+   except BaseException as error:
+    if task not in pending:continue # Completed business errors were already observed.
+    chain=[error];seen=set();failed=False
+    while chain:
+     item=chain.pop()
+     if id(item) in seen:continue
+     seen.add(id(item))
+     if not isinstance(item,asyncio.CancelledError):failed=True
+     chain.extend(x for x in (item.__cause__,item.__context__) if x is not None)
+    if failed:self.cleanup_errors.append(error)
   for o in reversed(self.owned):
    try:await o.close()
-   except Exception:pass # Assertions inspect failures; cleanup must drain all owners.
-  await asyncio.gather(*(c.close() for c in self.channels),return_exceptions=True)
+   except BaseException as error:self.cleanup_errors.append(error)
+  from cluster_p1.role_startup import _close_channel
+  results=await asyncio.gather(*(_close_channel(c) for c in self.channels),return_exceptions=True)
+  self.cleanup_errors.extend(e for e in results if isinstance(e,BaseException))
+ async def settle_expected_role_failure(self):
+  # A deliberate disconnect/revocation is a business outcome, not a new
+  # teardown cancellation. Observe it before fixture shutdown begins.
+  done,pending=await asyncio.wait(self.jobs,timeout=5)
+  self.assertFalse(pending,'expected role failure did not settle')
+  for task in self.jobs:
+   try:self.observed_business_outcomes.append(task.result())
+   except BaseException as error:self.observed_business_outcomes.append(error)
+  for launch in self.launchers.values():
+   if launch._close_task is not None:
+    await asyncio.wait_for(asyncio.shield(launch._close_task),5)
+    self.assertTrue(launch._close_task.done());launch._close_task.result()
  def pair(self,left,right,stage,capacity=32768):
   cr,cw,sr,sw=wire.streams(left,right);s=self.spec;g=Grant(s.request,s.session,1,stage,(0,1),s.model,2)
   a=Channel(cr,cw,wire.config(right),{right:{g}},capacity_bytes=capacity,capacity_tiles=1)
@@ -74,10 +131,10 @@ class Chain(InputBase):
   registration=self.adm._registered[self.receipt.proposal_id]
   for stage in (0,1):
    p=self.body['placements'][stage];d=self.strict.describe(registration,stage,**{k:p[k] for k in ('node','device','instance','resource_id')})
-   r=RoleResources(self.root/f'role-resource-{stage}',node=p['node'],pool_limits=dict(device=1000000,host=1048576,source=2097152,destination=2097152),extra_host_bytes=300000,authority=Holds(),capacity=Holds());self.addCleanup(r.close)
+   r=RoleResources(self.root/f'role-resource-{stage}',node=p['node'],pool_limits=dict(device=1000000,host=1048576,source=2097152,destination=2097152),extra_host_bytes=300000,authority=Holds(),capacity=Holds());self._dependency_closers.append(r.close)
    ticket=r.reserve(p['resource_id'],d,s,self.pipe_policy,charge=2097152)
    self.assertIsNot(r,self.central_resources)
-   store=RoleInstallStore(self.root/f'role-store-{stage}',role_node=p['node'],identity=Holds(),authorize=Holds(),resources=r,device=Holds());self.addCleanup(store.close)
+   store=RoleInstallStore(self.root/f'role-store-{stage}',role_node=p['node'],identity=Holds(),authorize=Holds(),resources=r,device=Holds());self._dependency_closers.append(store.close)
    layers=self.body['declaration']['stages'][stage];extent=(layers['layer_start'],layers['layer_end']);instance=p['instance']
    class Loader:
     def __init__(inner,extent,instance):inner.calls=[];inner.extent=extent;inner.instance=instance
@@ -132,12 +189,12 @@ class Chain(InputBase):
   meta,cmeta=self.pair('b','c',1)
   binding=ReceiveBinding(Scope(s.request,1,s.plan_digest,s.layout,'out','logits',s.session,'single-token','b',hashlib.sha256(b'b').hexdigest(),'placeholder'),1,s.model,2,'float32',((0,1,(1,1,s.vocab)),))
   sender=ResultSender(data,meta,binding,identity=Identity(),authorize=Holds());self.owned.append(sender)
-  source=Book(self.root/'source-book',2097152);dest=Book(self.root/'dest-book',2097152);self.addCleanup(source.close);self.addCleanup(dest.close)
+  source=Book(self.root/'source-book',2097152);dest=Book(self.root/'dest-book',2097152);self._dependency_closers.extend((source.close,dest.close))
   plan=Plan(Binding(s.owner,s.request,s.session,'single-token',1,sender.generation(),s.model,s.layout,s.input_snapshot,s.token_digest,s.preprocessing,s.plan_digest),(1,),s.vocab)
   source.reserve('result',plan,'source');dest.reserve('result',plan,'destination');spool=Spool(self.root/'spool',source,dest,'result',plan)
   op=self.launchers[1].build_operation(actual,self.pipe_policy,spool=spool);self.b_operation=op
   role,control=await self.register_role(1,actual,op)
-  ac,cc=self.pair('issuer','c',1);store=ReceivingStore(self.root/'c-receiving');self.addCleanup(store.close)
+  ac,cc=self.pair('issuer','c',1);store=ReceivingStore(self.root/'c-receiving');self._dependency_closers.append(store.close)
   d=self.cp.descriptor;controller=ReceivingController(ac,ReceivingStore.for_authority(self.strict),d,identity=Identity(),authorize=self.cp,maintenance=self.cp,resources=CPolicy());self.owned.append(controller)
   receiving=await ReceivingLauncher.create(configuration(self.root,'C',d),cc,store,d,identity=Identity(),authorize=self.cp,maintenance=self.cp,resources=CPolicy());self.owned.append(receiving);self.c_launcher=receiving
   await asyncio.gather(controller.pending(),receiving.serve_once())
@@ -177,6 +234,7 @@ class Chain(InputBase):
   a=self.action_servers[0].authority
   with self.assertRaises(Exception):await a.admit(a.scope,'start')
   self.assertEqual(self.action_rows(),[(0,'control-bound')]);self.assertEqual(self.calls,[[],[]])
+  await self.settle_expected_role_failure()
  async def test_control_scope_replacement_denies_action(self):
   _,control=await self.prepare_a();control._descriptor=replace(control.descriptor,charge=control.descriptor.charge+1)
   a=self.action_servers[0].authority
@@ -235,6 +293,7 @@ class Chain(InputBase):
   self.assertEqual(self.action_rows(),[(0,'control-bound'),(0,'start')])
   with self.assertRaises(Exception):await control.dispatch() # Original launcher sealed; no recovery/retry.
   self.assertEqual(self.calls,[[],[]])
+  await self.settle_expected_role_failure()
  async def test_duplicate_start_fails_with_single_record(self):
   await self.prepare_a();a=self.action_servers[0].authority;await a.admit(a.scope,'start')
   with self.assertRaises(Exception):await a.admit(a.scope,'start')
@@ -272,6 +331,7 @@ class Chain(InputBase):
   self.assertEqual(hit,[1]);self.assertEqual(receipt['state'],'UNKNOWN')
   self.assertTrue(any(x[0]=='stage0' for x in self.calls[0])) # Revocation did NOT physically stop the thread.
   self.assertEqual(self.action_rows(),[(0,'control-bound'),(0,'start')]);self.assertEqual(self.calls[1],[])
+  await self.settle_expected_role_failure()
  async def test_reopen_history_cannot_restore_mapping(self):
   await self.prepare_a();self.adm.close()
   from private_experiment_admission import ExperimentAdmission

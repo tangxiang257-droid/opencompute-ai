@@ -19,7 +19,7 @@ class Transport(Protocol):
     async def send(self, envelope: Envelope):
         ...
 
-    async def receive(self):
+    async def receive(self,*,_session_owner=None):
         ...
 
     async def close(self):
@@ -107,6 +107,7 @@ class Channel:
         self.capacity_bytes = capacity_bytes
         self.capacity_tiles = capacity_tiles
         self.timeout = timeout
+        self._session_idle_owner=None;self._idle_changed=asyncio.Event()
         self._used_bytes = 0
         self._used_tiles = 0
         self._credits_bytes = 0
@@ -133,6 +134,7 @@ class Channel:
     @contextmanager
     def identity_fence(self, expected):
         self._identity_loop_check()
+        if self._session_idle_owner is not None:self._session_idle_owner.check()
         with self._identity_lock:
             if (type(expected) is not ChannelIdentity or expected != self._identity
                     or self._identity_revoked or self._closed or self.w.is_closing()):
@@ -197,10 +199,33 @@ class Channel:
         async with self._condition:
             self._condition.notify_all()
 
+    async def _header(self):
+        loop=asyncio.get_running_loop();deadline=loop.time()+self.timeout
+        first=asyncio.create_task(self.r.readexactly(1));change=asyncio.create_task(self._idle_changed.wait())
+        try:
+            while True:
+                owner=self._session_idle_owner
+                if owner is not None:owner.check()
+                remaining=None if owner is not None else max(0,deadline-loop.time())
+                done,_=await asyncio.wait((first,change),timeout=remaining,return_when=asyncio.FIRST_COMPLETED)
+                if owner is None and loop.time()>=deadline:raise TimeoutError()
+                if first in done:
+                    lead=first.result();break
+                if change in done:
+                    self._idle_changed.clear();change=asyncio.create_task(self._idle_changed.wait());continue
+                raise TimeoutError()
+            budget=self.timeout if owner is not None else max(0,deadline-loop.time())
+            return lead+await asyncio.wait_for(self.r.readexactly(4),budget)
+        finally:
+            for task in (first,change):
+                if not task.done():task.cancel()
+            await asyncio.gather(first,change,return_exceptions=True)
+
     async def _reader(self):
         try:
             while True:
-                header = await asyncio.wait_for(self.r.readexactly(5), self.timeout)
+                if getattr(self,"_online_issuance_claimed",False):header = await self._header()
+                else:header = await asyncio.wait_for(self.r.readexactly(5), self.timeout)
                 kind = header[:1]
                 n = struct.unpack('!I', header[1:])[0]
                 # Latch rejection at D-header observation, before any body await.
@@ -294,7 +319,7 @@ class Channel:
             self._abort()
             raise
 
-    async def receive(self):
+    async def receive(self,*,_session_owner=None):
 
         async def get():
             async with self._condition:
@@ -303,7 +328,11 @@ class Channel:
                         raise ChannelError('disconnected') from self._error
                     await self._condition.wait()
                 return self._queue.get_nowait()
-        return await asyncio.wait_for(get(), self.timeout)
+        budget=self.timeout
+        if _session_owner is not None:
+            if _session_owner is not self._session_idle_owner:raise ChannelError("foreign session owner")
+            _session_owner.check();budget=max(0,_session_owner.deadline-asyncio.get_running_loop().time())
+        return await asyncio.wait_for(get(), budget)
 
     async def _release(self, size):
         self._used_bytes -= size

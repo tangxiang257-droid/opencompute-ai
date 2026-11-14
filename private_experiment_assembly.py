@@ -17,7 +17,7 @@ from cluster_p1.role_startup import _close_channel
 from cluster_p1.delivery_receipt import _with_cleanup
 
 _FIELDS={'version','purpose','experiment','context','stage','placement','charge','control_sha256','control_peer','action_peer','issuer'}
-_FLAGS=('_experiment_action_owned','_launcher_owned','_online_issuance_claimed','_receipt_state','_installed_role_control_claimed','_role_control_claimed','_dispatch_gate_claimed','_c_receiving_claimed')
+_FLAGS=('_descriptor_bootstrap_attempted','_experiment_action_owned','_launcher_owned','_online_issuance_claimed','_receipt_state','_installed_role_control_claimed','_role_control_claimed','_dispatch_gate_claimed','_c_receiving_claimed')
 
 def _configuration(raw,pin):
  need(type(raw)is bytes and 0<len(raw)<=32768 and type(pin)is str and len(pin)==64)
