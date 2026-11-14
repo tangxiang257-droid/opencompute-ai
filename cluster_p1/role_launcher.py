@@ -20,19 +20,24 @@ from .c_receiving import ReceivingRole,ReceivingStore,descriptor
 from .c_dispatch_gate import BDispatchGate,CDispatchGate
 from .delivery_receipt import _with_cleanup
 
+def launch_document(raw,expected_sha256):
+ """Pure bounded public schema check; no path, provider or host validation."""
+ _need(type(raw)is bytes and type(expected_sha256)is str and re.fullmatch('[a-f0-9]{64}',expected_sha256) is not None)
+ _need(hashlib.sha256(raw).hexdigest()==expected_sha256)
+ d=_parse(raw)
+ _need(type(d)is dict and set(d)=={'version','role','node','issuer_node','issuer_certificate','coordinator_node','descriptor_sha256','root','charge','control_budget'})
+ _need(type(d['version'])is int and d['version']==1 and d['role'] in ('A','B','C'))
+ for k in ('node','issuer_node','coordinator_node'):_need(type(d[k])is str and re.fullmatch('[A-Za-z0-9][A-Za-z0-9._:-]{0,127}',d[k]) is not None)
+ for k in ('issuer_certificate','descriptor_sha256'):_need(type(d[k])is str and re.fullmatch('[a-f0-9]{64}',d[k]) is not None)
+ _need(d['node']!=d['issuer_node'] and d['node']!=d['coordinator_node'])
+ _need(type(d['charge'])is int and type(d['control_budget'])is int and 0<d['charge']<=d['control_budget']<2**63)
+ _need(type(d['root'])is str and len(d['root'])<=4096)
+ return d
+
 class LaunchConfig:
  """Inert canonical bounded config. No provider names or executable hooks."""
  def __init__(self,raw,expected_sha256):
-  _need(type(raw)is bytes and type(expected_sha256)is str and re.fullmatch('[a-f0-9]{64}',expected_sha256) is not None)
-  _need(hashlib.sha256(raw).hexdigest()==expected_sha256)
-  d=_parse(raw)
-  _need(type(d)is dict and set(d)=={'version','role','node','issuer_node','issuer_certificate','coordinator_node','descriptor_sha256','root','charge','control_budget'})
-  _need(type(d['version'])is int and d['version']==1 and d['role'] in ('A','B','C'))
-  for k in ('node','issuer_node','coordinator_node'):_need(type(d[k])is str and re.fullmatch('[A-Za-z0-9][A-Za-z0-9._:-]{0,127}',d[k]) is not None)
-  for k in ('issuer_certificate','descriptor_sha256'):_need(type(d[k])is str and re.fullmatch('[a-f0-9]{64}',d[k]) is not None)
-  _need(d['node']!=d['issuer_node'] and d['node']!=d['coordinator_node'])
-  _need(type(d['charge'])is int and type(d['control_budget'])is int and 0<d['charge']<=d['control_budget']<2**63)
-  _need(type(d['root'])is str and len(d['root'])<=4096)
+  d=launch_document(raw,expected_sha256)
   root=Path(d['root']);_need(root.is_absolute() and root==root.resolve(strict=True))
   info=root.lstat();_need(stat.S_ISDIR(info.st_mode))
   self._raw=raw;self._sha=expected_sha256;self.root=root;self._inode=(info.st_dev,info.st_ino);self.pid=os.getpid()
