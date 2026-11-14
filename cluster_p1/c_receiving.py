@@ -36,7 +36,7 @@ class ReceivingStore(_Database):
   self.authority=None;self._open(path)
   if self.fresh:
    with self._tx() as c:
-    self._check(True);c.execute(SCHEMA);c.execute('CREATE TABLE c_receiving_identity(incarnation TEXT)');c.execute('INSERT INTO c_receiving_identity VALUES(?)',(secrets.token_hex(32),))
+    self._check(True);c.execute(SCHEMA);c.execute("CREATE TABLE c_dispatch_gate(owner TEXT,task TEXT,binding TEXT,nonce TEXT,connection TEXT,state TEXT,PRIMARY KEY(owner,task))");c.execute('CREATE TABLE c_receiving_identity(incarnation TEXT)');c.execute('INSERT INTO c_receiving_identity VALUES(?)',(secrets.token_hex(32),))
   rows=self.db.execute('SELECT incarnation FROM c_receiving_identity').fetchall();_need(len(rows)==1);self.incarnation=rows[0][0];_hex(self.incarnation)
  @classmethod
  def for_authority(cls,authority):
@@ -177,6 +177,8 @@ class ReceivingRole(_Wire):
      else:
       _need(request['actual'] is None);self.receiving=False;self.store.move(self.d,self.original,('PENDING','ACTIVE','RECEIVING','RECEIVED','UNKNOWN'),'REVOKE_PENDING');state='REVOKED'
    if op=='revoke':
+    dispatch_gate=getattr(self,'_dispatch_gate',None)
+    if dispatch_gate is not None:await dispatch_gate.close()
     # Stop new local fence entries before any await; join the owned receive task.
     task=self.active_task
     if task is not None and task is not asyncio.current_task():
@@ -220,6 +222,8 @@ class ReceivingRole(_Wire):
   except BaseException:
    with self.gate:
     self.receiving=False
+    dispatch_gate=getattr(self,'_dispatch_gate',None)
+    if dispatch_gate is not None:dispatch_gate.channel._abort()
     # A planned stop keeps REVOKE_PENDING until its owning control task joins us.
     if self.store.row(self.d)[4]!='REVOKE_PENDING':self.store.unknown(self.d);self.channel._abort()
    raise
@@ -231,9 +235,16 @@ class ReceivingRole(_Wire):
  async def close(self):
   caller=asyncio.current_task()
   if self._close_owned_task is None:
-   with self.gate:self.receiving=False
+   with self.gate:
+    self.receiving=False
+    dispatch_gate=getattr(self,'_dispatch_gate',None)
+    if dispatch_gate is not None:dispatch_gate.channel._abort()
    async def cleanup():
     errors=[]
+    dispatch_gate=getattr(self,'_dispatch_gate',None)
+    if dispatch_gate is not None:
+     try:await dispatch_gate.close()
+     except BaseException as e:errors.append(e)
     task=self.active_task
     if task is not None and task is not caller:
      task.cancel();results=await asyncio.gather(task,return_exceptions=True)

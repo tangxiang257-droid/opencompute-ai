@@ -115,9 +115,9 @@ class HistoryService(_HistoryEndpoint):
             info=self._path.stat();self._file_identity=(info.st_dev,info.st_ino)
             self._policy=journal._db.execute('SELECT version,capacity FROM control_policy').fetchall()
             self._schema=_schema(journal._db)
-        _need(len(self._policy)==1 and self._policy[0][0]==1 and type(self._policy[0][1])is int and self._policy[0][1]>0)
+        _need(len(self._policy)==1 and self._policy[0][0] in (1,2) and type(self._policy[0][1])is int and self._policy[0][1]>0)
         _need({(row[0],row[1]) for row in self._schema}=={
-            ('table','control_calls'),('table','control_policy'),('trigger','control_binding_immutable')})
+            ('table','control_calls'),('table','control_policy'),('trigger','control_binding_immutable')} | ({('table','control_receiving_gate')} if self._policy[0][0]==2 else set()))
         try:
             self._history=sqlite3.connect(self._path.as_uri()+'?mode=ro',uri=True,isolation_level=None)
             self._history.execute('PRAGMA query_only=ON')

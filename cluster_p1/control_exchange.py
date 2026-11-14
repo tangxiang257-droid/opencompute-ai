@@ -195,12 +195,20 @@ class ControlService(_Endpoint):
             _need(_json(request)==_json(dict(version=1,sequence=sequence,action=action,command=command,
                                             reservation=reservation,binding=binding,charge=charge)))
             try:
+                if action=='execute' and self.journal.require_receiving_gate:
+                    from .c_dispatch_gate import BDispatchGate
+                    gate=getattr(self,'_receiver_gate',None)
+                    with self.fence(binding,action):before=self.journal.query(command)
+                    if before is not None and before['state']=='RESERVED' and not before['retired']:
+                        _need(type(gate)is BDispatchGate)
+                        await gate.acquire(self,binding) # No identity/authorization lock across I/O.
                 with self.fence(binding,action):
                     if action=='prepare':receipt=self.journal.prepare(command,reservation,binding,charge)
                     elif action in ('query','input-ready'):receipt=self.journal.query(command)
                     else:
                         receipt=self.journal.query(command);_need(receipt is not None)
                         if receipt['state']=='RESERVED' and not receipt['retired']:
+                            if self.journal.require_receiving_gate:self._receiver_gate.check(self,binding)
                             receipt=self.journal.consume(command,reservation,binding);consumed=True
                 _need(receipt is not None)
             except (Exception,) as error:
@@ -215,9 +223,11 @@ class ControlService(_Endpoint):
             if consumed:
                 try:
                     with self.fence(binding,'execute-start'):
+                        if self.journal.require_receiving_gate:self._receiver_gate.check(self,binding)
                         receipt=self.journal.revalidate_consumed(command,reservation,binding)
                         _receipt(receipt,command,reservation,binding,charge)
                         _need(receipt['state']=='CONSUMED' and receipt['retired'] is False)
+                    if self.journal.require_receiving_gate:self._receiver_gate.check(self,binding)
                     value=self._operation()
                     if inspect.isawaitable(value):value=await value
                     digest=result_digest(value)

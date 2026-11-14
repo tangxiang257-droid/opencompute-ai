@@ -35,7 +35,7 @@ class InstalledStageRole:
             self._check();self._owns_operation=True
             _need(callable(getattr(identity,'hold',None)) and callable(getattr(authorize,'hold',None)))
             d=startup.descriptor;r=startup.runtime['resources'];t=startup.runtime['ticket']
-            self.journal=ControlJournal(path,control_budget,resources=r)
+            self.journal=ControlJournal(path,control_budget,resources=r,require_receiving_gate=startup.stage==1)
             service=ControlService(channel,self.journal,stage=startup.stage,node=d['node'],
                 coordinator_node=coordinator_node,device=d['device'],instance=d['instance'],
                 identity=identity,authorize=authorize)
@@ -56,6 +56,7 @@ class InstalledStageRole:
     def _check(self):
         _need(not self._closed);s=self.startup;s._preflight();s.client.live_guard()
         _need(set(s.runtime)==set(self._runtime) and all(s.runtime[k] is v for k,v in self._runtime.items()))
+        if self.journal is not None:_need(self.journal.require_receiving_gate is (s.stage==1))
         r=s.runtime;o=self.operation
         _need(type(o)is (StageAOperation if s.stage==0 else StageBOperation))
         _need(type(r['resources'])is RoleResources and r['resources'] is s.store.resources)
@@ -95,6 +96,10 @@ class InstalledStageRole:
                     if type(self.operation)is StageBOperation:
                         try:self.operation.close()
                         except BaseException as e:errors.append(e)
+                gate=getattr(self.role._service,'_receiver_gate',None) if self.role is not None else None
+                if gate is not None:
+                    try:await gate.close()
+                    except BaseException as e:errors.append(e)
                 if self._owns_channel:
                     try:await self.channel.close()
                     except BaseException as e:errors.append(e)

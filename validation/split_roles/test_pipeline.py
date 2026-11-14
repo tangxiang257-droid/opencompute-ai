@@ -137,14 +137,18 @@ class Tests(unittest.IsolatedAsyncioTestCase):
             binding=ReceiveBinding(scope,1,actual.model,2,'float32',((0,1,(1,1,actual.vocab)),))
             rs=ResultSender(data,sm,binding,identity=identity,authorize=permission)
             from validation.split_roles.test_transport import RecipientAuthority
-            ri=ResultIngress(dir,diw,wire.config('b'),im,binding,identity=identity,authorize=permission,recipient_node='c',receive_authorize=RecipientAuthority())
-            self.endpoints.extend((rs,ri))
+            ri=None if hasattr(self,'receiving_gate') else ResultIngress(dir,diw,wire.config('b'),im,binding,identity=identity,authorize=permission,recipient_node='c',receive_authorize=RecipientAuthority())
+            self.endpoints.append(rs)
+            if ri is not None:self.endpoints.append(ri)
             bp=Plan(Binding(actual.owner,actual.request,actual.session,'single-token',1,rs.generation(),actual.model,actual.layout,actual.input_snapshot,actual.token_digest,actual.preprocessing,actual.plan_digest),(1,),actual.vocab)
             self.source.reserve('split-result',bp,'source');self.destination.reserve('split-result',bp,'destination')
             spool=Spool(self.root/'split-spool',self.source,self.destination,'split-result',bp)
             b=StageBOperation(actual,self.policy,self.receiver,spool,journal_path=self.root/'split-driver.db',**self.kwargs(1))
             self.operations.append(b)
             br,bc,bj=await self.register(1,actual,b)
+            if hasattr(self,'receiving_gate'):
+                ri=await self.receiving_gate(br,bc,actual,dir,diw,im,binding,identity,permission)
+                self.endpoints.append(ri)
             before_b=len(self.role_loaders[1].calls)
             if failure=='completion':self.role_devices[1].fail_stage=1
             if failure=='control-commit':

@@ -10,6 +10,9 @@ from cluster_p1.role_control import CoordinatorControl
 try:from cluster_p1.role_assembly import InstalledStageRole
 except ImportError:InstalledStageRole=None
 class Tests(fixture.Tests):
+ async def receiving_gate(self,*args):
+  from validation.c_receiving.gate_fixture import install
+  return await install(self,*args)
  def kwargs(self,stage):
   if not hasattr(self,'_assembly_kwargs'):self._assembly_kwargs={}
   if stage not in self._assembly_kwargs:self._assembly_kwargs[stage]=super().kwargs(stage)

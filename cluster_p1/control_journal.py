@@ -40,8 +40,10 @@ class ControlJournal:
     Same-UID filesystem, caller and provider are trusted. Copies/rollback/new
     databases defeat local uniqueness; this is not a global admission registry.
     """
-    def __init__(self,path,capacity,*,resources=None):
+    def __init__(self,path,capacity,*,resources=None,require_receiving_gate=False):
         if type(capacity)is not int or not 0<capacity<2**63:raise ValueError('positive capacity required')
+        if type(require_receiving_gate)is not bool:raise TypeError("explicit gate policy required")
+        self.require_receiving_gate=require_receiving_gate;version=2 if require_receiving_gate else 1
         self.resources=resources;self._lock=threading.RLock();self._closed=False
         path=Path(path).absolute()
         try:
@@ -53,11 +55,13 @@ class ControlJournal:
             with self._tx() as c:
                 if self._writable:
                     c.execute('CREATE TABLE control_policy(version INTEGER NOT NULL,capacity INTEGER NOT NULL)')
-                    c.execute('INSERT INTO control_policy VALUES(1,?)',(capacity,))
-                if c.execute('SELECT version,capacity FROM control_policy').fetchall()!=[(1,capacity)]:raise Conflict('fixed resource policy mismatch')
+                    c.execute('INSERT INTO control_policy VALUES(?,?)',(version,capacity))
+                if c.execute('SELECT version,capacity FROM control_policy').fetchall()!=[(version,capacity)]:raise Conflict('fixed resource policy mismatch')
                 if self._writable:
                     c.execute("CREATE TABLE control_calls(command_id TEXT PRIMARY KEY,reservation_id TEXT NOT NULL UNIQUE,binding TEXT NOT NULL,stage_key TEXT NOT NULL UNIQUE,charge INTEGER NOT NULL CHECK(charge>0),state TEXT NOT NULL CHECK(state IN ('UNKNOWN','RESERVED','CONSUMED','COMMITTED')),output_digest TEXT,retired INTEGER NOT NULL CHECK(retired IN (0,1)))")
                     c.execute("CREATE TRIGGER control_binding_immutable BEFORE UPDATE OF command_id,reservation_id,binding,stage_key,charge ON control_calls BEGIN SELECT RAISE(ABORT,'immutable control binding'); END")
+                if self._writable and require_receiving_gate:
+                    c.execute("CREATE TABLE control_receiving_gate(command_id TEXT PRIMARY KEY,binding TEXT NOT NULL,nonce TEXT NOT NULL,recipient TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('ACKED','CONSUMED')))")
                 c.execute('SELECT command_id,reservation_id,binding,charge,state,output_digest,retired FROM control_calls LIMIT 0')
         except BaseException:self.close();raise
     def _commit(self,c):c.commit()
@@ -126,6 +130,24 @@ class ControlJournal:
                 if c.execute("UPDATE control_calls SET state='RESERVED' WHERE command_id=? AND state='UNKNOWN' AND retired=0",(command_id,)).rowcount!=1:raise Conflict('reservation intent retired')
             return self.query(command_id)
         except BaseException as error:self._failed(command_id,reservation_id,binding,error)
+    def acknowledge_receiver(self,command,reservation,binding,nonce,recipient):
+        """Local durable evidence only. Only the live wire gate may supply this.
+
+        This method grants no operation: service also requires its original live
+        gate handle. Reopening, copying rows or querying cannot rebuild a handle.
+        """
+        self._fresh();raw=_binding(binding)
+        if not self.require_receiving_gate or binding['stage']!=1:raise Conflict('receiver policy required')
+        for value in (nonce,recipient):
+            if type(value)is not str or re.fullmatch('[a-f0-9]{64}',value)is None:raise Conflict('receiver challenge required')
+        with self._tx() as c:
+            row=self._bound(c,command,reservation,raw)
+            if row[4]!='RESERVED' or row[6]:raise Conflict('receiver ACK too late')
+            c.execute("INSERT INTO control_receiving_gate VALUES(?,?,?,?,'ACKED')",(command,raw,nonce,recipient))
+    def _receiver(self,c,command,raw,state):
+        if self.require_receiving_gate:
+            row=c.execute('SELECT binding,state FROM control_receiving_gate WHERE command_id=?',(command,)).fetchone()
+            if row!=(raw,state):raise Conflict('original C ACK required')
     def consume(self,command_id,reservation_id,binding):
         self._fresh()
         _identifier(command_id);_identifier(reservation_id);raw=_binding(binding);self._provider()
@@ -135,6 +157,8 @@ class ControlJournal:
             with self._tx() as c:
                 row=self._bound(c,command_id,reservation_id,raw)
                 if row[4]!='RESERVED' or row[6]:raise Conflict('stage already consumed or unavailable')
+                self._receiver(c,command_id,raw,"ACKED")
+                if self.require_receiving_gate:c.execute("UPDATE control_receiving_gate SET state='CONSUMED' WHERE command_id=?",(command_id,))
                 c.execute("UPDATE control_calls SET state='CONSUMED' WHERE command_id=?",(command_id,));claimed=True
             self._hold(reservation_id,raw,row[3])
             result=self.query(command_id)
@@ -157,6 +181,7 @@ class ControlJournal:
             if self._closed:raise Conflict('journal closed')
             row=self._bound(self._db,command_id,reservation_id,raw)
             if row[4]!='CONSUMED' or row[6]:raise Conflict('live consumed stage required')
+            self._receiver(self._db,command_id,raw,'CONSUMED')
         try:
             self._hold(reservation_id,raw,row[3])
             with self._lock:
