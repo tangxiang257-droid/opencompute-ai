@@ -6,6 +6,7 @@ bytes are deliberately constant and establish no numerical correctness.
 from contextlib import contextmanager
 from dataclasses import replace
 import hashlib
+import json
 import os
 from pathlib import Path
 import sqlite3
@@ -18,6 +19,9 @@ from unittest.mock import patch
 
 from cluster_p1.contracts import Task, Session, Stage
 from cluster_p1.local_attempt import LocalAttemptJournal
+from cluster_p1.nonce_coordinator import NonceCoordinator
+from cluster_p1.bound_connection import BoundReceiptConnection
+from validation.role_bridge.test_coordinator import metadata_channel
 from cluster_p1.receipt_attempt import ReceiptAttemptJournal, PeerIdentity
 from cluster_p1.handoff import EdgeBinding
 from cluster_p1.envelope import decode
@@ -128,7 +132,7 @@ class SyntheticConduit:
 
 
 class Tests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
+    async def asyncSetUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name)
         fds=[]
         for name in ('inputs','results'):
@@ -152,18 +156,14 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         tiles=tuple(dict(schema_version=2,task_id=t.task_id,owner_id='owner',session_id=sid,epoch=1,
                          model_hash='a'*64,layout_hash='a'*64,stage_id=i,tile_id=0,token_start=0,token_count=1,
                          input=descriptors[i],output=descriptors[i+1]) for i in (0,1))
-        self.sender=LocalAttemptJournal.create(self.root/'sender.db',t,session,stages,
-                                               authorize=journal_owner,execution_authorize=journal_owner)
+        self.coordinator=NonceCoordinator.initialize(self.root/'coordinator.db',authorize=journal_owner)
+        self.addCleanup(self.coordinator.close)
+        reservation=self.coordinator.register(t,session,stages,tiles,hidden_size=self.hidden,vocab_size=self.vocab,config_sha256='c'*64)
+        self.sender=self.coordinator.create_sender(reservation,self.root/'sender.db',execution_authorize=journal_owner)
         self.addCleanup(self.sender.close)
-        plan=self.sender.register(tiles,hidden_size=self.hidden,vocab_size=self.vocab,event_id='plan')['plan_digest']
-        peer=PeerIdentity('a','b'*64,'connection-1')
-        @contextmanager
-        def peer_auth(expected):yield peer
-        self.receiver=ReceiptAttemptJournal.create(self.root/'receiver.db',t,session,stages,
-            authorize=journal_owner,execution_authorize=journal_owner,receipt_binding=EdgeBinding(t.task_id,sid,1,plan,'a'*64,2,'a','b'),
-            expected_peer=peer,peer_authorize=peer_auth,local_node='b',expected_config_sha256='c'*64,enable_receipt_stage1=True)
+        plan=json.loads(reservation.body)['plan_digest']
+        self.receiver=await self.make_receiver(reservation)
         self.addCleanup(self.receiver.close)
-        self.receiver.register(tiles,hidden_size=self.hidden,vocab_size=self.vocab,event_id='plan')
         self.artifacts.record_pending('owner',t.task_id,sid,1,plan,(('a','device-a','1'*64),('b','device-b','2'*64)))
         token_hash=hashlib.sha256(struct.pack('<q',1)).hexdigest()
         self.spec=Spec('owner',t.task_id,sid,1,'a'*64,'a'*64,task.snapshot.digest,'c'*64,plan,token_hash,
@@ -173,6 +173,12 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.source.close);self.addCleanup(self.destination.close)
         self.authority=SyntheticAuthority();self.resources=SyntheticResources();self.device=SyntheticDevice()
         self.loader=SyntheticLoader();self.conduit=SyntheticConduit();self.calls=[]
+    async def make_receiver(self,reservation):
+        self.channel=metadata_channel()
+        bound=BoundReceiptConnection(self.channel)
+        return self.coordinator.create_receiver(reservation,bound,self.root/'receiver.db',execution_authorize=journal_owner)
+    async def asyncTearDown(self):
+        if hasattr(self,'channel'):await self.channel.close()
     def factory(self,stage,loaded,spec,bridge):return SyntheticBackend(stage,spec,bridge,self.calls)
     async def execute(self,**changes):
         args=dict(spec=self.spec,policy=self.policy,sender=self.sender,receiver=self.receiver,artifacts=self.artifacts,

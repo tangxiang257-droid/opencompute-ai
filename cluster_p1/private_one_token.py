@@ -10,6 +10,8 @@ from .projection_driver import Spec,Policy,Journal,Driver,Denied,need,nothing,sy
 from .byte_spool import Binding,Plan,Book,Spool,CHUNK,MANIFEST
 from .local_attempt import LocalAttemptJournal,_non_suppressing
 from .receipt_attempt import ReceiptAttemptJournal
+from .nonce_coordinator import _require_coordinated_pair
+from .async_role_bridge import AsyncRoleBridge
 from .envelope import Envelope,decode
 from .store import canonical
 from token_input_snapshot import read_input
@@ -157,19 +159,24 @@ async def run_one_token(*,spec,policy,sender,receiver,artifacts,source_book,dest
                         device=None,loader=None,conduit=None,factories=None):
     # Check all missing execution dependencies BEFORE I/O, grants, reserve or load.
     need(all(x is not None for x in (authority,resources,device,loader,conduit)))
+    asynchronous=type(conduit)is AsyncRoleBridge
+    conduit_methods=('require_current','exchange_hidden','publish_result','reservation_generation','transport_buffer_bytes','validate_journal','close') if asynchronous else ('require_current','exchange_hidden','exchange_result','result_binding')
     for provider,methods in (
         (authority,('hold_pipeline','hold_load','hold_stage0','hold_call','finalize','hold_publish')),
         (resources,('reserve_pipeline','verify_stage1','quarantine')),
         (device,('hold_load','open_scope','require_open','materialize','finish_scope','require_finished','quarantine')),
         (loader,('load','quarantine')),
-        (conduit,('require_current','exchange_hidden','exchange_result','result_binding'))):
+        (conduit,conduit_methods)):
         need(all(callable(getattr(provider,name,None)) for name in methods))
     need(type(spec)is Spec and len(spec.inputs)==1 and spec.epoch==1 and type(policy)is Policy)
-    need(type(sender)is LocalAttemptJournal and type(receiver)is ReceiptAttemptJournal and type(artifacts)is _Ledger)
+    _require_coordinated_pair(sender,receiver)
+    need(type(artifacts)is _Ledger)
+    if asynchronous:conduit.validate_journal(receiver)
     need(type(source_book)is Book and type(destination_book)is Book)
     required=policy.requirements(spec);factory=factories or _factories
     ticket=None;reservation_started=False;bridge=CompletionBridge(device);driver=None;sink=None;owner0=None;backends=[];spool=None;scope0=None;journal=None;load_started=False
     def source_context():
+        _require_coordinated_pair(sender,receiver)
         with sender._authorized() as owner,sender._store._tx() as c:
             s,p,tiles,v=sender._plan(c,owner,active=True)
             need((owner,s.task_id,s.session_id,s.epoch,s.model_hash,s.layout_hash,p,v)==(spec.owner,spec.request,spec.session,spec.epoch,spec.model,spec.layout,spec.plan_digest,spec.vocab))
@@ -204,10 +211,16 @@ async def run_one_token(*,spec,policy,sender,receiver,artifacts,source_book,dest
             ranges=tuple((s['layer_start'],s['layer_end']) for s in stages)
             probe=Envelope(spec.request,spec.session,spec.epoch,0,0,(0,1),spec.model,edge.layout_version,(1,1,spec.hidden),'float32',bytes(spec.hidden*4))
             need(len(probe.encode())<=65536)
-            pipeline_host=required['host']+65536+len(probe.encode());need(pipeline_host<=policy.host_capacity)
-            reservation_started=True;ticket=synchronous(resources.reserve_pipeline(spec,policy,dict(required,pipeline_host=pipeline_host,assignments=tuple(assignments),layer_ranges=ranges)))
+            transport_buffers=conduit.transport_buffer_bytes(spec) if asynchronous else 0
+            # Four logical receive capacities replace the legacy coalescing buffer.
+            # Provider must additionally admit actual decode/copy/allocator peaks.
+            need(type(transport_buffers)is int and transport_buffers>=0)
+            pipeline_host=required['host']+(0 if asynchronous else 65536)+len(probe.encode())+transport_buffers
+            need(pipeline_host<=policy.host_capacity)
+            reservation_started=True;ticket=synchronous(resources.reserve_pipeline(spec,policy,dict(required,pipeline_host=pipeline_host,transport_buffers=transport_buffers,assignments=tuple(assignments),layer_ranges=ranges)))
             need(ticket is not None and type(ticket)is not bool)
-            bp=Plan(Binding(spec.owner,spec.request,spec.session,'single-token',spec.epoch,receiver._receipt_peer.connection_generation,
+            generation=conduit.reservation_generation(spec) if asynchronous else receiver._receipt_peer.connection_generation
+            bp=Plan(Binding(spec.owner,spec.request,spec.session,'single-token',spec.epoch,generation,
                 spec.model,spec.layout,spec.input_snapshot,spec.token_digest,spec.preprocessing,spec.plan_digest),(1,),spec.vocab)
             source_book.reserve(result_key,bp,'source');destination_book.reserve(result_key,bp,'destination')
             source_book.confirm(result_key,bp,'source');destination_book.confirm(result_key,bp,'destination')
@@ -228,8 +241,9 @@ async def run_one_token(*,spec,policy,sender,receiver,artifacts,source_book,dest
             await owner0.close();owner0=None
             row=sender.query(0);need(row is not None and row['state']=='OUTPUT_COMMITTED')
             envelope=replace(probe,payload=row['output']);raw=envelope.encode()
-            received=synchronous(conduit.exchange_hidden(raw));need(type(received)is bytes and received==raw)
-            receiver.make_receiver().receive_bytes(received)
+            received=await conduit.exchange_hidden(raw) if asynchronous else synchronous(conduit.exchange_hidden(raw))
+            need(type(received)is bytes and received==raw)
+            if not asynchronous:receiver.make_receiver().receive_bytes(received)
             hidden=committed_hidden();actual=replace(spec,inputs=(hashlib.sha256(hidden).hexdigest(),))
             nothing(resources.verify_stage1(actual,ticket))
             with _non_suppressing(authority.hold_load(actual,1)) as value,_non_suppressing(device.hold_load(actual,1)) as completed:
@@ -243,6 +257,16 @@ async def run_one_token(*,spec,policy,sender,receiver,artifacts,source_book,dest
             need(result.output_digest==sink.digest.hexdigest())
         # Pipeline authorization exit must also succeed before source export.
         sink.enable_read()
+        if asynchronous:
+            def check():
+                need(committed_hidden()==hidden);nothing(conduit.require_current(actual))
+            @contextmanager
+            def publication_fence():
+                # No await inside this final authority scope/ledger commit.
+                with _non_suppressing(authority.hold_publish(actual)) as auth:
+                    nothing(auth);check();yield None
+            digest=await conduit.publish_result(actual,spool,artifacts,result_key,result.output_digest,check,publication_fence)
+            return {'manifest_digest':digest,'output_bytes':spec.output_bytes,'execution_allowed':False,'computation_verified':False}
         with _non_suppressing(authority.hold_publish(actual)) as auth:
             nothing(auth);need(committed_hidden()==hidden);nothing(conduit.require_current(actual))
             binding=synchronous(conduit.result_binding(actual));need(type(binding)is ReceiveBinding);_binding(binding,MAX_OBJECT)
@@ -268,6 +292,9 @@ async def run_one_token(*,spec,policy,sender,receiver,artifacts,source_book,dest
         failures=[]
         for action in ([lambda:driver.retire()] if driver else [])+([lambda:sink.quarantine()] if sink else [])+([lambda:bridge.quarantine(scope0)] if scope0 else [])+([lambda:resources.quarantine(spec,ticket,None)] if reservation_started else [])+([lambda:loader.quarantine(spec)] if load_started else [])+([lambda:source_book.isolate(result_key),lambda:destination_book.isolate(result_key)] if reservation_started else [])+[lambda b=b,s=s:b.retire(s) for b,s in backends]:
             try:action()
+            except BaseException as e:failures.append(e)
+        if asynchronous:
+            try:await conduit.close()
             except BaseException as e:failures.append(e)
         if failures:raise BaseExceptionGroup('pipeline failed; quarantine may be unknown',[error,*failures]) from None
         raise

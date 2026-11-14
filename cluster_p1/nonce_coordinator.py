@@ -21,6 +21,7 @@ from .store import Conflict,canonical
 from .local_attempt import LocalAttemptJournal,_non_suppressing
 from .handoff import EdgeBinding
 from .bound_connection import BoundReceiptConnection
+from .receipt_attempt import ReceiptAttemptJournal
 
 # Version 2 is declaration-only. It never issues legacy live reservations.
 _SOURCE_SCHEMA=(
@@ -110,6 +111,58 @@ class _CoordinatedSender(LocalAttemptJournal):
         if result[1]!=d['plan_digest']:raise Conflict('coordinator-fixed sender plan changed')
         return result
 
+def _require_issued_journal(journal,stage):
+    """Private local qualification check, NOT authentication or execution grant.
+
+    Exact issued objects only. Reopening history or copying attributes cannot
+    reconstruct qualification. Normal journal fences still apply per operation.
+    Direct hostile Python mutation and database rollback are outside this seam.
+    """
+    expected=_CoordinatedSender if stage==0 else ReceiptAttemptJournal
+    if type(journal)is not expected:raise TypeError('exact coordinator-issued journal required')
+    co=getattr(journal,'_coordinator',None)
+    if type(co)is not NonceCoordinator:raise Conflict('live exact coordinator required')
+    # Follow the journal's existing journal -> coordinator lock order.
+    with journal._authorized() as owner,co._access():
+        issued=co._issued_journals.get(id(journal))
+        if issued is None or issued[0] is not journal:raise Conflict('journal was not issued here')
+        _,reservation,issued_stage,path,authorize,execution,bound=issued
+        d=co._reservation(reservation)
+        if (issued_stage!=stage or owner!=co._owner or journal._authorize is not authorize
+                or journal._execution is not execution
+                or str(Path(journal._path).absolute())!=path
+                or str(Path(journal._store.path).absolute())!=path
+                or journal._task_id!=d['task']['task_id']
+                or journal._session_id!=d['session']['session_id']):
+            raise Conflict('issued journal binding changed')
+        peer=None
+        if stage==0:
+            if journal._coordinator_body!=reservation.body:raise Conflict('sender declaration changed')
+        else:
+            if type(bound)is not BoundReceiptConnection:raise Conflict('fixed receipt connection required')
+            bound._journal(journal)
+            p=bound.expected_peer
+            peer={'node':p.node_id,'certificate':p.certificate_sha256,'generation':p.connection_generation}
+        with co._connection() as c:
+            if c.execute('SELECT body FROM sessions WHERE nonce=?',(journal._session_id,)).fetchone()!=(reservation.body,):
+                raise Conflict('registry declaration changed')
+            binding=canonical({'path':path,'peer':peer})
+            if c.execute('SELECT binding FROM slots WHERE nonce=? AND stage=?',(journal._session_id,stage)).fetchone()!=(binding,):
+                raise Conflict('registry slot changed')
+        if stage==1:
+            with journal._receipt_fence():pass
+        return co,reservation
+
+def _require_coordinated_sender(sender):
+    _require_issued_journal(sender,0)
+    return sender
+
+def _require_coordinated_pair(sender,receiver):
+    a,r=_require_issued_journal(sender,0)
+    b,s=_require_issued_journal(receiver,1)
+    if a is not b or r is not s:raise Conflict('same live coordinator reservation required')
+    return sender,receiver
+
 class NonceCoordinator:
     @classmethod
     def initialize(cls,path,*,authorize,source_namespace=None):
@@ -125,7 +178,7 @@ class NonceCoordinator:
             raise ValueError('trusted stable source namespace required')
         if not callable(authorize):raise TypeError('owner fence required')
         obj=cls.__new__(cls);obj._path=Path(path).absolute();obj._authorize=authorize
-        obj._lock=threading.RLock();obj._closed=False;obj._retired=False;obj._reservations={}
+        obj._lock=threading.RLock();obj._closed=False;obj._retired=False;obj._reservations={};obj._issued_journals={}
         obj._source_namespace=source_namespace;obj._source_writable=fresh and source_namespace is not None
         flags=os.O_RDWR|os.O_NOFOLLOW|(os.O_CREAT|os.O_EXCL if fresh else 0)
         try:
@@ -285,7 +338,18 @@ class NonceCoordinator:
         d,fence=self._claim(r,0,path)
         j=_CoordinatedSender.create(path,*self._records(d),authorize=fence,execution_authorize=execution_authorize)
         j._coordinator_body=r.body
-        return self._register_journal(j,d)
+        self._register_journal(j,d)
+        return self._remember_journal(j,r,0,path,None)
+
+    def _remember_journal(self,j,r,stage,path,bound):
+        try:
+            with self._access():
+                self._reservation(r)
+                j._coordinator=self
+                self._issued_journals[id(j)]=(j,r,stage,str(Path(path).absolute()),j._authorize,j._execution,bound)
+            return j
+        except BaseException:
+            self._retired=True;j.close();raise
 
     def create_receiver(self,r,bound,path,*,execution_authorize):
         if self._source_namespace is not None:raise Conflict('source-only registry never grants execution')
@@ -302,7 +366,8 @@ class NonceCoordinator:
                          st[0].assigned_node,st[1].assigned_node)
         j=bound.create_journal(path,t,s,st,authorize=fence,execution_authorize=execution_authorize,
              receipt_binding=edge,local_node=st[1].assigned_node,expected_config_sha256=d['config_sha256'])
-        return self._register_journal(j,d)
+        self._register_journal(j,d)
+        return self._remember_journal(j,r,1,path,bound)
 
     def _verify_source_schema(self,c):
         if self._source_namespace is None:raise Conflict('source mode not enabled')
@@ -378,4 +443,4 @@ class NonceCoordinator:
     def close(self):
         with self._lock:
             if not self._closed:
-                self._closed=True;self._reservations.clear();os.close(self._fd)
+                self._closed=True;self._reservations.clear();self._issued_journals.clear();os.close(self._fd)
