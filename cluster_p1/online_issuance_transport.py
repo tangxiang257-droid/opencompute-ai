@@ -82,7 +82,7 @@ class _IssuanceEndpoint(_HistoryEndpoint):
                 _nothing(allowed);yield principal
     async def send(self,body,sequence):
         self.current()
-        await self.channel.send(self.envelope(self._scope,sequence,_json(body)),max_frame_bytes=65536)
+        await self.channel.send(self.envelope(self._scope,sequence,_json(body)),max_frame_bytes=65536,write_fence=getattr(self,'_write_fence',None))
     async def receive(self,sequence):
         delivery=await self.channel.receive()
         try:

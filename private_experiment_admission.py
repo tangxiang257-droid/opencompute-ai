@@ -1,6 +1,7 @@
-"""Fresh isolated experiment confirmation -> existing issuer registration only.
+"""Fresh isolated experiment confirmation -> existing registration/optional installation.
 
-No execution/claim adapter, C import, public route or trusted default provider.
+No execution provider, public route or trusted default provider.
+Optional online installation requires a separate explicitly configured authority.
 Old v12/v13 rows and plan prohibitions remain untouched. All reopen is query-only.
 A single coordinator calls the existing issuer synchronously once; any uncertain
 outcome burns eligibility, even when history currently reports no registration.
@@ -31,10 +32,11 @@ class Receipt:
  execution_allowed:bool=False
 
 class ExperimentAdmission(_Database):
- def __init__(self,path,consent,*,source_domain,trigger=None,policy_authority=None):
+ def __init__(self,path,consent,*,source_domain,trigger=None,policy_authority=None,installation_authority=None):
   need(type(consent)is TaskConsent);hashtext(source_domain)
   p=Path(path).absolute();s=p.parent.lstat();need(stat.S_ISDIR(s.st_mode) and s.st_uid==os.geteuid() and stat.S_IMODE(s.st_mode)&0o077==0)
   if p.exists() or p.is_symlink():need(stat.S_ISREG(p.lstat().st_mode) and not p.is_symlink())
+  self.installation_authority=installation_authority;self._installation_authority=installation_authority;self._installation_hold=getattr(installation_authority,'hold',None);self._installations={};self._claim_active=None
   self.consent=consent;self.domain=source_domain;self.trigger=trigger;self.policy=policy_authority
   self._consent=consent;self._domain=source_domain;self._hold=getattr(policy_authority,'hold',None)
   self._trigger=trigger;self._confirm=getattr(trigger,'confirm',None);self._policy=policy_authority
@@ -54,6 +56,7 @@ class ExperimentAdmission(_Database):
    self._check(write);need(asyncio.get_running_loop() is self.loop)
    need(self.consent is self._consent and self.domain==self._domain)
    need(self.trigger is self._trigger and getattr(self.trigger,'confirm',None)==self._confirm and self.policy is self._policy and getattr(self.policy,'hold',None)==self._hold)
+   need(self.installation_authority is self._installation_authority and getattr(self.installation_authority,'hold',None)==self._installation_hold)
    self.consent._current()
    if self._issuer is not None:
     need((self._issuer.namespace,self._issuer.incarnation)==self._issuer_pin and self._issuer.source_provider is self and self._issuer.authorize is self and self._issuer.resources is self._issuer_resources)
@@ -69,12 +72,17 @@ class ExperimentAdmission(_Database):
   need(row is None or row[1]==0)
   return 0 if row is None else row[0]
  def _valid(self,credential,owner,pid,states):
+  need(self.consent.authority._lock.locked())
+  return self._valid_current(credential,owner,pid,states)
+ def _valid_current(self,credential,owner,pid,states):
+  # Private synchronous core under trusted USER/task fences; never await here.
   self._ready();r=self._row(owner,pid);b=json.loads(r[0]);need(r[2]==self.boot and r[3] in states and digest(b)==r[1])
   need(not self.db.execute('SELECT 1 FROM revoked WHERE owner=? AND source=?',(owner,b['source_task'])).fetchone())
   need(self.consent._now()<b['policy']['expires_at'])
   need(self._source_revision(owner,b['source_task'])==b['source_revision'])
   need(self._issuer_pin==(b['issuer']['namespace'],b['issuer']['incarnation']))
-  source,s=self.consent._source(credential,b['source_task'],owner);need(source==b['source'] and s.token_count==1)
+  s=self.consent.reader._read_current(credential,b['source_task'],owner)
+  source=dict(input_snapshot=s.snapshot_digest,token_digest=s.token_blob_sha256,preprocessing=s.contract_sha256,model_record=s.model_record_digest);need(source==b['source'] and s.token_count==1 and not s.execution_allowed and not s.computation_verified)
   return b,r
  @contextmanager
  def _policy_scope(self,body,action):
@@ -160,7 +168,12 @@ class ExperimentAdmission(_Database):
   need((namespace,source_id,owner,task_id,declaration_digest,source_binding)==(a['namespace'],a['source_id'],b['owner'],b['execution_task'],digest(b['declaration']),{k:b['source'][k] for k in ('input_snapshot','token_digest','preprocessing')}));a['checked']=True
  @contextmanager
  def hold(self,request,action):
-  # Deliberately no claim/install/execute authority in this increment.
+  if action=='claim':
+   from private_experiment_installation import claim_fence
+   with claim_fence(self,request):yield None
+   return
+  # Registration leaf; claim above is only active inside original online service.
+  # No generic install/load/execute action is accepted.
   a=self.active;need(action=='register' and a is not None and a['task'] is asyncio.current_task() and a['thread']==threading.get_ident() and self.consent.authority._lock.locked())
   b,r=self._valid(a['credential'],a['owner'],a['pid'],{'DISPATCHING'})
   need(request==dict(version=2,declaration=b['declaration'],source_binding={k:b['source'][k] for k in ('input_snapshot','token_digest','preprocessing')},authorization=a['context']))
@@ -193,9 +206,15 @@ class ExperimentAdmission(_Database):
    self.active=None
    if attempted:self._unknown(pid);issuer.retired=True
    raise
+ async def installation_service(self,credential,pid,sha,stage,channel,*,issuer_node,issuer_certificate,identity=None,authorize=None,resources=None):
+  from private_experiment_installation import create_service
+  return await create_service(self,credential,pid,sha,stage,channel,issuer_node=issuer_node,issuer_certificate=issuer_certificate,identity=identity,authorize=authorize,resources=resources)
+ async def claim_online(self,issuer,registration,intent,peer,admission):
+  from private_experiment_installation import claim_online
+  return await claim_online(self,issuer,registration,intent,peer,admission)
  async def history(self,credential,pid):
   self._ready(False);c=self.consent;owner=c.service._download_owner(credential)
   async with c.authority._lock:
    with c._user(credential,owner):r=self._row(owner,pid)
   return Receipt(pid,r[1],r[3])
- def close(self):self.published.clear();self._registered.clear();self.active=None;super().close()
+ def close(self):self.published.clear();self._registered.clear();self._installations.clear();self._claim_active=None;self.active=None;super().close()

@@ -18,12 +18,12 @@ class _PostTrigger:
   return Confirmation(*key,body['owner'])
 
 class ExperimentConfirmationApp:
- def __init__(self,path,consent,*,source_domain,origin=None,credential_for_scope=None,policy_authority=None):
+ def __init__(self,path,consent,*,source_domain,origin=None,credential_for_scope=None,policy_authority=None,installation_authority=None):
   u=urlsplit(origin or '');need(u.scheme=='https' and u.netloc and not u.username and not u.password and not u.path and not u.query and not u.fragment)
   self.origin=origin;self.host=u.netloc;self._origin=origin;self._host=self.host
   self.credential_for_scope=credential_for_scope;self._resolver=credential_for_scope
   self.trigger=_PostTrigger();self._trigger=self.trigger
-  self.admission=ExperimentAdmission(path,consent,source_domain=source_domain,trigger=self.trigger,policy_authority=policy_authority);self._admission=self.admission
+  self.admission=ExperimentAdmission(path,consent,source_domain=source_domain,trigger=self.trigger,policy_authority=policy_authority,installation_authority=installation_authority);self._admission=self.admission
   self.loop=asyncio.get_running_loop();self.challenges={};self.retired=False
  def _seal(self):
   self.retired=True;self.challenges.clear();self._trigger.pending.clear()
