@@ -1,5 +1,11 @@
 # Raw role installation dial — disabled by default
 
+Current material-loading increment: dial_stage additionally requires explicit
+canonical material bytes and their independent pin, and uses tls_material's
+sealed snapshot loader. This suite stubs that loader; validation/tls_material
+tests its real local OpenSSL path and the same A/B/C memory chain. The historical
+context-boundary description below refers to the original 72cfaec candidate.
+
 Fixed base: 72cfaec. `cluster_p1.role_dial.dial_stage` takes trusted local endpoint
 parameters, pinned LaunchConfig/TLSConfig, existing RoleInstallStore/RoleResources
 and the same explicit role runtime providers. It calls raw asyncio.open_connection

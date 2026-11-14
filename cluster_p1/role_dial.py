@@ -11,9 +11,11 @@ from .control_exchange import _need
 from .online_issuance_transport import _json,_parse
 from .prepared_receipt import _retire_failed
 from .delivery_receipt import _with_cleanup
+from .tls_material import load_context
 
-async def dial_stage(config,host,port,tls,grants,store,d,*,server_hostname=None,enabled=False,timeout=10,identity=None,authorize=None,resources=None,completion=None,runtime=None):
+async def dial_stage(config,host,port,tls,grants,store,d,*,material=None,material_pin=None,server_hostname=None,enabled=False,timeout=10,identity=None,authorize=None,resources=None,completion=None,runtime=None):
  _need(enabled is True)
+ _need(type(material)is bytes and type(material_pin)is str)
  for value in (host,server_hostname):_need(type(value)is str and 0<len(value)<=253 and not any(c.isspace() or ord(c)<32 for c in value))
  _need(type(port)is int and 1<=port<=65535 and type(timeout) in (int,float) and math.isfinite(timeout) and 0<timeout<=10)
  opts=dict(identity=identity,authorize=authorize,resources=resources,completion=completion,runtime=runtime)
@@ -40,7 +42,7 @@ async def dial_stage(config,host,port,tls,grants,store,d,*,server_hostname=None,
   ticket=opts['runtime']['ticket'];_need(resources.tickets.get(id(ticket)) is ticket and ticket.reservation_id==descriptor['resource_id'])
   with resources.hold(descriptor['resource_id'],descriptor):pass
   leaf()
- check();ctx=fixed_tls.context()
+ check();ctx=load_context(fixed_tls,material,material_pin)
  _need(type(ctx)is ssl.SSLContext and ctx.verify_mode==ssl.CERT_REQUIRED and ctx.check_hostname and ctx.minimum_version>=ssl.TLSVersion.TLSv1_2)
  context_pin=(ctx.verify_mode,ctx.check_hostname,ctx.minimum_version);check()
  # No local fence/transaction spans the actual network await.
