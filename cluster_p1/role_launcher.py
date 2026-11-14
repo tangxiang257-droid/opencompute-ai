@@ -139,6 +139,10 @@ class _Owner:
        if _cleanup_failure(error):errors.append(error)
     try:await self._close_owned()
     except BaseException as error:errors.append(error)
+    result_owner=getattr(self,'_result_transport_owner',None)
+    if result_owner is not None:
+     try:await result_owner[1]()
+     except BaseException as error:errors.append(error)
     for channel in self._extra_channels:
      try:await _close_channel(channel)
      except BaseException as error:errors.append(error)

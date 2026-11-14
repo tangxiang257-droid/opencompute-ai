@@ -236,15 +236,7 @@ class StageBOperation(_Operation):
         self.receiver=receiver;self.spool=spool;self.journal_path=journal_path
         self.journal=None;self.driver=None;self.sink=None;self.result=None
         self._init(spec,policy,instance=instance,layer_range=layer_range,authority=authority,resources=resources,ticket=ticket,device=device,loader=loader,factories=factories)
-    def received_bytes(self):
-        with self.receiver._authorized() as owner,self.receiver._receipt_fence(),self.receiver._store._tx() as c:
-            s,p,tiles,values=self.receiver._sources(c,owner)
-            need((owner,s.task_id,s.session_id,s.epoch,s.model_hash,s.layout_hash,p)==(self.spec.owner,self.spec.request,self.spec.session,self.spec.epoch,self.spec.model,self.spec.layout,self.spec.plan_digest))
-            need(len(values)==1 and len(tiles)==1 and tiles[0].input.shape==(1,1,self.spec.hidden)
-                 and type(values[0])is bytes and len(values[0])==self.spec.hidden*4 and hashlib.sha256(values[0]).hexdigest()==self.spec.inputs[0])
-            stage=json.loads(c.execute('SELECT body FROM p1_stages WHERE session_id=? AND stage_id=1',(self.spec.session,)).fetchone()[0])
-            need((stage['layer_start'],stage['layer_end'])==self.layer_range)
-            return values[0]
+    def received_bytes(self):return committed_b_input(self.receiver,self.spec,self.layer_range)
     def _before_load(self):
         self.received_bytes();self.spool.check(('RESERVED',))
         with self.spool.source.tx() as c:
@@ -290,3 +282,13 @@ class StageBOperation(_Operation):
         if errors:raise BaseExceptionGroup('stage B retention uncertain',errors)
     def close(self):
         if self.journal is not None:self.journal.close()
+
+def committed_b_input(receiver,spec,layer_range):
+    with receiver._authorized() as owner,receiver._receipt_fence(),receiver._store._tx() as c:
+        s,p,tiles,values=receiver._sources(c,owner)
+        need((owner,s.task_id,s.session_id,s.epoch,s.model_hash,s.layout_hash,p)==(spec.owner,spec.request,spec.session,spec.epoch,spec.model,spec.layout,spec.plan_digest))
+        need(len(values)==1 and len(tiles)==1 and tiles[0].input.shape==(1,1,spec.hidden)
+             and type(values[0])is bytes and len(values[0])==spec.hidden*4 and hashlib.sha256(values[0]).hexdigest()==spec.inputs[0])
+        stage=json.loads(c.execute('SELECT body FROM p1_stages WHERE session_id=? AND stage_id=1',(spec.session,)).fetchone()[0])
+        need((stage['layer_start'],stage['layer_end'])==layer_range)
+        return values[0]
