@@ -103,8 +103,12 @@ class _Operation:
         self.bridge.open_scope(self.spec,0,scope)
     def _load(self):
         self.ready();self.loaded=True
+        check_loader=getattr(self.device,'check_loader',None)
+        if check_loader is not None:nothing(check_loader(self.loader,self.stage))
         with _non_suppressing(self.authority.hold_load(self.spec,self.stage)) as a,_non_suppressing(self.device.hold_load(self.spec,self.stage)) as d:
-            nothing(a);nothing(d);self._before_load();loaded=synchronous(self.loader.load(self.stage,self.spec))
+            nothing(a);nothing(d);self._before_load()
+            if check_loader is not None:nothing(check_loader(self.loader,self.stage))
+            loaded=synchronous(self.loader.load(self.stage,self.spec))
             need(type(loaded)is Loaded and loaded.model==self.spec.model and loaded.layout==self.spec.layout
                  and loaded.instance==self.instance and loaded.layer_range==self.layer_range)
             self.backend=self.factory(self.stage,loaded,self.spec,self.bridge)

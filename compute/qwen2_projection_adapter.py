@@ -201,6 +201,7 @@ class Qwen2ProjectionAdapter:
                      and type(count) is int and 0 < count <= 8192
                      and column + count <= self._vocab)
             self._fresh_stage()
+            _nothing(self._completion.require_open(scope, self._spec, self))
             self._materialized()
             with self._torch.inference_mode():
                 # Slice the head BEFORE linear. No full vocabulary result exists.
