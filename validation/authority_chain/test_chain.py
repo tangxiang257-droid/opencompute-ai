@@ -192,7 +192,7 @@ class Chain(InputBase):
   actual=await self.execute_a()
   dr,dw,rr,rw=wire.streams('b','c');s=actual;g=Grant(s.request,s.session,1,1,(0,1),s.model,2)
   data=Channel(dr,dw,wire.config('c'),{'c':{g}},capacity_bytes=32816,capacity_tiles=1);self.channels.append(data)
-  meta,cmeta=self.pair('b','c',1)
+  meta,cmeta=self.result_metadata_pair()
   binding=ReceiveBinding(Scope(s.request,1,s.plan_digest,s.layout,'out','logits',s.session,'single-token','b',hashlib.sha256(b'b').hexdigest(),'placeholder'),1,s.model,2,'float32',((0,1,(1,1,s.vocab)),))
   sender=ResultSender(data,meta,binding,identity=Identity(),authorize=Holds());self.owned.append(sender)
   source=Book(self.root/'source-book',2097152);dest=Book(self.root/'dest-book',2097152);self._dependency_closers.extend((source.close,dest.close))
@@ -205,12 +205,15 @@ class Chain(InputBase):
   receiving=await ReceivingLauncher.create(configuration(self.root,'C',d),cc,store,d,identity=Identity(),authorize=self.cp,maintenance=self.cp,resources=CPolicy());self.owned.append(receiving);self.c_launcher=receiving
   await asyncio.gather(controller.pending(),receiving.serve_once())
   await asyncio.gather(controller.activate(CommittedBInput(control)),receiving.serve_once())
-  receiving.attach_result(actual,rr,rw,wire.config('b'),cmeta,binding,identity=Identity(),authorize=Holds())
-  bg,cg=self.pair('b','c',1);self.launchers[1].attach_gate(bg,d,identity=Identity(),authorize=CPolicy());receiving.attach_gate(cg,identity=Identity(),authorize=CPolicy())
+  await self.attach_c_result(receiving,actual,rr,rw,cmeta,binding,d)
   ack,manifest=await self.deliver_c_result(receiving,control,sender,actual,spool,op,d)
   self.assertEqual(ack['manifest_digest'],manifest);self.assertEqual(store.history(self.owner,s.request)['state'],'RECEIVED')
   chunks=[];self.artifacts.fetch(self.owner,s.request,lambda _,raw:chunks.append(raw));self.assertEqual(b''.join(chunks),struct.pack('<f',1.)*100)
   return actual
+ def result_metadata_pair(self):return self.pair('b','c',1)
+ async def attach_c_result(self,receiving,actual,rr,rw,cmeta,binding,d):
+  receiving.attach_result(actual,rr,rw,wire.config('b'),cmeta,binding,identity=Identity(),authorize=Holds())
+  bg,cg=self.pair('b','c',1);self.launchers[1].attach_gate(bg,d,identity=Identity(),authorize=CPolicy());receiving.attach_gate(cg,identity=Identity(),authorize=CPolicy())
  async def deliver_c_result(self,receiving,control,sender,actual,spool,op,d):
   self.spawn_job(receiving.serve_gate())
   receipt=await control.dispatch();self.assertEqual(receipt['state'],'COMMITTED');op.enable_read()
