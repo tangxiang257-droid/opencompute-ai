@@ -225,7 +225,10 @@ class StageLauncher(_Owner):
    return self.operation
   except BaseException:
    self._seal();raise
+ def _control_dial_entry(self):
+  _need(not getattr(self,'_control_dial_pending',False) or asyncio.current_task() is self._control_dial_task)
  async def attach(self,reader,writer,tls,grants,*,identity=None,authorize=None):
+  self._control_dial_entry()
   self.check();_need(self.operation is not None and not self._attach_attempted)
   for p in (identity,authorize):_methods(p,('hold',))
   self._available_writer(writer)
@@ -249,6 +252,7 @@ class StageLauncher(_Owner):
   Does not create identity, execution/resource authority or device providers.
   Missing/failed attachment permanently seals this launcher, with no retry.
   """
+  self._control_dial_entry()
   _need(not getattr(self,'_control_assembly_pending',False) or asyncio.current_task() is self._control_assembly_task)
   try:
    self.check();_need(self._attached_ready and self.installed is not None and not self._actions_attempted)
@@ -258,6 +262,7 @@ class StageLauncher(_Owner):
  async def _attach_taken_actions(self,channel,*,authority_node=None,authority_certificate=None,identity=None,clock=None):
   """Finish only a transport already exclusively taken by this launcher."""
   from private_experiment_actions import ActionGate
+  self._control_dial_entry()
   _need(not getattr(self,'_control_assembly_pending',False) or asyncio.current_task() is self._control_assembly_task)
   try:
    self.check();_need(self._attached_ready and self.installed is not None and not self._actions_attempted)

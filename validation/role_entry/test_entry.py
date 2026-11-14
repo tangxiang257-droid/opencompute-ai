@@ -24,9 +24,10 @@ class Flow(Topology):
   kw=dict(enabled=True,identity=Holds(),authorize=Holds(),action_identity=Holds(),clock=self.clock,authority_node='issuer',authority_certificate=hashlib.sha256(b'issuer').hexdigest())
   self.last_entry=(args,kw,client,ps)
   return args,kw,client,ps
+ async def connect_role(self,args,kw):return await topology.bind_control_ready(*args,**kw)
  async def register_role(self,stage,spec,operation,*,bind=True):
   args,kw,client,ps=await self.endpoints(stage,spec)
-  role,control=await asyncio.gather(topology.bind_control_ready(*args,**kw),topology.receive_control(self.adm,self.token,self.receipt.proposal_id,self.receipt.proposal_digest,stage,client,identity=Holds(),resources=self.central_resources,expected_charge=2097152))
+  role,control=await asyncio.gather(self.connect_role(args,kw),topology.receive_control(self.adm,self.token,self.receipt.proposal_id,self.receipt.proposal_digest,stage,client,identity=Holds(),resources=self.central_resources,expected_charge=2097152))
   self.assertIsNot(control.descriptor,role.descriptor);self.controls[stage]=control;self.owned.append(control)
   async def loop():
    while True:await args[0].serve_once()

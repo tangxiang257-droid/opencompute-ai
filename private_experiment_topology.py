@@ -173,6 +173,7 @@ async def bind_control_ready(launcher,reader,writer,tls,grants,action_channel,*,
  consumed/unknown. READY does not prove central receipt or physical device stop.
  """
  need(enabled is True and type(launcher)is StageLauncher)
+ launcher._control_dial_entry()
  need(not getattr(launcher,'_control_assembly_attempted',False) and asyncio.current_task() not in launcher._jobs)
  launcher.check()
  need(launcher._installed_ready and launcher.operation is not None and not launcher._attach_attempted and not launcher._actions_attempted)
