@@ -1,0 +1,278 @@
+"""Private single-token composition. Missing trusted execution dependencies DENY.
+
+No listeners/default invocation. Actual auth/resource/device/conduit providers
+are external; tests substitute only those boundaries and loaded computation.
+"""
+from contextlib import contextmanager
+from dataclasses import dataclass,replace
+import hashlib,json,os,struct,uuid
+from .projection_driver import Spec,Policy,Journal,Driver,Denied,need,nothing,synchronous
+from .byte_spool import Binding,Plan,Book,Spool,CHUNK,MANIFEST
+from .local_attempt import LocalAttemptJournal,_non_suppressing
+from .receipt_attempt import ReceiptAttemptJournal
+from .envelope import Envelope,decode
+from .store import canonical
+from token_input_snapshot import read_input
+from result_artifacts import _Ledger
+from isolated_tls_delivery import ReceiveBinding,_binding
+from framed_result_transport import ObjectContext,payload,MAX_OBJECT
+
+@dataclass(frozen=True)
+class Loaded:
+    stage:object
+    model:str
+    layout:str
+    layer_range:tuple
+    instance:str
+
+class PinnedStageLoader:
+    """Source-pin validating loader; construction does not import/load a model."""
+    def __init__(self,roots,devices,config_sha,weight_sha,layout_sha,split,instances):
+        self.args=(roots,devices,config_sha,weight_sha,layout_sha,split,instances)
+        self.retired=False;self.loaded=[];self.started=set()
+    def load(self,stage,spec):
+        roots,devices,config,weights,layout,split,instances=self.args
+        need(not self.retired and stage in (0,1) and stage not in self.started and spec.model==weights and spec.layout==layout)
+        self.started.add(stage)
+        from compute.qwen2_tiled_stage import TiledQwen2Stage
+        value=TiledQwen2Stage.from_safetensors(roots[stage],expected_sha256=weights,
+            expected_config_sha256=config,stage_id=stage,split_layer=split,device=devices[stage])
+        self.loaded.append(value)  # keep ownership even if validation below fails
+        need(value.meta['hidden']==spec.hidden and value.meta['vocab']==spec.vocab)
+        return Loaded(value,weights,layout,value.layer_range,instances[stage])
+
+    def quarantine(self,spec):
+        self.retired=True  # retain stages; external load scope owns partial failures
+
+class CompletionBridge:
+    """Ownership tracking only; external device adapter must supply REAL fences."""
+    def __init__(self,device):self.device=device;self.scopes={};self.retired=False
+    def open_scope(self,spec,token,scope):
+        need(not self.retired and scope not in self.scopes)
+        self.scopes[scope]=dict(spec=spec,owner=None,pending=None,finished=False)
+        nothing(self.device.open_scope(spec,token,scope))
+    def require_open(self,scope,spec,adapter):
+        s=self.scopes[scope];need(not self.retired and s['spec']==spec and not s['finished'])
+        need(s['owner'] is None or s['owner'] is adapter);s['owner']=adapter
+        nothing(self.device.require_open(scope,spec,adapter))
+        need(not self.retired)
+    def require_materialized(self,scope,adapter):
+        s=self.scopes[scope];need(not self.retired and s['owner'] is adapter and s['pending'] is None)
+    def register_pending(self,scope,adapter,pending):
+        self.require_materialized(scope,adapter);s=self.scopes[scope]
+        need(not s['finished'] and pending.scope==scope and pending.owner is adapter)
+        s['pending']=pending
+    def materialize(self,scope,pending,size):
+        s=self.scopes[scope];need(not self.retired and s['pending'] is pending and not s['finished'])
+        limit=65536 if getattr(s['owner'],'stage_id',None)==0 else CHUNK
+        need(size==pending.count*4 and 0<size<=limit)
+        value=synchronous(self.device.materialize(scope,pending,size))
+        need(not self.retired and type(value)is bytes and len(value)==size)
+        pending.tensor=None;s['pending']=None
+        return value
+    def finish_scope(self,scope):
+        s=self.scopes[scope];need(not self.retired and s['pending'] is None and not s['finished'])
+        nothing(self.device.finish_scope(scope));need(not self.retired);s['finished']=True
+    def require_finished(self,scope,adapter):
+        s=self.scopes[scope];need(not self.retired and s['owner'] is adapter and s['pending'] is None and s['finished'])
+        nothing(self.device.require_finished(scope,adapter));need(not self.retired)
+    def quarantine(self,scope):self.retired=True;nothing(self.device.quarantine(scope))
+
+class _PushSpool:
+    """Concrete single-token sink adapting the existing Book/Spool read format."""
+    def __init__(self,spool,spec):
+        self.spool=spool;self.spec=spec;self.file=None;self.column=0;self.digest=hashlib.sha256();self.chunks=[]
+        b=spool.source
+        with b.tx() as c:
+            c.execute('CREATE TABLE IF NOT EXISTS private_producer_v1(id TEXT PRIMARY KEY,spec TEXT NOT NULL,state TEXT NOT NULL,working INTEGER NOT NULL,retired INTEGER NOT NULL)')
+            need(c.execute('SELECT 1 FROM private_producer_v1 WHERE id=?',(spool.rid,)).fetchone() is None)
+            c.execute("INSERT INTO private_producer_v1 VALUES(?,?,'CONSUMED',0,0)",(spool.rid,spec.digest))
+        spool.check(('RESERVED',));b.transition(spool.rid,spool.plan,'source','RESERVED','ADMITTED')
+        spool.root.mkdir(mode=0o700);self.file=spool.path.open('xb')
+    def append(self,token,column,block):
+        self.spool.check();need(token==0 and column==self.column and type(block)is bytes)
+        expected=min(8192,self.spec.vocab-column)*4
+        need(len(block)==expected and 0<expected<=CHUNK)
+        need(all((x[0]&0x7f800000)!=0x7f800000 for x in struct.iter_unpack('<I',block)))
+        need(self.file.write(block)==len(block));self.column+=len(block)//4
+        self.digest.update(block);self.chunks.append(hashlib.sha256(block).hexdigest())
+    def seal(self,token,digest):
+        self.spool.check();need(token==0 and self.column==self.spec.vocab and digest==self.digest.hexdigest())
+        self.file.flush();os.fchmod(self.file.fileno(),0o400);os.fsync(self.file.fileno());self.file.close();self.file=None
+        fd=os.open(self.spool.root,os.O_RDONLY|os.O_DIRECTORY)
+        try:os.fsync(fd)
+        finally:os.close(fd)
+        manifest=canonical({'plan':json.loads(self.spool.plan.encoded()),'objects':[{'bytes':self.spec.output_bytes,'sha256':digest,'chunks':self.chunks}],
+            'sha256':digest,'file_identity':self.spool.identity()})
+        need(len(manifest.encode())<=MANIFEST)
+        self.spool.source.transition(self.spool.rid,self.spool.plan,'source','ADMITTED','SEALED',manifest)
+    def enable_read(self):
+        with self.spool.source.tx() as c:
+            need(c.execute("UPDATE private_producer_v1 SET state='DONE' WHERE id=? AND spec=? AND state='CONSUMED' AND retired=0",(self.spool.rid,self.spec.digest)).rowcount==1)
+    def quarantine(self,*args):
+        failures=[]
+        try:
+            if self.file is not None:self.file.close();self.file=None
+        except BaseException as e:failures.append(e)
+        try:
+            with self.spool.source.tx() as c:
+                c.execute('UPDATE private_producer_v1 SET retired=1 WHERE id=?',(self.spool.rid,))
+                c.execute('UPDATE reservation SET retired=1 WHERE id=?',(self.spool.rid,))
+        except BaseException as e:failures.append(e)
+        if failures:raise BaseExceptionGroup('spool quarantine incomplete',failures)
+
+class _Resources:
+    def __init__(self,provider,ticket):self.p=provider;self.ticket=ticket
+    def reserve_request(self,spec,policy):nothing(self.p.verify_stage1(spec,self.ticket));return self.ticket
+    def verify_token(self,spec,ticket,token):need(ticket is self.ticket and token==0);nothing(self.p.verify_stage1(spec,ticket))
+    def quarantine(self,spec,ticket,scope):nothing(self.p.quarantine(spec,ticket,scope))
+
+class _BoundAuthority:
+    def __init__(self,parent,check):self.parent=parent;self.check=check
+    @contextmanager
+    def hold_call(self,spec,token):
+        with _non_suppressing(self.parent.hold_call(spec,token)) as value:
+            nothing(value);self.check();yield None;self.check()
+    def finalize(self,spec,token,digest,commit):
+        self.check()
+        def checked():self.check();commit()
+        return self.parent.finalize(spec,token,digest,checked)
+
+def _factories(stage,loaded,spec,completion):
+    from compute.qwen2_projection_adapter import Stage0ByteAdapter,Qwen2ProjectionAdapter
+    if stage==0:return Stage0ByteAdapter(loaded.stage,spec,completion=completion)
+    return Qwen2ProjectionAdapter(loaded.stage,spec,completion=completion,
+        expected_model=loaded.model,expected_layout=loaded.layout,expected_layer_range=loaded.layer_range)
+
+def _coalesce(blocks):
+    held=b''
+    for block in blocks:
+        need(type(block)is bytes and 0<len(block)<=CHUNK)
+        held+=block
+        if len(held)==65536:yield held;held=b''
+    if held:yield held
+
+async def run_one_token(*,spec,policy,sender,receiver,artifacts,source_book,destination_book,
+                        spool_root,journal_path,result_key,authority=None,resources=None,
+                        device=None,loader=None,conduit=None,factories=None):
+    # Check all missing execution dependencies BEFORE I/O, grants, reserve or load.
+    need(all(x is not None for x in (authority,resources,device,loader,conduit)))
+    for provider,methods in (
+        (authority,('hold_pipeline','hold_load','hold_stage0','hold_call','finalize','hold_publish')),
+        (resources,('reserve_pipeline','verify_stage1','quarantine')),
+        (device,('hold_load','open_scope','require_open','materialize','finish_scope','require_finished','quarantine')),
+        (loader,('load','quarantine')),
+        (conduit,('require_current','exchange_hidden','exchange_result','result_binding'))):
+        need(all(callable(getattr(provider,name,None)) for name in methods))
+    need(type(spec)is Spec and len(spec.inputs)==1 and spec.epoch==1 and type(policy)is Policy)
+    need(type(sender)is LocalAttemptJournal and type(receiver)is ReceiptAttemptJournal and type(artifacts)is _Ledger)
+    need(type(source_book)is Book and type(destination_book)is Book)
+    required=policy.requirements(spec);factory=factories or _factories
+    ticket=None;reservation_started=False;bridge=CompletionBridge(device);driver=None;sink=None;owner0=None;backends=[];spool=None;scope0=None;journal=None;load_started=False
+    def source_context():
+        with sender._authorized() as owner,sender._store._tx() as c:
+            s,p,tiles,v=sender._plan(c,owner,active=True)
+            need((owner,s.task_id,s.session_id,s.epoch,s.model_hash,s.layout_hash,p,v)==(spec.owner,spec.request,spec.session,spec.epoch,spec.model,spec.layout,spec.plan_digest,spec.vocab))
+            need(len(tiles)==1 and tiles[0].input.shape==(1,1) and tiles[0].output.shape==(1,1,spec.hidden))
+        return p
+    def committed_hidden():
+        source_context();row=sender.query(0);need(row is not None and row['state']=='OUTPUT_COMMITTED')
+        value=row['output'];need(type(value)is bytes and len(value)==spec.hidden*4)
+        with sender._authorized(),sender._store._tx() as c:
+            expected=canonical(['local_output',spec.plan_digest,0,hashlib.sha256(value).hexdigest()])
+            need(c.execute("SELECT payload FROM p1_events WHERE id='local:output:0'").fetchone()==(expected,))
+        with receiver._authorized() as owner,receiver._receipt_fence(),receiver._store._tx() as c:
+            s,p,tiles,values=receiver._sources(c,owner)
+            need(p==spec.plan_digest and len(values)==1 and values[0]==value)
+        return value
+    try:
+        with _non_suppressing(authority.hold_pipeline(spec)) as auth:
+            nothing(auth);source_context();need(sender.query(0) is None);nothing(conduit.require_current(spec))
+            task,binding=artifacts._metadata(spec.owner,spec.request)
+            stored=read_input(artifacts._directory,task.snapshot,binding)
+            need(task.state=='STORED' and task.snapshot.digest==spec.input_snapshot and binding.model_digest==spec.model and binding.preprocessing_sha256==spec.preprocessing and binding.vocab_size==spec.vocab)
+            need(len(stored.tokens)==1 and stored.token_blob_sha256==spec.token_digest)
+            tokens=struct.pack('<q',stored.tokens[0]);need(hashlib.sha256(tokens).hexdigest()==spec.inputs[0])
+            attempt=artifacts._db.execute('SELECT session_id,epoch,plan_claim,state FROM inert_attempts WHERE task_id=?',(spec.request,)).fetchone()
+            need(attempt==(spec.session,spec.epoch,spec.plan_digest,'PENDING'))
+            edge=receiver._receipt_edge
+            assignments=artifacts._db.execute('SELECT stage_id,node_id,device_claim,instance_claim FROM inert_holds WHERE task_id=? ORDER BY stage_id',(spec.request,)).fetchall()
+            need(len(assignments)==2 and tuple((r[0],r[1]) for r in assignments)==((0,edge.sender_node),(1,edge.receiver_node)))
+            with sender._authorized(),sender._store._tx() as c:
+                stages=[json.loads(row[0]) for row in c.execute('SELECT body FROM p1_stages WHERE session_id=? ORDER BY stage_id',(spec.session,))]
+            need(len(stages)==2)
+            ranges=tuple((s['layer_start'],s['layer_end']) for s in stages)
+            probe=Envelope(spec.request,spec.session,spec.epoch,0,0,(0,1),spec.model,edge.layout_version,(1,1,spec.hidden),'float32',bytes(spec.hidden*4))
+            need(len(probe.encode())<=65536)
+            pipeline_host=required['host']+65536+len(probe.encode());need(pipeline_host<=policy.host_capacity)
+            reservation_started=True;ticket=synchronous(resources.reserve_pipeline(spec,policy,dict(required,pipeline_host=pipeline_host,assignments=tuple(assignments),layer_ranges=ranges)))
+            need(ticket is not None and type(ticket)is not bool)
+            bp=Plan(Binding(spec.owner,spec.request,spec.session,'single-token',spec.epoch,receiver._receipt_peer.connection_generation,
+                spec.model,spec.layout,spec.input_snapshot,spec.token_digest,spec.preprocessing,spec.plan_digest),(1,),spec.vocab)
+            source_book.reserve(result_key,bp,'source');destination_book.reserve(result_key,bp,'destination')
+            source_book.confirm(result_key,bp,'source');destination_book.confirm(result_key,bp,'destination')
+            # Permanent local consumption precedes load/any possible device work.
+            # External single-coordinator registry is still required across books.
+            with source_book.tx() as c:
+                c.execute('CREATE TABLE IF NOT EXISTS assembly_calls(id TEXT PRIMARY KEY,spec TEXT NOT NULL)')
+                need(c.execute('SELECT 1 FROM assembly_calls WHERE id=?',(result_key,)).fetchone() is None)
+                c.execute('INSERT INTO assembly_calls VALUES(?,?)',(result_key,spec.digest))
+            load_started=True
+            with _non_suppressing(authority.hold_load(spec,0)) as value,_non_suppressing(device.hold_load(spec,0)) as completed:
+                nothing(value);nothing(completed);loaded=synchronous(loader.load(0,spec));need(type(loaded)is Loaded and loaded.model==spec.model and loaded.layout==spec.layout and loaded.instance==assignments[0][3] and loaded.layer_range==ranges[0])
+                backend0=factory(0,loaded,spec,bridge);backends.append((backend0,spec))
+            scope0=uuid.uuid4().hex;bridge.open_scope(spec,0,scope0)
+            owner0=sender.make_owner(lambda value,**kw:backend0.operation(scope0,value,**kw),(tokens,),instance_id=loaded.instance)
+            with _non_suppressing(authority.hold_stage0(spec)) as value:
+                nothing(value);await owner0.call(tokens,token_start=0,token_count=1)
+            await owner0.close();owner0=None
+            row=sender.query(0);need(row is not None and row['state']=='OUTPUT_COMMITTED')
+            envelope=replace(probe,payload=row['output']);raw=envelope.encode()
+            received=synchronous(conduit.exchange_hidden(raw));need(type(received)is bytes and received==raw)
+            receiver.make_receiver().receive_bytes(received)
+            hidden=committed_hidden();actual=replace(spec,inputs=(hashlib.sha256(hidden).hexdigest(),))
+            nothing(resources.verify_stage1(actual,ticket))
+            with _non_suppressing(authority.hold_load(actual,1)) as value,_non_suppressing(device.hold_load(actual,1)) as completed:
+                nothing(value);nothing(completed);loaded=synchronous(loader.load(1,actual));need(type(loaded)is Loaded and loaded.model==spec.model and loaded.layout==spec.layout and loaded.instance==assignments[1][3] and loaded.layer_range==ranges[1])
+                backend1=factory(1,loaded,actual,bridge);backends.append((backend1,actual))
+            spool=Spool(spool_root,source_book,destination_book,result_key,bp);sink=_PushSpool(spool,actual)
+            journal=Journal(journal_path,actual)
+            driver=Driver(journal,actual,policy,authority=_BoundAuthority(authority,lambda:need(committed_hidden()==hidden)),
+                          resources=_Resources(resources,ticket),backend=backend1,completion=bridge,sink=sink)
+            result=driver.run(0,hidden)
+            need(result.output_digest==sink.digest.hexdigest())
+        # Pipeline authorization exit must also succeed before source export.
+        sink.enable_read()
+        with _non_suppressing(authority.hold_publish(actual)) as auth:
+            nothing(auth);need(committed_hidden()==hidden);nothing(conduit.require_current(actual))
+            binding=synchronous(conduit.result_binding(actual));need(type(binding)is ReceiveBinding);_binding(binding,MAX_OBJECT)
+            s=binding.scope
+            need((s.direction,s.port,s.attempt,s.peer_node)==('out','logits','single-token',assignments[1][1]))
+            need((s.task,s.session,s.epoch,s.plan,s.layout,binding.stage_id,binding.model_hash,binding.layout_version,binding.dtype,binding.tiles)==
+                 (spec.request,spec.session,spec.epoch,spec.plan_digest,spec.layout,1,spec.model,edge.layout_version,'float32',((0,1,(1,1,spec.vocab)),)))
+            context=ObjectContext(binding,hashlib.sha256(result_key.encode()).hexdigest(),spec.output_bytes,result.output_digest,s.incarnation)
+            def blocks():
+                for frame in spool.frames():
+                    nothing(conduit.require_current(actual));need(committed_hidden()==hidden)
+                    wire=payload(context,frame.sequence,frame.offset,frame.block)
+                    e=Envelope(spec.request,spec.session,spec.epoch,1,frame.sequence,(0,1),spec.model,binding.layout_version,(len(wire),),'uint8',wire)
+                    incoming=synchronous(conduit.exchange_result(e.encode()))
+                    parsed=decode(incoming,expected=(spec.request,spec.session,spec.epoch))
+                    need(parsed==e);yield parsed.payload[48:]
+            def final_guard():
+                need(committed_hidden()==hidden);nothing(conduit.require_current(actual))
+            digest=artifacts.publish(spec.owner,spec.request,result_key,'prefill_logits_v1',spec.layout,
+                ((0,1,result.output_digest),),(_coalesce(blocks()),),_guard=final_guard)
+            return {'manifest_digest':digest,'output_bytes':spec.output_bytes,'execution_allowed':False,'computation_verified':False}
+    except BaseException as error:
+        failures=[]
+        for action in ([lambda:driver.retire()] if driver else [])+([lambda:sink.quarantine()] if sink else [])+([lambda:bridge.quarantine(scope0)] if scope0 else [])+([lambda:resources.quarantine(spec,ticket,None)] if reservation_started else [])+([lambda:loader.quarantine(spec)] if load_started else [])+([lambda:source_book.isolate(result_key),lambda:destination_book.isolate(result_key)] if reservation_started else [])+[lambda b=b,s=s:b.retire(s) for b,s in backends]:
+            try:action()
+            except BaseException as e:failures.append(e)
+        if failures:raise BaseExceptionGroup('pipeline failed; quarantine may be unknown',[error,*failures]) from None
+        raise
+    finally:
+        try:
+            if owner0 is not None:await owner0.close()
+        finally:
+            if journal is not None:journal.close()

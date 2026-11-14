@@ -242,11 +242,12 @@ class _Ledger(InertAttemptLedger):
                 self._read_file(directory,entry['file'],entry['bytes'],entry['sha256'])
         finally:os.close(directory)
 
-    def publish(self, owner, task_id, key, contract, layout, entries, sources):
+    def publish(self, owner, task_id, key, contract, layout, entries, sources, *, _guard=None):
         _need(contract=='prefill_logits_v1' and type(contract) is str)
         writer,record,raw,digest,retry=self._reserve(owner,task_id,key,layout,entries)
         if retry:
             self._verify_files(writer,record,raw)
+            if _guard is not None:_guard()
             return digest
         directory=self._directory_for(writer,True)
         try:
@@ -256,7 +257,7 @@ class _Ledger(InertAttemptLedger):
             self._write(directory,'manifest.json',(raw,),len(raw),hashlib.sha256(raw).hexdigest())
         finally:os.close(directory)
         self._verify_files(writer,record,raw)
-        return self._commit_published(owner,task_id,layout,entries,writer,raw)
+        return self._commit_published(owner,task_id,layout,entries,writer,raw,_guard=_guard)
 
     def _commit_published(self, owner, task_id, layout, entries, writer, raw, *, _guard=None):
         # Caller verifies published files; this transaction also re-reads input
