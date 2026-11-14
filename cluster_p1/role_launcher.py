@@ -339,8 +339,47 @@ class ReceivingLauncher(_Owner):
   return await self._run(self.history.serve_once)
  async def serve_once(self):self.check();return await self._run(self.role.serve_once)
  async def serve_gate(self):
-  self.check();_need(self.gate is not None);return await self._run(self.gate.serve_once)
- async def receive_result(self,*a,**kw):self.check();return await self._run(lambda:self.role.receive_result(*a,**kw))
+  self.check();_need(self.gate is not None and not getattr(self,'_result_service_attempted',False));return await self._run(self.gate.serve_once)
+ async def receive_result(self,*a,**kw):
+  self.check();_need(not getattr(self,'_result_service_attempted',False));return await self._run(lambda:self.role.receive_result(*a,**kw))
+ async def serve_result_once(self,artifacts,check,publication_fence,*,enabled=False):
+  """One owned C ACK then persistent receive; no listener or execution grant."""
+  from result_artifacts import _Ledger
+  from .local_attempt import _non_suppressing
+  from .projection_driver import nothing
+  _need(enabled is True);self.check()
+  _need(type(artifacts)is _Ledger and callable(check) and callable(publication_fence))
+  _need(not getattr(self,'_result_service_attempted',False) and self.gate is not None and not self.gate.used)
+  role=self.role;gate=self.gate;ingress=role.ingress;spec=role.spec
+  _need(gate.role is role and ingress is not None and role.receiving and role.active_task is None)
+  _need(not hasattr(gate,'_receive_preflight_pin'))
+  self._result_service_attempted=True
+  from .split_role_transport import _generation
+  fixed=(role.channel,gate.channel,ingress._meta,ingress._writer,_json(role.binding),_json(role.wire_binding),_json(role.d),role.original,role.result_generation)
+  def source():
+   self.check();_need(self.role is role and self.gate is gate and role.ingress is ingress and role.spec is spec and gate.role is role)
+   _need(gate._receive_preflight is ready and gate._receive_preflight_pin is ready and gate._receive_preflight_required)
+   _need(fixed==(role.channel,gate.channel,ingress._meta,ingress._writer,_json(role.binding),_json(role.wire_binding),_json(role.d),role.original,role.result_generation))
+   _need(_generation(role.channel.w)==fixed[-2] and _generation(ingress._writer)==fixed[-1])
+   d=role.d
+   with artifacts._transaction():
+    task,b,stored,a,assignment=artifacts._source_binding(spec.owner,spec.request)
+    _need(task.state=='STORED')
+    _need((a[0],a[1],a[2],task.snapshot.digest,stored.token_blob_sha256,b.preprocessing_sha256,b.vocab_size)==(spec.session,spec.epoch,spec.plan_digest,spec.input_snapshot,spec.token_digest,spec.preprocessing,spec.vocab))
+    _need(len(stored.tokens)==1 and spec.output_bytes==4*b.vocab_size and spec.layout==d['layout'] and spec.model==d['model'])
+    place=d['b_placement'];_need(assignment[1]==(1,d['b_node'],hashlib.sha256(_json(['c-device-claim-v1',d['b_node'],place['device']])).hexdigest(),hashlib.sha256(_json(['c-instance-claim-v1',d['b_node'],place['instance']])).hexdigest()))
+  def ready():
+   _need(gate._receive_preflight is ready and gate._receive_preflight_pin is ready)
+   with _non_suppressing(publication_fence()) as held:
+    nothing(held);nothing(check());source()
+   source()
+  gate._receive_preflight=gate._receive_preflight_pin=ready;gate._receive_preflight_required=True
+  async def serve():
+   ready()
+   await gate.serve_once()
+   self.check();ready()
+   return await role.receive_result(artifacts,check,publication_fence)
+  return await self._run(serve)
  async def _close_owned(self):
   errors=[]
   if self.history is not None:

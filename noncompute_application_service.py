@@ -180,11 +180,24 @@ class ApplicationService:
             raise ServiceRejected()
         return identity._owner(principal)
 
+    def _download_route(self, task_id):
+        route=getattr(self,'_c_result_routes',{}).get(task_id)
+        if route is not None:
+            from private_c_result_route import LocalCResultRoute
+            if type(route) is not LocalCResultRoute or route.service is not self or route.task!=task_id:raise ServiceRejected()
+        return route
+
+    def _download_final(self, credential, task_id, owner, digest, route):
+        if self._download_owner(credential)!=owner or self._download_route(task_id) is not route:raise ServiceRejected()
+        if route is not None:route.final(credential,digest)
+
     @_safe
     async def download_result(self, credential, task_id, sink, *, max_bytes, metadata):
         owner=self._download_owner(credential);_task(task_id)
         if not callable(sink) or not callable(metadata):raise ServiceRejected()
         if type(max_bytes) is not int or not 0<max_bytes<=4194304:raise ServiceRejected()
+        route=self._download_route(task_id)
+        if route is not None:return await route.fetch(credential,sink,max_bytes=max_bytes,metadata=metadata)
         def authorize():return self._download_owner(credential)
         return await self._authority._download_result(owner,task_id,sink,
             _authorize=authorize,max_bytes=max_bytes,metadata=metadata)

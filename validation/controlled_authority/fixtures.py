@@ -14,17 +14,32 @@ import unittest
 ROOT=Path(__file__).resolve().parents[2]
 ALLOWED={
  'token_input_snapshot':{'dataclasses','hashlib','json','os','re','secrets','stat','struct','sys'},
- 'snapshot_task_ledger':{'contextlib','dataclasses','hashlib','json','re','secrets','sqlite3','token_input_snapshot'},
+ 'snapshot_task_ledger':{'contextlib','dataclasses','hashlib','json','re','secrets','sqlite3','token_input_snapshot','result_artifacts'},
  'inert_attempt_ledger':{'dataclasses','snapshot_task_ledger'},
  'ledger_database':{'contextlib','dataclasses','os','sqlite3','stat','sys','snapshot_task_ledger'},
  'pair_plan_contract':{'dataclasses','hashlib','json','re'},
  'result_artifacts':{'dataclasses','hashlib','json','os','secrets','stat','struct','inert_attempt_ledger','snapshot_task_ledger','token_input_snapshot','ledger_database'},
  'structured_result_binding':{'dataclasses','json','pair_plan_contract','result_artifacts','ledger_database','snapshot_task_ledger','token_input_snapshot'}}
-HASHES={}
-for name,allowed in ALLOWED.items():
-    raw=(ROOT/(name+'.py')).read_bytes();tree=ast.parse(raw)
+def _check_imports(name,raw,allowed):
+    tree=ast.parse(raw)
     found={v for n in ast.walk(tree) for v in ([n.module] if isinstance(n,ast.ImportFrom) else [a.name for a in n.names] if isinstance(n,ast.Import) else [])}
     assert found==allowed,(name,found)
+    if name=='snapshot_task_ledger':
+        # The reviewed result-only type check is a local dependency, not a
+        # generic factory or permission to move imports into module bootstrap.
+        imports=[n for n in ast.walk(tree) if isinstance(n,ast.ImportFrom) and n.module=='result_artifacts']
+        assert len(imports)==1
+        imp=imports[0]
+        assert imp.level==0 and len(imp.names)==1 and imp.names[0].name=='_Ledger' and imp.names[0].asname is None
+        functions=[n for n in ast.walk(tree) if isinstance(n,ast.FunctionDef) and n.name=='_commit_published_input']
+        assert len(functions)==1
+        guards=[n for n in ast.walk(functions[0]) if isinstance(n,ast.If) and ast.unparse(n.test)=='_import_task_id is not None']
+        assert len(guards)==1 and imp in guards[0].body
+
+HASHES={}
+for name,allowed in ALLOWED.items():
+    raw=(ROOT/(name+'.py')).read_bytes()
+    _check_imports(name,raw,allowed)
     HASHES[name]=hashlib.sha256(raw).hexdigest()
     spec=importlib.util.spec_from_file_location(name,ROOT/(name+'.py'));mod=importlib.util.module_from_spec(spec);sys.modules[name]=mod;spec.loader.exec_module(mod)
 m=sys.modules['result_artifacts'];b=sys.modules['ledger_database'];s=sys.modules['token_input_snapshot'];base=sys.modules['snapshot_task_ledger']

@@ -98,13 +98,19 @@ class CDispatchGate(_Gate):
   self._control_reader.add_done_callback(disconnected)
   self._disconnect_callback=disconnected
   if self._control_reader.done():disconnected(self._control_reader)
+ def _check_receive_preflight(self):
+  callback=getattr(self,'_receive_preflight',None)
+  _need(callback is getattr(self,'_receive_preflight_pin',None))
+  _need(not getattr(self,'_receive_preflight_required',False) or callable(callback))
+  if callback is not None:_need(callable(callback));callback()
  @contextmanager
  def receiving(self):
   r=self.role
   with self.fence(),r.fence('receive'),r.gate:
    row=r.store.history(r.d['owner'],r.d['task'])
    _need(r.receiving and r.claimed and r.ingress is not None and row is not None and row['state']=='RECEIVING')
-   yield row
+   self._check_receive_preflight();yield row;self._check_receive_preflight()
+  self._check_receive_preflight()
  async def close(self):
   self._control_reader.remove_done_callback(self._disconnect_callback)
   await super().close()

@@ -131,13 +131,19 @@ class _Ledger(InertAttemptLedger):
                 _need(changed.rowcount == 1)
             return self._record(self._db,owner,task_id)
 
-    def _binding(self, owner, task_id, layout, entries, *, historical=False):
-        _hash(layout)
+    def _source_binding(self, owner, task_id, *, historical=False):
         task, binding = self._metadata(owner, task_id)
         stored = read_input(self._directory, task.snapshot, binding)
         a = self._db.execute('SELECT session_id,epoch,plan_claim,snapshot_ref,state FROM inert_attempts WHERE task_id=?', (task_id,)).fetchone()
         _need(a is not None and a[3] == task.snapshot.digest)
         _need(a[4]=='PENDING' or (historical and task.state=='RESULT_STORED' and a[4]=='ISOLATED'))
+        assignment = self._db.execute('SELECT stage_id,node_id,device_claim,instance_claim FROM inert_holds WHERE task_id=? ORDER BY stage_id', (task_id,)).fetchall()
+        _need(len(assignment) == 2)
+        return task, binding, stored, a, assignment
+
+    def _binding(self, owner, task_id, layout, entries, *, historical=False):
+        _hash(layout)
+        task, binding, stored, a, assignment = self._source_binding(owner, task_id, historical=historical)
         _need(type(entries) is tuple and 1 <= len(entries) <= 64)
         end = total = 0
         tiles = []
@@ -155,8 +161,6 @@ class _Ledger(InertAttemptLedger):
         _need(end == len(stored.tokens))
         charge = total + _MANIFEST_MAX
         _need(charge <= self._limits.task_bytes)
-        assignment = self._db.execute('SELECT stage_id,node_id,device_claim,instance_claim FROM inert_holds WHERE task_id=? ORDER BY stage_id', (task_id,)).fetchall()
-        _need(len(assignment) == 2)
         record = {'version':1,'contract':'prefill_logits_v1','owner':owner,'task':task_id,
                   'request':binding.request_id,'session':a[0],'epoch':a[1],'plan_claim':a[2],
                   'model_claim':binding.model_digest,'input_ref':task.snapshot.digest,

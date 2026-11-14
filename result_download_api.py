@@ -32,6 +32,7 @@ class _Download:
             protocol._need(event.get('type')=='http.request' and event.get('body',b'')==b'' and not event.get('more_body',False))
             protocol._need(self.service is not None)
             owner=self.service._download_owner(credential)
+            route=self.service._download_route(match.group(1))
             blocks={};total=0;descriptors=[]
             def collect(tile,block):
                 nonlocal total
@@ -49,7 +50,7 @@ class _Download:
             protocol._need(len(encoded)<=RESPONSE_LIMIT)
             # No await between this recheck and invoking first send. Already sent
             # bytes cannot be retracted; this is not continuous authorization.
-            protocol._need(self.service._download_owner(credential)==owner)
+            self.service._download_final(credential,match.group(1),owner,digest,route)
             body=encoded;status=200
         except Exception:pass
         headers=[(b'content-type',b'application/json'),(b'content-length',str(len(body)).encode()),(b'cache-control',b'no-store'),(b'x-content-type-options',b'nosniff')]

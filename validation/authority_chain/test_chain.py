@@ -206,12 +206,15 @@ class Chain(InputBase):
   await asyncio.gather(controller.pending(),receiving.serve_once())
   await asyncio.gather(controller.activate(CommittedBInput(control)),receiving.serve_once())
   receiving.attach_result(actual,rr,rw,wire.config('b'),cmeta,binding,identity=Identity(),authorize=Holds())
-  bg,cg=self.pair('b','c',1);self.launchers[1].attach_gate(bg,d,identity=Identity(),authorize=CPolicy());receiving.attach_gate(cg,identity=Identity(),authorize=CPolicy());self.spawn_job(receiving.serve_gate())
-  receipt=await control.dispatch();self.assertEqual(receipt['state'],'COMMITTED');op.enable_read()
-  ack,manifest=await asyncio.gather(sender.send(actual,spool,op.metadata['output_digest'],op.check_export),receiving.receive_result(self.artifacts,lambda:None,lambda:self.cp.hold(d,'receive')))
+  bg,cg=self.pair('b','c',1);self.launchers[1].attach_gate(bg,d,identity=Identity(),authorize=CPolicy());receiving.attach_gate(cg,identity=Identity(),authorize=CPolicy())
+  ack,manifest=await self.deliver_c_result(receiving,control,sender,actual,spool,op,d)
   self.assertEqual(ack['manifest_digest'],manifest);self.assertEqual(store.history(self.owner,s.request)['state'],'RECEIVED')
   chunks=[];self.artifacts.fetch(self.owner,s.request,lambda _,raw:chunks.append(raw));self.assertEqual(b''.join(chunks),struct.pack('<f',1.)*100)
   return actual
+ async def deliver_c_result(self,receiving,control,sender,actual,spool,op,d):
+  self.spawn_job(receiving.serve_gate())
+  receipt=await control.dispatch();self.assertEqual(receipt['state'],'COMMITTED');op.enable_read()
+  return await asyncio.gather(sender.send(actual,spool,op.metadata['output_digest'],op.check_export),receiving.receive_result(self.artifacts,lambda:None,lambda:self.cp.hold(d,'receive')))
  async def test_actual_confirmation_authority_launchers_B_proof_C_result(self):
   actual=await self.run_chain()
   rows=self.adm.db.execute('SELECT stage,action,scope FROM short_actions ORDER BY stage,action').fetchall()

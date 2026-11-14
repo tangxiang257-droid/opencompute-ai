@@ -26,7 +26,7 @@ class _Completion:
     def finish(self,binding,scope):
         self.op._check_binding(binding);self.op.finish(scope)
     def quarantine(self,binding,scope):
-        self.op._check_binding(binding);need(scope==self.op.scope);self.op.quarantine()
+        self.op._check_retirement(binding,scope);self.op.quarantine()
 
 class _DriverCompletion:
     """Use the already registered role scope, never open a second device scope."""
@@ -55,6 +55,7 @@ class _Operation:
         self.factory=factories or _factories;self.bridge=CompletionBridge(device);self.completion=_Completion(self)
         self.scope=None;self.retired=False;self.called=False;self.loaded=False;self.backend=None;self.metadata=None
         self.control=None;self.descriptor=None
+        self._retirement_binding=None;self._retirement_scope=None
         self.ready()
     def ready(self):
         self._online()
@@ -90,6 +91,26 @@ class _Operation:
         online=self._online()
         if online is not None:online[0].bind_control(online[1],self.stage,descriptor)
         self.control=journal;self.descriptor=descriptor
+        # A successfully bound local responsibility, never an execution permit.
+        self._retirement_binding=canonical(descriptor.binding)
+        self._retirement_spec=self.spec.digest
+        self._retirement_refs=self._retirement_objects()
+        self._retirement_callbacks=self._retirement_methods()
+    def _retirement_objects(self):
+        local=(self.sender,self.sender._store) if self.stage==0 else (self.receiver,self.receiver._store,self.spool,self.spool.source,self.spool.destination)
+        return (self.spec,self.control,self.descriptor,self.resources,self.ticket,self.device,self.loader,self.bridge,self.bridge.device)+local
+    def _retirement_methods(self):
+        return (self._retire_local,self.resources.quarantine,self.device.quarantine,self.loader.quarantine,self.bridge._device_quarantine)
+    def _check_retirement(self,binding,scope):
+        if self._retirement_binding is None:
+            # Preserve the legacy unbound path; it acquires no new local bypass.
+            self._check_binding(binding);need(scope==self.scope);return
+        need(type(binding)is dict and canonical(binding)==self._retirement_binding)
+        need(type(scope)is str and scope==self.scope==self._retirement_scope)
+        need(self.spec.digest==self._retirement_spec and canonical(self.descriptor.binding)==self._retirement_binding)
+        need(all(a is b for a,b in zip(self._retirement_refs,self._retirement_objects()))
+             and len(self._retirement_refs)==len(self._retirement_objects()))
+        need(self._retirement_callbacks==self._retirement_methods())
     def begin(self,scope):
         if self._online() is not None:
             need(self.control is not None and self.descriptor is not None)
@@ -99,6 +120,7 @@ class _Operation:
                  and r['charge']==self.descriptor.charge)
         self.ready();need(self.scope is None and type(scope)is str and re.fullmatch('[A-Za-z0-9_-]{1,128}',scope) is not None)
         self.scope=scope # Own even a partially failed local claim/open_scope.
+        if self._retirement_binding is not None:self._retirement_scope=scope
         self._claim()
         self.bridge.open_scope(self.spec,0,scope)
     def _load(self):
@@ -126,11 +148,20 @@ class _Operation:
         self.bridge.require_finished(scope,self.backend)
     def quarantine(self):
         self.retired=True;errors=[]
+        # Retain original responsibility even if an earlier callback mutates us.
+        spec,ticket,scope=self.spec,self.ticket,self.scope
+        resource_quarantine=self.resources.quarantine
+        loader_quarantine=self.loader.quarantine
+        bridge_quarantine=self.bridge.quarantine
+        backend_retire=None if self.backend is None else self.backend.retire
         actions=[self._retire_local]
-        if self.scope is not None:actions.append(lambda:self.bridge.quarantine(self.scope))
-        actions.append(lambda:self.resources.quarantine(self.spec,self.ticket,self.scope))
-        if self.loaded:actions.append(lambda:self.loader.quarantine(self.spec))
-        if self.backend is not None:actions.append(lambda:self.backend.retire(self.spec))
+        if scope is not None:actions.append(lambda:bridge_quarantine(scope))
+        actions.append(lambda:resource_quarantine(spec,ticket,scope))
+        if self.loaded:actions.append(lambda:loader_quarantine(spec))
+        if backend_retire is not None:actions.append(lambda:backend_retire(spec))
+        if self._retirement_binding is not None and self._retirement_scope is not None:
+            binding=json.loads(self._retirement_binding)
+            actions.append(lambda:self._check_retirement(binding,scope))
         for action in actions:
             try:action()
             except BaseException as e:errors.append(e)

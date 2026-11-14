@@ -49,7 +49,11 @@ class PinnedStageLoader:
 
 class CompletionBridge:
     """Ownership tracking only; external device adapter must supply REAL fences."""
-    def __init__(self,device):self.device=device;self.scopes={};self.retired=False
+    def __init__(self,device):
+        self.device=device;self.scopes={};self.retired=False
+        # Terminal responsibility stays with the original provider, even if
+        # a failing cleanup callback changes the live device reference.
+        self._device_quarantine=getattr(device,'quarantine',None)
     def open_scope(self,spec,token,scope):
         need(not self.retired and scope not in self.scopes)
         self.scopes[scope]=dict(spec=spec,owner=None,pending=None,finished=False)
@@ -79,7 +83,7 @@ class CompletionBridge:
     def require_finished(self,scope,adapter):
         s=self.scopes[scope];need(not self.retired and s['owner'] is adapter and s['pending'] is None and s['finished'])
         nothing(self.device.require_finished(scope,adapter));need(not self.retired)
-    def quarantine(self,scope):self.retired=True;nothing(self.device.quarantine(scope))
+    def quarantine(self,scope):self.retired=True;nothing(self._device_quarantine(scope))
 
 class _PushSpool:
     """Concrete single-token sink adapting the existing Book/Spool read format."""
