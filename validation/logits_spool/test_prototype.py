@@ -172,7 +172,7 @@ class Tests(unittest.TestCase):
   with patch('validation.logits_spool.prototype.os.fsync',side_effect=OSError('fsync failed')):
    with self.assertRaises(OSError):x.produce(body)
   with self.assertRaises(Rejected):x.produce(body)
-  self.assertEqual(calls,[1]);self.assertEqual(s.record('r')['state'],'ISOLATED')
+  self.assertEqual(calls,[]);self.assertEqual(s.record('r')['state'],'ISOLATED')  # preallocation fsync fails before producer
   self.assertEqual((s.used(),d.used()),(p.charge,p.charge))
  def test_reserve_committed_response_lost_idempotent_query_and_cross_mode(self):
   p=self.plan((1,),151936);s=Book(self.root/'quota.db',p.charge);self.addCleanup(s.close)

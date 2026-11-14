@@ -91,7 +91,7 @@ class _PushSpool:
             need(c.execute('SELECT 1 FROM private_producer_v1 WHERE id=?',(spool.rid,)).fetchone() is None)
             c.execute("INSERT INTO private_producer_v1 VALUES(?,?,'CONSUMED',0,0)",(spool.rid,spec.digest))
         spool.check(('RESERVED',));b.transition(spool.rid,spool.plan,'source','RESERVED','ADMITTED')
-        spool.root.mkdir(mode=0o700);self.file=spool.path.open('xb')
+        self.file=spool.open_preallocated()
     def append(self,token,column,block):
         self.spool.check();need(token==0 and column==self.column and type(block)is bytes)
         expected=min(8192,self.spec.vocab-column)*4
@@ -105,9 +105,11 @@ class _PushSpool:
         fd=os.open(self.spool.root,os.O_RDONLY|os.O_DIRECTORY)
         try:os.fsync(fd)
         finally:os.close(fd)
+        self.spool.check()
         manifest=canonical({'plan':json.loads(self.spool.plan.encoded()),'objects':[{'bytes':self.spec.output_bytes,'sha256':digest,'chunks':self.chunks}],
-            'sha256':digest,'file_identity':self.spool.identity()})
+            'sha256':digest,'file_identity':self.spool.identity(),'directory_identity':list(self.spool._directory_identity)})
         need(len(manifest.encode())<=MANIFEST)
+        self.spool.check()
         self.spool.source.transition(self.spool.rid,self.spool.plan,'source','ADMITTED','SEALED',manifest)
     def enable_read(self):
         with self.spool.source.tx() as c:

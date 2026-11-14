@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import stat
+import sys
 import struct
 import threading
 from .owner_encoding import valid_owner
@@ -151,11 +153,65 @@ class Spool:
     """Synchronous write acknowledgment; consumer refs/RSS are not bounded here."""
     def __init__(self,root,source,destination,rid,plan):
         need(type(plan)is Plan);plan.__post_init__()
-        self.root=Path(root);self.path=self.root/(hashlib.sha256(rid.encode()).hexdigest()+'.spool')
+        self.root=Path(root).absolute();self.path=self.root/(hashlib.sha256(rid.encode()).hexdigest()+'.spool')
         self.source=source;self.destination=destination;self.rid=rid;self.plan=plan
         self.hook=lambda phase:None
         self.retired=False
+        parent=self.root.parent.stat(follow_symlinks=False);need(stat.S_ISDIR(parent.st_mode))
+        self._parent_identity=(parent.st_dev,parent.st_ino);self._directory_identity=None;self._allocated_identity=None
+    def check_directory(self):
+        parent=self.root.parent.stat(follow_symlinks=False)
+        need(stat.S_ISDIR(parent.st_mode) and (parent.st_dev,parent.st_ino)==self._parent_identity)
+        if self._directory_identity is not None:
+            root=self.root.stat(follow_symlinks=False)
+            need(stat.S_ISDIR(root.st_mode) and (root.st_dev,root.st_ino)==self._directory_identity)
+        if self._allocated_identity is not None:
+            file=self.path.stat(follow_symlinks=False)
+            need(stat.S_ISREG(file.st_mode) and (file.st_dev,file.st_ino)==self._allocated_identity and file.st_size==self.plan.total)
+    def open_preallocated(self):
+        """Consume existing ADMITTED promise; allocate the final inode before writes.
+
+        No independent allocation qualification or retry state. Failures retain
+        files/charges and isolate source through the existing Book transition.
+        """
+        fd=directory=parent=result=None
+        try:
+            self.check();need(callable(getattr(os,'posix_fallocate',None)))
+            need(hasattr(os,'O_NOFOLLOW') and hasattr(os,'O_DIRECTORY'))
+            flags=os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW
+            parent=os.open(self.root.parent,flags);st=os.fstat(parent)
+            need((st.st_dev,st.st_ino)==self._parent_identity)
+            os.mkdir(self.root.name,mode=0o700,dir_fd=parent)
+            directory=os.open(self.root.name,flags,dir_fd=parent);st=os.fstat(directory)
+            self._directory_identity=(st.st_dev,st.st_ino)
+            fd=os.open(self.path.name,os.O_RDWR|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600,dir_fd=directory)
+            st=os.fstat(fd);need(stat.S_ISREG(st.st_mode));self._allocated_identity=(st.st_dev,st.st_ino)
+            os.posix_fallocate(fd,0,self.plan.total)
+            need(os.fstat(fd).st_size==self.plan.total)
+            os.fsync(fd);os.fsync(directory);os.fsync(parent)
+            self.hook('allocated');self.check()
+            result=os.fdopen(fd,'r+b');fd=None;return result
+        except BaseException as error:
+            self.retired=True
+            try:self.source.isolate(self.rid)
+            except BaseException as cleanup:raise BaseExceptionGroup('allocation and retirement failed',[error,cleanup])
+            raise
+        finally:
+            primary=sys.exception();failures=[]
+            for opened in (fd,directory,parent):
+                if opened is not None:
+                    try:os.close(opened)
+                    except BaseException as cleanup:failures.append(cleanup)
+            if failures:
+                self.retired=True
+                if result is not None:
+                    try:result.close()
+                    except BaseException as cleanup:failures.append(cleanup)
+                try:self.source.isolate(self.rid)
+                except BaseException as cleanup:failures.append(cleanup)
+                raise BaseExceptionGroup('allocation cleanup failed',([primary] if primary is not None else [])+failures)
     def check(self,states=('ADMITTED',)):
+        need(not self.retired);self.check_directory()
         self.source.confirm(self.rid,self.plan,'source',states)
         self.destination.confirm(self.rid,self.plan,'destination')
     def produce(self,body):
@@ -166,8 +222,8 @@ class Spool:
         token=column=written=0
         owner=threading.get_ident();active=True
         try:
-            self.check();self.root.mkdir(mode=0o700,parents=False,exist_ok=False)
-            with self.path.open('xb') as f:
+            self.check()
+            with self.open_preallocated() as f:
                 def write(t,start,block):
                     nonlocal token,column,written
                     need(active and threading.get_ident()==owner)
@@ -201,14 +257,15 @@ class Spool:
                     objects.append({'bytes':size,'sha256':digest.hexdigest(),'chunks':chunks})
                 need(not f.read(1))
             manifest=canonical({'plan':json.loads(self.plan.encoded()),'objects':objects,
-                                'sha256':full.hexdigest(),'file_identity':original})
+                                'sha256':full.hexdigest(),'file_identity':original,'directory_identity':list(self._directory_identity)})
             need(len(manifest.encode())<=MANIFEST)
             self.check();self.hook('before_commit');need(self.identity()==original);self.check()
             self.source.transition(self.rid,self.plan,'source','ADMITTED','SEALED',manifest)
             self.hook('after_commit')
-        except BaseException:
+        except BaseException as error:
             self.retired=True
-            self.source.isolate(self.rid)  # SEALED remains historical after lost response
+            try:self.source.isolate(self.rid)  # SEALED remains historical after lost response
+            except BaseException as cleanup:raise BaseExceptionGroup('producer and retirement failed',[error,cleanup])
             raise
     def identity(self):
         s=self.path.stat(follow_symlinks=False)
@@ -219,6 +276,14 @@ class Spool:
         self.check(('SEALED',))
         record=self.source.record(self.rid);manifest=json.loads(record['manifest'])
         need(manifest['plan']==json.loads(self.plan.encoded()))
+        if 'directory_identity' in manifest:
+            self._directory_identity=tuple(manifest['directory_identity'])
+        else:
+            # Legacy read-only manifest: preserve file identity/digest checks.
+            # Absence of this field supplies NO preallocation evidence.
+            directory=self.root.stat(follow_symlinks=False);need(stat.S_ISDIR(directory.st_mode))
+            self._directory_identity=(directory.st_dev,directory.st_ino)
+        self.check_directory()
         self.source.transition(self.rid,self.plan,'source','SEALED','READING')
         try:
             need(self.identity()==manifest['file_identity'])
