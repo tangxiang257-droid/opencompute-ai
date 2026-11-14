@@ -59,13 +59,13 @@ class BoundReceiptConnection:
         if cancellation is not None:raise _with_cleanup(cancellation,primary)
         raise primary
 
-    async def receive_once(self,journal):
+    async def receive_once(self,journal,*,commit_fence=None):
         self._journal(journal)
         if self._busy:raise ValueError('one bound receive at a time')
         with self.peer_authorize(self.expected_peer):pass
         self._busy=True
         try:
-            receiver=journal.make_receiver()
+            receiver=journal.make_receiver() if commit_fence is None else journal.make_receiver(commit_fence=commit_fence)
             try:
                 delivery=await self._channel.receive()
                 if type(delivery)is not Delivery or delivery._channel is not self._channel:

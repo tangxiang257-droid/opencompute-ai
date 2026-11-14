@@ -5,6 +5,7 @@ Both injected authentication fences must remain held for this synchronous call.
 """
 from dataclasses import dataclass, asdict
 import hashlib
+import inspect
 import json
 from pydantic import TypeAdapter
 from .contracts import Identifier, Digest, Task, Session, Stage, State
@@ -14,7 +15,7 @@ from .envelope import decode
 
 MAX_FRAME_BYTES=65536
 
-async def send_handoff(channel, envelope):
+async def send_handoff(channel, envelope, *, write_fence=None):
     """Send with the unchanged complete-envelope receiver cap.
 
     No execution grant, plan registration, retry or chunking is performed.
@@ -24,7 +25,8 @@ async def send_handoff(channel, envelope):
     from .channel import Channel
     if type(channel) is not Channel:
         raise TypeError('real Channel required')
-    return await channel.send(envelope, max_frame_bytes=MAX_FRAME_BYTES)
+    if write_fence is None:return await channel.send(envelope,max_frame_bytes=MAX_FRAME_BYTES)
+    return await channel.send(envelope,max_frame_bytes=MAX_FRAME_BYTES,write_fence=write_fence)
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,7 +49,7 @@ class EdgeBinding:
         if self.sender_node==self.receiver_node:raise ValueError('distinct stage endpoints required')
 
 class Receiver:
-    def __init__(self,journal,binding,*,authenticate_peer,input_layout_version=None,input_layout_wire_version=None,retain_payload=False):
+    def __init__(self,journal,binding,*,authenticate_peer,input_layout_version=None,input_layout_wire_version=None,retain_payload=False,commit_fence=None):
         if type(binding) is not EdgeBinding or not callable(authenticate_peer):
             raise TypeError('explicit trusted binding and peer context required')
         # Revalidate even a caller-mutated frozen instance; keep an independent copy.
@@ -65,9 +67,27 @@ class Receiver:
                     or journal._receipt_edge!=binding
                     or authenticate_peer is not journal._receipt_fence):
                 raise TypeError('receipt journal and fixed V2 mapping required')
+        if commit_fence is not None and not callable(commit_fence):raise TypeError('synchronous receipt fence required')
+        self._commit_fence=commit_fence
         self._retain_payload=retain_payload
         self._input_layout=input_layout_version;self._input_wire=input_layout_wire_version
         self._journal=journal;self._peer=authenticate_peer
+
+    def _commit_guard(self):
+        from contextlib import contextmanager
+        from .local_attempt import _non_suppressing
+        @contextmanager
+        def guard():
+            if self._commit_fence is None:yield None
+            else:
+                context=self._commit_fence()
+                if inspect.isawaitable(context):
+                    if inspect.iscoroutine(context):context.close()
+                    raise PermissionError('synchronous receipt fence required')
+                with _non_suppressing(context) as allowed:
+                    if allowed is not None:raise PermissionError('receipt fence must yield None')
+                    yield None
+        return guard()
 
     def receive_bytes(self,frame):
         if type(frame) is not bytes or not 1<=len(frame)<=MAX_FRAME_BYTES:
@@ -77,7 +97,7 @@ class Receiver:
         if e.stage_id!=0 or e.layout_version!=b.layout_version:
             raise Conflict('edge/version mismatch')
         digest=hashlib.sha256(frame).hexdigest()
-        with j._authorized() as owner, self._peer() as peer, j._store._tx() as c:
+        with self._commit_guard(), j._authorized() as owner, self._peer() as peer, j._store._tx() as c:
             TypeAdapter(Identifier).validate_python(peer,strict=True)
             if peer!=b.sender_node:raise PermissionError('peer mismatch')
             s=j._store._load(c,'p1_sessions',b.session_id,Session)

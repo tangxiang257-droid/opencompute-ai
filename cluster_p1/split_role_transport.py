@@ -91,7 +91,7 @@ class _Local:
     async def send_json(self,c,scope,value,stage):
         raw=_json(value)
         with self.fence(scope,'send-metadata'):pass
-        await c.send(Envelope(scope['request'],scope['session'],scope['epoch'],stage,0,(0,1),scope['model'],2,(len(raw),),'uint8',raw),max_frame_bytes=65536)
+        await c.send(Envelope(scope['request'],scope['session'],scope['epoch'],stage,0,(0,1),scope['model'],2,(len(raw),),'uint8',raw),max_frame_bytes=65536,write_fence=lambda:self.fence(scope,'send-metadata'))
     async def read_json(self,c,scope,stage):
         d=await c.receive()
         try:
@@ -117,7 +117,7 @@ class HiddenSender(_Local):
             _need(e.encode()==raw and (e.task_id,e.session_id,e.execution_epoch,e.stage_id,e.tile_id,e.model_hash,e.tensor_shape,e.dtype)==
                   (s['request'],s['session'],s['epoch'],0,0,s['model'],(1,1,s['hidden']),'float32'))
             with self.fence(s,'hidden-send'):pass
-            await send_handoff(self._channel,e)
+            await send_handoff(self._channel,e,write_fence=lambda:self.fence(s,'hidden-send'))
             ack=await self.read_json(self._channel,s,0)
             expected=dict(version=1,kind='hidden-committed',scope=s,frame_digest=hashlib.sha256(raw).hexdigest(),payload_digest=hashlib.sha256(e.payload).hexdigest(),execution_allowed=False)
             _need(_json(ack)==_json(expected));return ack
@@ -137,7 +137,7 @@ class HiddenReceiver(_Local):
         try:
             self.once();s=self._scope
             with self.fence(s,'hidden-receive'):pass
-            receipt=await self._bound.receive_once(self._journal)
+            receipt=await self._bound.receive_once(self._journal,commit_fence=lambda:self.fence(s,'hidden-commit'))
             with self.fence(s,'hidden-committed'),self._journal._authorized(),self._journal._receipt_fence(),self._journal._store._tx() as c:
                 _need(receipt.get('duplicate') is False and receipt.get('execution_allowed') is False)
                 row=c.execute('SELECT frame FROM p1_received_frames WHERE tile=0').fetchone();_need(row is not None)
@@ -159,6 +159,10 @@ class ResultSender(_Local):
         super().__init__((data_channel,metadata_channel),identity,authorize)
         self._data=data_channel;self._meta=metadata_channel;self._binding=binding
     def generation(self):return _generation(self._data.w)
+    @contextmanager
+    def _write_guard(self,meta,check):
+        with self.fence(meta,'result-frame'):
+            _nothing(check());yield None
     async def send(self,spec,spool,digest,check):
         try:
             self.once();s=transport_scope(spec);_digest(digest)
@@ -180,7 +184,7 @@ class ResultSender(_Local):
                 for frame in iterator:
                     with self.fence(meta,'result-frame'):_nothing(check());_need(frame.object_index==0)
                     wire=payload(context,frame.sequence,frame.offset,frame.block)
-                    await self._data.send(Envelope(spec.request,spec.session,spec.epoch,1,frame.sequence,(0,1),spec.model,binding.layout_version,(len(wire),),'uint8',wire),max_frame_bytes=65536)
+                    await self._data.send(Envelope(spec.request,spec.session,spec.epoch,1,frame.sequence,(0,1),spec.model,binding.layout_version,(len(wire),),'uint8',wire),max_frame_bytes=65536,write_fence=lambda:self._write_guard(meta,check))
             finally:iterator.close()
             ack=await self.read_json(self._meta,s,1)
             _need(type(ack)is dict and set(ack)=={'version','kind','metadata_digest','manifest_digest','execution_allowed'} and type(ack['version'])is int and ack['version']==1
@@ -204,7 +208,10 @@ def _result_binding(binding,spec,generation):
 
 
 class ResultIngress(_Local):
-    def __init__(self,reader,writer,config,metadata_channel,binding,*,identity=None,authorize=None):
+    def __init__(self,reader,writer,config,metadata_channel,binding,*,identity=None,authorize=None,recipient_node=None,receive_authorize=None):
+        _need(type(recipient_node)is str and 0<len(recipient_node)<=128 and recipient_node!=binding.scope.peer_node)
+        _need(receive_authorize is not authorize and callable(getattr(receive_authorize,'hold_receiver',None)))
+        self._recipient_node=recipient_node;self._receive_authorize=receive_authorize
         _need(type(config)is TLSConfig and type(metadata_channel)is Channel and (metadata_channel.capacity_bytes,metadata_channel.capacity_tiles)==(32768,1))
         _binding(binding,MAX_OBJECT)
         super().__init__((metadata_channel,),identity,authorize)
@@ -213,6 +220,11 @@ class ResultIngress(_Local):
         _need(self._ssl[0]==binding.scope.peer_certificate_der_sha256
               and metadata_channel.authenticated_identity.node_id==binding.scope.peer_node
               and metadata_channel.authenticated_identity.certificate_sha256==self._ssl[0])
+    @contextmanager
+    def fence(self,binding,action):
+        context=dict(recipient_node=self._recipient_node,purpose='result-store',receive_binding=json.loads(json.dumps(asdict(self._binding))),binding=binding)
+        with super().fence(binding,action),_non_suppressing(self._receive_authorize.hold_receiver(_parse(_json(context)),action)) as allowed:
+            _nothing(allowed);yield None
     async def _extra_cleanup(self):
         if self._receiver is not None:
             self._receiver._fenced=True;self._receiver._event.set();self._receiver._timer.cancel()

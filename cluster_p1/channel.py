@@ -2,6 +2,7 @@
 import asyncio
 from dataclasses import dataclass
 import hashlib
+import inspect
 import ssl
 import struct
 import secrets
@@ -161,12 +162,23 @@ class Channel:
             self._abort();raise
         return self
 
-    async def _frame(self, kind, data):
+    async def _frame(self, kind, data, *, write_fence=None):
         async with self._write:
             if self._closed:
                 raise ChannelError('disconnected')
             try:
-                self.w.write(kind + struct.pack('!I', len(data)) + data)
+                if write_fence is None:
+                    self.w.write(kind + struct.pack('!I', len(data)) + data)
+                else:
+                    from .local_attempt import _non_suppressing
+                    if not callable(write_fence):raise ChannelError('synchronous write fence required')
+                    context=write_fence()
+                    if inspect.isawaitable(context):
+                        if inspect.iscoroutine(context):context.close()
+                        raise ChannelError('synchronous write fence required')
+                    with _non_suppressing(context) as allowed:
+                        if allowed is not None:raise ChannelError('write fence must yield None')
+                        self.w.write(kind + struct.pack('!I', len(data)) + data)
                 await asyncio.wait_for(self.w.drain(), self.timeout)
             except BaseException:
                 self._abort()
@@ -242,7 +254,7 @@ class Channel:
         finally:
             self._abort()
 
-    async def send(self, envelope, *, max_frame_bytes=None):
+    async def send(self, envelope, *, max_frame_bytes=None, write_fence=None):
         # Serialize before credit reservation or wire I/O. The exact bytes checked
         # here are sent after the await, never a second potentially changed encoding.
         frame = envelope.encode()
@@ -276,7 +288,8 @@ class Channel:
                     await self._condition.wait()
         await asyncio.wait_for(reserve(), self.timeout)
         try:
-            await self._frame(b'D', frame)
+            if write_fence is None:await self._frame(b'D', frame)
+            else:await self._frame(b'D', frame,write_fence=write_fence)
         except BaseException:
             self._abort()
             raise

@@ -136,7 +136,8 @@ class Tests(unittest.IsolatedAsyncioTestCase):
             scope=Scope(actual.request,1,actual.plan_digest,actual.layout,'out','logits',actual.session,'single-token','b',hashlib.sha256(b'b').hexdigest(),'placeholder')
             binding=ReceiveBinding(scope,1,actual.model,2,'float32',((0,1,(1,1,actual.vocab)),))
             rs=ResultSender(data,sm,binding,identity=identity,authorize=permission)
-            ri=ResultIngress(dir,diw,wire.config('b'),im,binding,identity=identity,authorize=permission)
+            from validation.split_roles.test_transport import RecipientAuthority
+            ri=ResultIngress(dir,diw,wire.config('b'),im,binding,identity=identity,authorize=permission,recipient_node='c',receive_authorize=RecipientAuthority())
             self.endpoints.extend((rs,ri))
             bp=Plan(Binding(actual.owner,actual.request,actual.session,'single-token',1,rs.generation(),actual.model,actual.layout,actual.input_snapshot,actual.token_digest,actual.preprocessing,actual.plan_digest),(1,),actual.vocab)
             self.source.reserve('split-result',bp,'source');self.destination.reserve('split-result',bp,'destination')

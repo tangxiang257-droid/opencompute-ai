@@ -26,6 +26,18 @@ class Authority:
         try:yield None
         finally:self.active-=1
 
+class RecipientAuthority:
+    """Explicit synthetic C policy, not B's runtime/transport permission."""
+    revoked=False
+    active=0
+    @contextmanager
+    def hold_receiver(self,context,action):
+        if self.revoked or context['recipient_node']!='c' or context['purpose']!='result-store':raise PermissionError('C permission absent')
+        if context['receive_binding']['scope']['peer_node']!='b':raise PermissionError('wrong result sender')
+        self.active+=1
+        try:yield None
+        finally:self.active-=1
+
 class Tests(unittest.IsolatedAsyncioTestCase):
     make_receiver=fixtures.Tests.make_receiver
     fence=fixtures.Tests.fence
@@ -42,7 +54,8 @@ class Tests(unittest.IsolatedAsyncioTestCase):
         self.mr=Channel(b,bw,config('b'),{'b':{grant}},capacity_bytes=32768,capacity_tiles=1)
         self.channels.extend((self.ms,self.mr))
         self.rs=ResultSender(self.result_send,self.ms,self.binding,**self.kw)
-        self.ri=ResultIngress(self.result_reader,self.result_writer,config('b'),self.mr,self.binding,**self.kw)
+        self.recipient=RecipientAuthority()
+        self.ri=ResultIngress(self.result_reader,self.result_writer,config('b'),self.mr,self.binding,recipient_node='c',receive_authorize=self.recipient,**self.kw)
     async def asyncTearDown(self):
         await asyncio.gather(*(x.close() for x in (self.hs,self.hr,self.rs,self.ri)),return_exceptions=True)
         await fixtures.Tests.asyncTearDown(self)

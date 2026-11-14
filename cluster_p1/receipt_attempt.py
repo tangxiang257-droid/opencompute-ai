@@ -81,10 +81,10 @@ class ReceiptAttemptJournal(LocalAttemptJournal):
             obj.close();raise
         return obj
 
-    def make_receiver(self):
+    def make_receiver(self,*,commit_fence=None):
         return Receiver(self,self._receipt_edge,authenticate_peer=self._receipt_fence,
                         input_layout_version=2,input_layout_wire_version=self._receipt_edge.layout_version,
-                        retain_payload=True)
+                        retain_payload=True,commit_fence=commit_fence)
 
     def make_owner(self,*args,**kwargs):
         raise Conflict('receipt journal cannot execute stage 0')
