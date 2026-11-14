@@ -101,7 +101,7 @@ async def _settle(task):
   raise
  if cancelled is not None:raise cancelled
 
-async def assemble_actions(raw,pin,a,credential,control,channel,*,enabled=False,identity=None,clock=None,resources=None):
+async def assemble_actions(raw,pin,a,credential,control,channel,*,enabled=False,identity=None,identity_mode=None,clock=None,resources=None):
  """Take only a validated dedicated action Channel; never automatically serve.
 
  Before take, caller retains its channel and borrowed services on rejection.
@@ -110,10 +110,20 @@ async def assemble_actions(raw,pin,a,credential,control,channel,*,enabled=False,
  No local fence is held across asynchronous control proof or cleanup.
  """
  need(enabled is True);d=_configuration(raw,pin)
- need(callable(getattr(identity,'hold',None)) and callable(getattr(resources,'hold',None)) and callable(getattr(clock,'sample',None)))
- methods=(identity.hold,clock.sample,resources.hold);sample(clock)
+ need(identity_mode is None or type(identity_mode)is str and identity_mode=='channel')
+ need(callable(getattr(resources,'hold',None)) and callable(getattr(clock,'sample',None)))
+ if identity_mode is None:need(callable(getattr(identity,'hold',None)))
+ else:need(identity is None)
+ callbacks=(clock.sample,resources.hold);original_identity=getattr(identity,'hold',None)
+ sample(clock)
  installation=_binding(a,credential,control,channel,d,resources)
- need(methods==(identity.hold,clock.sample,resources.hold))
+ need(callbacks==(clock.sample,resources.hold) and original_identity==getattr(identity,'hold',None))
+ if identity_mode=='channel':
+  from cluster_p1.scoped_identity import ScopedChannelIdentity
+  descriptor=control.descriptor
+  scope=dict(command=descriptor.command_id,reservation=descriptor.reservation_id,binding=descriptor.binding,charge=descriptor.charge)
+  identity=ScopedChannelIdentity(channel,scope,expected_peer=d['action_peer'])
+ need(callbacks==(clock.sample,resources.hold))
  need(channel._start_attempted and not channel.w.is_closing() and (channel.capacity_bytes,channel.capacity_tiles)==(32768,1))
  with channel.identity_fence(channel.authenticated_identity):pass
  need(not any(getattr(channel,k,False) or getattr(channel.w,k,False) for k in _FLAGS))
