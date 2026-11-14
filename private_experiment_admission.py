@@ -43,10 +43,11 @@ class ExperimentAdmission(_Database):
   try:
    with self._tx() as c:
     if self.fresh:
-     c.execute('CREATE TABLE config(version INTEGER,domain TEXT)');c.execute('INSERT INTO config VALUES(1,?)',(source_domain,))
+     c.execute('CREATE TABLE config(version INTEGER,domain TEXT)');c.execute('INSERT INTO config VALUES(2,?)',(source_domain,))
      c.execute('CREATE TABLE revoked(owner TEXT,source TEXT,PRIMARY KEY(owner,source))')
      c.execute("CREATE TABLE experiments(id TEXT PRIMARY KEY,owner TEXT,source TEXT,task TEXT UNIQUE,body TEXT,digest TEXT,boot TEXT,state TEXT CHECK(state IN('PENDING','CONFIRMING','CONFIRMED','DISPATCHING','REGISTERED','REVOKED','UNKNOWN')),registration TEXT,UNIQUE(owner,source))")
-    need(c.execute('SELECT version,domain FROM config').fetchall()==[(1,source_domain)])
+     c.execute("CREATE TABLE c_import_slots(experiment TEXT PRIMARY KEY REFERENCES experiments(id),binding TEXT NOT NULL,charge INTEGER NOT NULL,files INTEGER NOT NULL,state TEXT NOT NULL CHECK(state IN('CLAIMED','IMPORTED','UNKNOWN')))")
+    config=c.execute('SELECT version,domain FROM config').fetchall();need(config in ([(1,source_domain)],[(2,source_domain)]));self.schema_version=config[0][0]
   except BaseException:self.close();raise
  def _ready(self,write=True):
   try:
@@ -93,8 +94,8 @@ class ExperimentAdmission(_Database):
   need(p['privacy'] in ('L1','L2','L3') and d['task']['privacy_level']==p['privacy'])
   need(Decimal(str(d['task']['cost_cap']))==Decimal(p['max_cost_microunits'])/1000000 and d['task']['deadline']==p['expires_at'])
   need(set(p['actions'])=={'register','claim','install','load','execute','commit','export'})
-  receiver=json.loads(canonical(receiver));need(set(receiver)=={'node','identity','purpose','storage_policy','retention_seconds','max_charge_bytes'})
-  for k in ('node','identity','storage_policy'):text(receiver[k])
+  receiver=json.loads(canonical(receiver));need(set(receiver)=={'node','identity','resource_id','purpose','storage_policy','retention_seconds','max_charge_bytes'})
+  for k in ('node','identity','resource_id','storage_policy'):text(receiver[k])
   need(receiver['node'] not in [x['node'] for x in places] and receiver['purpose']=='result-store')
   need(type(receiver['retention_seconds'])is int and 0<receiver['retention_seconds']<=86400)
   need(type(receiver['max_charge_bytes'])is int and d['plan']['vocab_size']*4+32768<=receiver['max_charge_bytes']<=2097152)
@@ -112,7 +113,7 @@ class ExperimentAdmission(_Database):
      for stage in d['stages']:stage['session_id']=nonce
      for tile in d['plan']['tiles']:tile.update(task_id=execution,session_id=nonce)
      d=_make_declaration(d['task'],d['session'],d['stages'],d['plan']['tiles'],d['plan']['hidden_size'],d['plan']['vocab_size'],d['config_sha256'])
-     body=dict(version=1,purpose=PURPOSE,source_domain=self.domain,source_task=source_task,source_revision=revision,issuer=dict(namespace=issuer.namespace,incarnation=issuer.incarnation),execution_task=execution,owner=owner,source=source,source_status=dict(tokenizer=s.tokenizer_status,model=s.model_status,computation_verified=False),declaration=d,policy=p,placements=places,receiver=receiver,c_input_copy=copy)
+     body=dict(version=2,purpose=PURPOSE,source_domain=self.domain,source_task=source_task,source_revision=revision,issuer=dict(namespace=issuer.namespace,incarnation=issuer.incarnation),execution_task=execution,owner=owner,source=source,source_status=dict(tokenizer=s.tokenizer_status,model=s.model_status,computation_verified=False),declaration=d,policy=p,placements=places,receiver=receiver,c_input_copy=copy)
      raw=canonical(body);need(len(raw.encode())<=30000);sha=digest(body)
      with self._policy_scope(body,'prepare'):
       with self._tx() as db:

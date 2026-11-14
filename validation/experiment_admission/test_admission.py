@@ -25,7 +25,7 @@ class Tests(Base):
   self.policy['privacy']='L1';d['task'].update(privacy_level='L1',cost_cap=self.policy['max_cost_microunits']/1000000,deadline=self.policy['expires_at'])
   self.declaration=_make_declaration(d['task'],d['session'],d['stages'],d['plan']['tiles'],24,100,d['config_sha256'])
   self.parent=Policy();self.trigger=Trigger();self.adm=ExperimentAdmission(self.root/'experiment.db',self.consent,source_domain='a'*64,trigger=self.trigger,policy_authority=self.parent);self.addCleanup(self.adm.close)
-  self.receiver=dict(node='c',identity='c-cert',purpose='result-store',storage_policy='private',retention_seconds=60,max_charge_bytes=65536)
+  self.receiver=dict(node='c',identity='c-cert',resource_id='c-reserved',purpose='result-store',storage_policy='private',retention_seconds=60,max_charge_bytes=65536)
   self.copy=dict(allowed=True,destination='c',purpose='result-store',input_snapshot=self.ref.digest)
   self.strict=IssuanceAuthority(self.root/'experiment-issuer.db',namespace='b'*64,source_provider=self.adm,authorize=self.adm,resources=Permission(),require_consent=True);self.addCleanup(self.strict.close)
  async def prepare_new(self):return await self.adm.prepare(self.token,self.task.task_id,self.declaration,self.policy,self.placements,receiver=self.receiver,c_input_copy=self.copy,issuer=self.strict)

@@ -189,7 +189,7 @@ class InputTaskLedger:
                                                 idempotency_key, binding, reference)
 
     def _commit_published_input(self, connection, authenticated_owner,
-                                idempotency_key, binding, reference):
+                                idempotency_key, binding, reference, *, _import_task_id=None):
         """Participate in the caller's SAME transaction; never begin/commit here.
 
         A published reference is a locator, not authority. Read/verify its actual
@@ -200,17 +200,25 @@ class InputTaskLedger:
         _id(authenticated_owner); _id(idempotency_key)
         _need(type(binding) is InputBinding and binding.owner_id == authenticated_owner)
         _need(type(reference) is SnapshotRef)
+        if _import_task_id is not None:
+            # Explicit IDs are confined to the exact result-only ledger. Inherited
+            # v12/v13 source ledgers cannot use this route to reinterpret tasks.
+            from result_artifacts import _Ledger
+            _need(type(self) is _Ledger)
+            _id(_import_task_id)
+            _need(len(_import_task_id)==32 and all(c in '0123456789abcdef' for c in _import_task_id))
         read_input(self._directory, reference, binding)
         fingerprint = _fingerprint(reference)
         prior = self._db.execute('SELECT fingerprint,task_id FROM input_requests WHERE owner_id=? AND idem_key=?',
                                  (authenticated_owner, idempotency_key)).fetchone()
         if prior is not None:
             _need(prior[0] == fingerprint)
+            _need(_import_task_id is None or prior[1] == _import_task_id)
             task, saved = self._metadata(authenticated_owner, prior[1])
             _need(saved == binding and task.snapshot == reference)
             read_input(self._directory, task.snapshot, saved)
         else:
-            task_id = secrets.token_hex(16)
+            task_id = secrets.token_hex(16) if _import_task_id is None else _import_task_id
             self._db.execute('INSERT INTO stored_tasks VALUES(?,?,?,?)',
                              (task_id, authenticated_owner, binding.request_id, 'STORED'))
             self._db.execute('INSERT INTO task_inputs VALUES(?,?,?)',

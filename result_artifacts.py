@@ -91,6 +91,18 @@ class _Ledger(InertAttemptLedger):
         super().__init__(connection, snapshot_fd, initialize=initialize)
         _need(self._db.execute('SELECT body FROM artifact_policy WHERE id=1').fetchone() == (self._policy,))
 
+    def _import_registered_input(self, owner, task_id, key, binding, reference):
+        """Internal validated input import, not authority, receiving or execution.
+
+        Caller supplies current identity/consent/capacity fences. Existing source
+        ledgers cannot invoke this exact-class-only method. No files are copied
+        here; actual published bytes are reverified by the shared input core.
+        """
+        _need(type(self) is _Ledger)
+        with self._transaction():
+            return self._commit_published_input(self._db,owner,key,binding,reference,
+                                                _import_task_id=task_id)
+
     def _initialize(self):
         super()._initialize()
         self._db.execute('INSERT INTO artifact_policy VALUES(1,?)', (self._policy,))
