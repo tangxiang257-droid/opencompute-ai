@@ -142,6 +142,11 @@ class RoleResources:
             mapping=self.db.execute('SELECT binding,state FROM controls WHERE parent=?',(ticket.reservation_id,)).fetchone()
             if mapping is not None:need(mapping[1]=='HELD' and spec.inputs==(json.loads(mapping[0])['input_digest'],))
         with self.hold(ticket.reservation_id,d):pass
+    def device_capacity(self,ticket):
+        """View of an existing promise only; not an allocation or permission."""
+        self.ready()
+        need(type(ticket)is Ticket and self.tickets.get(id(ticket)) is ticket)
+        return _DeviceCapacity(self,ticket)
     def quarantine(self,spec,ticket,scope):
         self.check(True);need(type(ticket)is Ticket and self.tickets.get(id(ticket)) is ticket);self._validate(json.loads(self._row(ticket.reservation_id)[0]),spec);self._unknown(ticket.reservation_id)
     def query(self,rid):
@@ -153,3 +158,50 @@ class RoleResources:
         need(self.pid==os.getpid())
         with self.lock:
             if not self.closed:self.closed=True;self.db.close()
+
+class _DeviceCapacity:
+    """Private exact-ticket view; real exclusive capacity remains external.
+
+    The backend hold_device fences the SAME descriptor/resource ID, never creates
+    a lease and never releases it on exit. No identity or execution grant is made.
+    """
+    def __init__(self,service,ticket):self.service=service;self.ticket=ticket;self.rid=ticket.reservation_id
+    def _snapshot(self,spec,device,stage):
+        r=self.service;t=self.ticket;r.ready()
+        need(type(t)is Ticket and r.tickets.get(id(t)) is t and t.reservation_id==self.rid)
+        need(type(stage)is int and stage in (0,1))
+        with r.lock:
+            row=r._row(t.reservation_id);d=json.loads(row[0]);r._validate(d,spec)
+            need(row[5]=='HELD' and t.reservation_id not in r.poisoned)
+            need(d['device']==device and d['stage']==stage)
+            baseline=json.loads(row[1]);actual=asdict(spec);actual['inputs']=list(actual['inputs'])
+            baseline.pop('inputs');actual.pop('inputs');need(actual==baseline)
+            mapping=r.db.execute('SELECT rid,binding,charge,state FROM controls WHERE parent=?',(t.reservation_id,)).fetchone()
+            need(mapping is not None and mapping[3]=='HELD' and mapping[2]==row[3])
+            b=json.loads(mapping[1]);need(_binding(b)==mapping[1])
+            expected=dict(owner=d['owner'],task=d['task'],session=d['nonce'],epoch=d['epoch'],stage=d['stage'],device=d['device'],instance=d['instance'],declaration_digest=d['declaration_digest'],model=spec.model,layout=spec.layout,plan=spec.plan_digest,**d['source_binding'])
+            need(all(b[k]==v for k,v in expected.items()))
+            need(spec.inputs==(b['input_digest'],))
+            return row,mapping
+    @contextmanager
+    def hold_device(self,spec,device,stage,action):
+        r=self.service;t=self.ticket
+        # Authenticate the original local handle before any failure can poison it.
+        need(type(t)is Ticket and r.tickets.get(id(t)) is t and t.reservation_id==self.rid)
+        try:
+            r.check(True)
+            need(action in ('open','load','execute','materialize','finish','inspect-finished'))
+            original=self._snapshot(spec,device,stage);row,mapping=original
+            d=json.loads(row[0]);demands=json.loads(row[4])
+            need(callable(getattr(r.capacity,'hold_device',None)))
+            with r.hold(t.reservation_id,d):
+                with _non_suppressing(r.capacity.hold_device(json.loads(canonical(d)),dict(demands),action)) as held:
+                    nothing(held);need(self._snapshot(spec,device,stage)==original)
+                    yield None
+                    need(self._snapshot(spec,device,stage)==original)
+                need(self._snapshot(spec,device,stage)==original)
+            need(self._snapshot(spec,device,stage)==original)
+        except BaseException as primary:
+            try:r._unknown(t.reservation_id)
+            except BaseException as cleanup:raise BaseExceptionGroup('device promise retirement uncertain',[primary,cleanup])
+            raise
