@@ -107,15 +107,27 @@ class TaskConsent:
    need(type(v)is dict and set(v)=={'stage','node','device','instance','resource_id'} and type(v['stage'])is int and v['stage']==stage['stage_id'] and v['node']==stage['assigned_node'])
    for k in ('node','device','instance','resource_id'):text(v[k])
   return d,p,places
- async def prepare(self,credential,declaration,policy,placements):
+ async def prepare(self,credential,declaration,policy,placements,*,receiver=None):
   self._current();need(callable(getattr(self.trigger,'confirm',None)))
-  d,p,places=self._proposal(declaration,policy,placements);owner=self.service._download_owner(credential);task=d['task']['task_id'];need(d['task']['owner_id']==owner)
+  d,p,places=self._proposal(declaration,policy,placements)
+  receiver=None if receiver is None else json.loads(canonical(receiver))
+  owner=self.service._download_owner(credential);task=d['task']['task_id'];need(d['task']['owner_id']==owner)
   async with self.authority._lock:
    ledger=self._current()
    with self._user(credential,owner):
     source,s=self._source(credential,task,owner)
     need((s.model.weights_sha256,s.model.config_sha256,s.token_count,s.vocab_size)==(d['task']['model_hash'],d['config_sha256'],d['session']['expected_tokens'],d['plan']['vocab_size']))
-    body=canonical(dict(owner=owner,task=task,source=source,declaration=d,policy=p,placements=places));need(len(body.encode())<=32768);pid=uuid.uuid4().hex;sha=hashlib.sha256(body.encode()).hexdigest()
+    proposal=dict(owner=owner,task=task,source=source,declaration=d,policy=p,placements=places)
+    if receiver is not None:
+     need(d['session']['expected_tokens']==1)
+     r=json.loads(canonical(receiver));need(set(r)=={'version','node','identity','purpose','storage_policy','retention_seconds','max_charge_bytes'})
+     need(type(r['version'])is int and r['version']==1 and r['purpose']=='result-store' and 'export' in p['actions'])
+     for k in ('node','identity','storage_policy'):text(r[k])
+     need(r['node'] not in [x['node'] for x in places])
+     need(type(r['retention_seconds'])is int and 0<r['retention_seconds']<=86400)
+     need(type(r['max_charge_bytes'])is int and d['plan']['vocab_size']*4+32768<=r['max_charge_bytes']<=2097152)
+     proposal['receiver']=r
+    body=canonical(proposal);need(len(body.encode())<=32768);pid=uuid.uuid4().hex;sha=hashlib.sha256(body.encode()).hexdigest()
     with ledger._transaction():
      ledger._db.execute('INSERT OR IGNORE INTO consent_tasks VALUES(?,?,0,0)',(task,owner))
      need(ledger._db.execute('SELECT owner,revision,revoked FROM consent_tasks WHERE task=?',(task,)).fetchone()==(owner,0,0))
