@@ -4,7 +4,7 @@ This composes real memory Channels, committed input and receiving ingress. The
 LAB control sender deliberately substitutes for a genuinely authorized issuer;
 it does not test user confirmation, PKI or physical capacity.
 """
-import asyncio,hashlib
+import asyncio,hashlib,inspect
 from cluster_p1.c_receiving import ReceivingRole,ReceivingStore
 from cluster_p1.c_receiving_input import CommittedBInput
 from cluster_p1.c_dispatch_gate import BDispatchGate,CDispatchGate
@@ -29,7 +29,8 @@ async def install(t,b,control,s,reader,writer,metadata,binding,identity,permissi
   cz=Channel(zr,zw,config(a),{a:{g}},capacity_bytes=32768,capacity_tiles=1)
   t.channels.extend((ca,cz));return ca,cz
  authority,c=pair('authority','c');store=ReceivingStore(t.root/'gate-c.db');t.addCleanup(store.close)
- role=ReceivingRole(c,store,d,issuer_node='authority',issuer_certificate=hashlib.sha256(b'authority').hexdigest(),identity=Identity(),authorize=Policy(),maintenance=Policy(),resources=Policy())
+ role=getattr(t,'create_receiver',ReceivingRole)(c,store,d,issuer_node='authority',issuer_certificate=hashlib.sha256(b'authority').hexdigest(),identity=Identity(),authorize=Policy(),maintenance=Policy(),resources=Policy())
+ if inspect.isawaitable(role):role=await role
  t.addAsyncCleanup(role.close);t.gate_c_role=role;t.gate_c_store=store
  async def issue(op,seq,proof=None):
   request=dict(version=1,purpose='result-receive',sequence=seq,op=op,descriptor=d,challenge='e'*64,actual=proof,recipient=None if seq==0 else store.incarnation)
@@ -37,17 +38,19 @@ async def install(t,b,control,s,reader,writer,metadata,binding,identity,permissi
    if seq==0:await authority.start()
    raw=_json(request);await authority.send(Envelope(s.request,s.session,1,1,seq,(0,1),s.model,2,(len(raw),),'uint8',raw),max_frame_bytes=65536)
    delivery=await authority.receive();reply=_parse(delivery.envelope.payload);await delivery.release();return reply
-  return await asyncio.gather(send(),role.serve_once())
+  return await asyncio.gather(send(),getattr(t,'receiving_launcher',role).serve_once())
  await issue('pending',0)
  async def serve_ready():
   # prepare() might already have run in an input-readiness test; still queries.
-  for _ in range(2):await b.serve_once()
+  for _ in range(2):await (t.launchers[1].serve_once() if hasattr(t,'launchers') else b.serve_once())
  _,proof=await asyncio.gather(as_role('b',serve_ready()),as_role('coordinator',CommittedBInput(control).read_committed(d)))
  await issue('activate',1,proof)
- role.attach_result(s,reader,writer,config('b'),metadata,binding,identity=identity,authorize=permission)
- bg,cg=pair('b','c');gate=BDispatchGate(bg,b,d,identity=Identity(),authorize=Policy());receiver=CDispatchGate(cg,role,identity=Identity(),authorize=Policy())
+ getattr(t,'receiving_launcher',role).attach_result(s,reader,writer,config('b'),metadata,binding,identity=identity,authorize=permission)
+ bg,cg=pair('b','c')
+ gate=t.launchers[1].attach_gate(bg,d,identity=Identity(),authorize=Policy()) if hasattr(t,'launchers') else BDispatchGate(bg,b,d,identity=Identity(),authorize=Policy())
+ receiver=t.receiving_launcher.attach_gate(cg,identity=Identity(),authorize=Policy()) if hasattr(t,'receiving_launcher') else CDispatchGate(cg,role,identity=Identity(),authorize=Policy())
  t.addAsyncCleanup(receiver.close);t.gate_b=gate;t.gate_c=receiver
- async def serve_gate():return await as_role('c',receiver.serve_once())
+ async def serve_gate():return await as_role('c',t.receiving_launcher.serve_gate() if hasattr(t,'receiving_launcher') else receiver.serve_once())
  t.gate_task=asyncio.create_task(serve_gate())
  async def finish():
   if not t.gate_task.done():t.gate_task.cancel()
@@ -56,6 +59,6 @@ async def install(t,b,control,s,reader,writer,metadata,binding,identity,permissi
  class Ingress:
   async def receive(self,spec,artifacts,check,fence):
    assert spec==role.spec
-   return await role.receive_result(artifacts,check,fence)
+   return await getattr(t,'receiving_launcher',role).receive_result(artifacts,check,fence)
   async def close(self):await role.close()
  return Ingress()

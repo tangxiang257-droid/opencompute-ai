@@ -99,13 +99,13 @@ class Tests(Startup):
             server=Channel(sr,sw,wire.config(node),{node:{grant}},capacity_bytes=32768,capacity_tiles=1)
             self.channels.append(server)
             opts=dict(identity=split.Identity(),authorize=Holds(),resources=resource,issuer_node='issuer',issuer_certificate=hashlib.sha256(b'issuer').hexdigest())
-            startup=await RoleStartup.create(cr,cw,wire.config('issuer'),{'issuer':{grant}},store,desc,completion=BootstrapDevice(),runtime=self.kwargs(stage),**opts)
+            startup=await getattr(self,'create_startup',RoleStartup.create)(cr,cw,wire.config('issuer'),{'issuer':{grant}},store,desc,completion=BootstrapDevice(),runtime=self.kwargs(stage),**opts)
             self.endpoints.append(startup)
             self.current_startup=startup
             client=startup.client;self.channels.append(startup.channel)
             service=IssuanceService(server,authority,registration,desc,**opts)
             self.install_clients.append(client);self.endpoints.extend((client,service))
-            tasks=[asyncio.create_task(service.serve_once()),asyncio.create_task(startup.install(self.root/('sender.db' if stage==0 else 'receiver.db'),**(dict(execution_authorize=fixtures.journal_owner) if stage==0 else dict(prepared=prepared,prepare_fence=getattr(self,'prepare_fence',None)))))]
+            tasks=[asyncio.create_task(service.serve_once()),asyncio.create_task(getattr(self,'install_startup',lambda startup,*a,**kw:startup.install(*a,**kw))(startup,self.root/('sender.db' if stage==0 else 'receiver.db'),**(dict(execution_authorize=fixtures.journal_owner) if stage==0 else dict(prepared=prepared,prepare_fence=getattr(self,'prepare_fence',None)))))]
             try:response,handle=await asyncio.gather(*tasks)
             finally:
                 for task in tasks:

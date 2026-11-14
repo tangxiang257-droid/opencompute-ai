@@ -103,7 +103,7 @@ class Tests(unittest.IsolatedAsyncioTestCase):
     async def run_split(self,failure=None):
         from cluster_p1.local_stage_operations import StageAOperation,StageBOperation
         from cluster_p1.split_role_transport import HiddenSender,HiddenReceiver,ResultSender,ResultIngress,transport_scope
-        a=StageAOperation(self.spec,self.policy,self.sender,struct.pack('<q',1),**self.kwargs(0))
+        a=self.launch_operation(0,self.spec,tokens=struct.pack('<q',1)) if hasattr(self,'launch_operation') else StageAOperation(self.spec,self.policy,self.sender,struct.pack('<q',1),**self.kwargs(0))
         self.operations.append(a)
         ar,ac,aj=await self.register(0,self.spec,a)
         original_a=self.sender._store._tx;original_b=self.receiver._store._tx
@@ -143,7 +143,7 @@ class Tests(unittest.IsolatedAsyncioTestCase):
             bp=Plan(Binding(actual.owner,actual.request,actual.session,'single-token',1,rs.generation(),actual.model,actual.layout,actual.input_snapshot,actual.token_digest,actual.preprocessing,actual.plan_digest),(1,),actual.vocab)
             self.source.reserve('split-result',bp,'source');self.destination.reserve('split-result',bp,'destination')
             spool=Spool(self.root/'split-spool',self.source,self.destination,'split-result',bp)
-            b=StageBOperation(actual,self.policy,self.receiver,spool,journal_path=self.root/'split-driver.db',**self.kwargs(1))
+            b=self.launch_operation(1,actual,spool=spool) if hasattr(self,'launch_operation') else StageBOperation(actual,self.policy,self.receiver,spool,journal_path=self.root/'split-driver.db',**self.kwargs(1))
             self.operations.append(b)
             br,bc,bj=await self.register(1,actual,b)
             if hasattr(self,'receiving_gate'):
