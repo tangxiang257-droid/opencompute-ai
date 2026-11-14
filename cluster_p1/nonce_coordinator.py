@@ -120,6 +120,14 @@ def _require_issued_journal(journal,stage):
     """
     expected=_CoordinatedSender if stage==0 else ReceiptAttemptJournal
     if type(journal)is not expected:raise TypeError('exact coordinator-issued journal required')
+    online=getattr(journal,'_online_issuer',None)
+    if online is not None:
+        # Explicit local online registry mode, never an exception fallback or a
+        # reconstructed remote coordinator. Legacy checks remain below intact.
+        from .online_issuance import RoleInstallStore
+        if type(online)is not RoleInstallStore or getattr(journal,'_coordinator',None) is not None:
+            raise Conflict('exact unmixed online issuance mode required')
+        return online.require_issued(journal,stage)
     co=getattr(journal,'_coordinator',None)
     if type(co)is not NonceCoordinator:raise Conflict('live exact coordinator required')
     # Follow the journal's existing journal -> coordinator lock order.

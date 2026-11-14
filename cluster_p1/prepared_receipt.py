@@ -96,3 +96,39 @@ class PreparedReceiptConnection:
                 try:self.journal.close()
                 except BaseException as cleanup:primary=_with_cleanup(primary,cleanup)
             await self.bound._close_failed(primary)
+
+    async def prepare_online(self,store,handle,path,*,prepare_fence=None):
+        """Explicit fresh online-local factory; H credit still follows all checks.
+
+        JSON responses/history cannot be passed as an install qualification.
+        Receipt readiness remains default-denied for actual execution.
+        """
+        from .online_issuance import RoleInstallStore
+        self.channel._identity_loop_check()
+        if self._attempted:raise ValueError('preparation already attempted')
+        self._attempted=True
+        try:
+            if type(store)is not RoleInstallStore:raise TypeError('exact online local store required')
+            if self.state!='unprepared':raise ChannelError('connection unavailable')
+            self.channel._receipt_state='preparing'
+            j=store.create_receiver(handle,self.bound,path,execution_authorize=_deny_execution)
+            self.journal=j
+            expected=json.loads(handle.body)['plan_digest']
+            if prepare_fence is not None:await prepare_fence()
+            store.require_issued(j,1);self.bound._journal(j)
+            with _non_suppressing(j._authorized()) as owner,_non_suppressing(j._receipt_fence()),j._store._tx() as c:
+                j._context(c)
+                _,plan,_,_=j._plan(c,owner,active=True,stage_id=1)
+                if plan!=expected or j._receipt_edge.plan_digest!=expected:raise Conflict('prepared online receipt plan changed')
+                for table in ('p1_local_attempts','p1_local_stage1_attempts','p1_v2_receipts','p1_received_frames'):
+                    if c.execute('SELECT count(*) FROM '+table).fetchone()[0]:raise Conflict('fresh receipt ledger required')
+            if self.state!='preparing':raise ChannelError('preparation retired')
+            self.channel._receipt_state='ready'
+            await self.channel.start()
+            store.require_issued(j,1)
+            return j
+        except BaseException as primary:
+            if self.journal is not None:
+                try:self.journal.close()
+                except BaseException as cleanup:primary=_with_cleanup(primary,cleanup)
+            await self.bound._close_failed(primary)

@@ -57,6 +57,7 @@ class _Operation:
         self.control=None;self.descriptor=None
         self.ready()
     def ready(self):
+        self._online()
         need(not self.retired and self.ticket is not None and type(self.ticket)is not bool)
         for provider,names in ((self.resources,('verify_stage','quarantine')),
                 (self.device,('hold_load','open_scope','require_open','materialize','finish_scope','require_finished','quarantine')),
@@ -64,7 +65,20 @@ class _Operation:
                 (self.authority,('hold_load',)+(('hold_stage0',) if self.stage==0 else ('hold_call','finalize')))):
             need(provider is not None and all(callable(getattr(provider,n,None)) for n in names))
         nothing(self.resources.verify_stage(self.spec,self.ticket,self.stage))
+    def _online(self):
+        j=self.sender if self.stage==0 else self.receiver
+        store=getattr(j,'_online_issuer',None)
+        if store is None:return None
+        _,handle=store.require_issued(j,self.stage)
+        d=handle.pending.request;stage=d['declaration']['stages'][self.stage]
+        need(self.instance==d['instance'] and self.layer_range==(stage['layer_start'],stage['layer_end']))
+        return store,j,d
     def _check_binding(self,b):
+        online=self._online()
+        if online is not None:
+            d=online[2];need(b.get('device')==d['device'] and b.get('instance')==d['instance'])
+            need(all(b.get(k)==v for k,v in d['source_binding'].items()))
+            if self.stage==0:need(b.get('input_digest')==d['source_binding']['token_digest'])
         s=self.spec
         need(type(b)is dict and all(b.get(k)==v for k,v in dict(owner=s.owner,task=s.request,session=s.session,
             epoch=s.epoch,stage=self.stage,model=s.model,layout=s.layout,plan=s.plan_digest,input_snapshot=s.input_snapshot,
@@ -73,8 +87,16 @@ class _Operation:
     def bind_control(self,journal,descriptor):
         need(self.control is None and self.scope is None and type(journal)is ControlJournal and type(descriptor)is RoleDescriptor)
         journal.require_ready();self._check_binding(descriptor.binding)
+        online=self._online()
+        if online is not None:online[0].bind_control(online[1],self.stage,descriptor)
         self.control=journal;self.descriptor=descriptor
     def begin(self,scope):
+        if self._online() is not None:
+            need(self.control is not None and self.descriptor is not None)
+            r=self.control.query(self.descriptor.command_id)
+            need(r is not None and r['state']=='CONSUMED' and not r['retired']
+                 and r['binding']==self.descriptor.binding and r['reservation_id']==self.descriptor.reservation_id
+                 and r['charge']==self.descriptor.charge)
         self.ready();need(self.scope is None and type(scope)is str and re.fullmatch('[A-Za-z0-9_-]{1,128}',scope) is not None)
         self.scope=scope # Own even a partially failed local claim/open_scope.
         self._claim()
