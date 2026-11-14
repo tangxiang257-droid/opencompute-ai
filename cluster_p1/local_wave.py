@@ -45,18 +45,34 @@ class WaveAttemptJournal(LocalAttemptJournal):
         self.preflight_wave_budget()
         return _WaveStage1(self,operation,instance_id)
 
+    def _payload_budget(self,c,owner,wire_layout_version):
+        from .contracts import Task, Stage
+        from .payload_budget import assess_payload_budget
+        session,_,a,vocab=self._plan(c,owner,active=True)
+        _,_,b,_=self._plan(c,owner,active=True,stage_id=1)
+        task=self._store._load(c,'p1_tasks',self._task_id,Task)
+        stages=tuple(Stage.model_validate_json(x[0]) for x in c.execute(
+            'SELECT body FROM p1_stages WHERE session_id=? ORDER BY stage_id',
+            (session.session_id,)))
+        tiles=tuple(t for pair in zip(a,b) for t in pair)
+        report=assess_payload_budget(task,session,stages,tiles,
+            hidden_size=a[0].output.shape[2],vocab_size=vocab,
+            wire_layout_version=wire_layout_version)
+        return a,report
+
     def preflight_wave_budget(self):
         with _non_suppressing(self._authorized()) as owner,self._store._tx() as c:
-            _,_,a,_=self._plan(c,owner,active=True)
-            _,_,b,_=self._plan(c,owner,active=True,stage_id=1)
-            total=0
-            for tile in (*a,*b):
-                for desc in (tile.input,tile.output):
-                    size=(8 if desc.dtype=='int64' else 4)*math.prod(desc.shape)
-                    if size>MAX_BYTES:raise Conflict('object budget')
-                    total+=size
-            if total>MAX_RESERVED:raise Conflict('whole wave plan retained budget')
+            a,report=self._payload_budget(c,owner,2)
+            report.require_local(max_bytes=MAX_BYTES,max_reserved=MAX_RESERVED)
             return a
+
+    def preflight_handoff_budget(self,*,wire_layout_version):
+        """Read-only current-plan check; not permission, credit or reservation."""
+        with _non_suppressing(self._authorized()) as owner,self._store._tx() as c:
+            _,report=self._payload_budget(c,owner,wire_layout_version)
+            report.require_local(max_bytes=MAX_BYTES,max_reserved=MAX_RESERVED)
+            report.require_handoff()
+            return report
 
 class _WaveStage1:
     def __init__(self,journal,operation,instance_id):

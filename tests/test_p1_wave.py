@@ -87,6 +87,14 @@ class Tests(unittest.IsolatedAsyncioTestCase):
    return self.op(v,**kw)
   with self.assertRaises(BaseExceptionGroup):await self.run_wave(self.op,op)
   self.assertFalse(any(x[1]==4 for x in self.log));self.assertEqual(self.j.query(0,stage_id=1)['state'],'ADMITTED')
+ async def test_handoff_preflight_is_read_only_and_not_permission(self):
+  with sqlite3.connect(self.path) as c:before=tuple(c.iterdump())
+  r=self.j.preflight_handoff_budget(wire_layout_version=2)
+  self.assertFalse(r.execution_allowed);self.assertEqual(r.local_retained_bytes,1640)
+  with sqlite3.connect(self.path) as c:self.assertEqual(tuple(c.iterdump()),before)
+  self.assertEqual(self.log,[])
+ async def test_handoff_v1_rejected(self):
+  with self.assertRaises(ValueError):self.j.preflight_handoff_budget(wire_layout_version=1)
  async def test_budget_preflight_before_operation(self):
   with patch('cluster_p1.local_wave.MAX_RESERVED',1639):
    with self.assertRaises(Conflict):await self.run_wave()
