@@ -149,11 +149,60 @@ class ActionGate(_Endpoint):
   need(getattr(service,'_action_gate',None)is None)
   self.service=service;self._service_pin=(service,service.channel,service._identity,service._call,service._operation)
   service._action_gate=self;service._action_gate_pin=self
+ def attach_installed(self,installed):
+  """Bind original role-owned records; caller cannot supply a replacement scope.
+
+  This adds local evidence, not proof at the remote authority or new permission.
+  The owner must retain/close this channel and keep independent providers live.
+  """
+  from cluster_p1.role_assembly import InstalledStageRole
+  need(type(installed)is InstalledStageRole)
+  try:
+   need(not getattr(installed,'_action_attachment_attempted',False))
+   installed._action_attachment_attempted=True
+   installed._check();need(installed.role is not None)
+   startup=installed.startup;r=startup.runtime
+   need(self.channel is not installed.channel and self.channel is not startup.channel)
+   need(startup.prepared is None or self.channel is not startup.prepared.channel)
+   self._installed=installed
+   self._installed_pin=(installed,startup,startup.store,r['resources'],r['ticket'],installed.role,installed.operation)
+   self._installed_runtime=dict(r)
+   d=installed.descriptor
+   self._installed_scope=_json(dict(command=d.command_id,reservation=d.reservation_id,binding=d.binding,charge=d.charge))
+   self.attach(installed.role._service);self._check_installed()
+  except BaseException:
+   self.dead=True;installed._closed=True
+   raise
+ def _check_installed(self):
+  i=self._installed;s=i.startup;r=s.runtime
+  need(self._installed_pin==(i,s,s.store,r['resources'],r['ticket'],i.role,i.operation))
+  need(i.role._service is self.service and _json(self.scope())==self._installed_scope)
+  i._check() # Includes original install fence and B's actual committed bytes.
+  store,handle=s.store.require_issued(s.journal,s.stage);d=i.role.descriptor
+  row=store.db.execute('SELECT reservation,binding,charge FROM install_control WHERE command=?',(handle.pending.request['command_id'],)).fetchone()
+  need(row is not None and row[0]==d.reservation_id and _json(json.loads(row[1]))==_json(d.binding) and row[2]==d.charge)
+  need(store.resources is r['resources'] and r['ticket'].reservation_id==s.descriptor['resource_id'])
+  resource=r['resources'];rid=r['ticket'].reservation_id
+  original=(store._row(handle.pending),store.issued.get(id(s.journal)),resource._row(rid),resource.db.execute('SELECT rid,binding,charge,state FROM controls WHERE parent=?',(rid,)).fetchone())
+  with _non_suppressing(r['resources'].hold_control(r['ticket'].reservation_id,d.reservation_id,d.binding,d.charge)) as held:nothing(held)
+  # Final leaf reads AFTER the last provider exit: no callback/await may sit
+  # between these checks and the caller's lease-time/entry checks.
+  need(self._installed_pin==(self._installed,self._installed.startup,self._installed.startup.store,r['resources'],r['ticket'],self._installed.role,self._installed.operation))
+  need(set(s.runtime)==set(self._installed_runtime) and all(s.runtime[k] is v for k,v in self._installed_runtime.items()))
+  need(not i._closed and i.role._service is self.service and _json(self.scope())==self._installed_scope)
+  need(not self.dead and self._pin==(self.identity,self.identity.hold,self.clock,self.clock.sample))
+  need(self._service_pin==(self.service,self.service.channel,self.service._identity,self.service._call,self.service._operation) and self.service._action_gate is self and self.service._action_gate_pin is self)
+  need(resource.tickets.get(id(r['ticket'])) is r['ticket'] and rid not in resource.poisoned)
+  store._check(True);resource.check(True);self.current();self.service.current()
+  with s.channel.identity_fence(handle.pending.identity):pass
+  need(store.db.execute('SELECT reservation,binding,charge FROM install_control WHERE command=?',(handle.pending.request['command_id'],)).fetchone()==row)
+  need((store._row(handle.pending),store.issued.get(id(s.journal)),resource._row(rid),resource.db.execute('SELECT rid,binding,charge,state FROM controls WHERE parent=?',(rid,)).fetchone())==original)
  def check(self):
   need(not self.dead and self._pin==(self.identity,self.identity.hold,self.clock,self.clock.sample))
   self.current();s=self.service
   need(s is not None and self._service_pin==(s,s.channel,s._identity,s._call,s._operation) and s._action_gate is self and s._action_gate_pin is self)
   s.current()
+  if hasattr(self,'_installed'):self._check_installed()
  def scope(self):
   command,reservation,binding,charge=self.service._call
   return dict(command=command,reservation=reservation,binding=binding,charge=charge)

@@ -161,6 +161,7 @@ class StageLauncher(_Owner):
   _need(not getattr(writer,'_launcher_owned',False))
   config.claim();self=object.__new__(cls);self._init_owner(config);writer._launcher_owned=True
   self.startup=None;self.installed=None;self.operation=None;self.control=None;self.gate=None
+  self.actions=None;self._actions_pin=None;self._actions_attempted=False;self._actions_ready=False
   self._install_attempted=False;self._installed_ready=False;self._attached_ready=False;self._attach_attempted=False;self._operation_attempted=False
   self._providers=(identity,authorize,resources,completion);self._runtime=dict(runtime)
   async def create():
@@ -173,6 +174,9 @@ class StageLauncher(_Owner):
    client=self.startup.client
    _need(all(a is b for a,b in zip(self._providers,(client.identity,client.authorize,client.resources,client._completion))))
    _need(set(self.startup.runtime)==set(self._runtime) and all(self.startup.runtime[k] is v for k,v in self._runtime.items()))
+   if self._actions_ready:
+    _need(self.actions is self._actions_pin and self.actions._installed is self.installed)
+    self.actions.check()
   except BaseException:self._seal();raise
  async def install(self,*,execution_authorize=None,prepared=None,prepare_fence=None):
   self.check();_need(not self._install_attempted);self._install_attempted=True
@@ -208,8 +212,26 @@ class StageLauncher(_Owner):
   self._take_channel(channel)
   try:self.gate=BDispatchGate(channel,self.installed,d,identity=identity,authorize=authorize);return self.gate
   except BaseException:self._seal();raise
+ async def attach_actions(self,channel,*,authority_node=None,authority_certificate=None,identity=None,clock=None):
+  """Own a dedicated online action channel for this actual installed role.
+
+  Does not create identity, execution/resource authority or device providers.
+  Missing/failed attachment permanently seals this launcher, with no retry.
+  """
+  from private_experiment_actions import ActionGate
+  try:
+   self.check();_need(self._attached_ready and self.installed is not None and not self._actions_attempted)
+   self._actions_attempted=True
+   self._take_channel(channel)
+   self.actions=ActionGate(channel,authority_node=authority_node,authority_certificate=authority_certificate,identity=identity,clock=clock)
+   self._actions_pin=self.actions;self.actions.attach_installed(self.installed)
+   async def attach():
+    await channel.start();self._watch(channel);self.actions.check();self._actions_ready=True;self.check();return self.actions
+   return await self._run(attach)
+  except BaseException:self._seal();raise
  async def serve_once(self):
   self.check();_need(self._attached_ready and self.installed is not None)
+  _need(not self._actions_attempted or self._actions_ready)
   return await self._run(self.installed.serve_once)
  async def _close_owned(self):
   if self.installed is not None:await self.installed.close()
