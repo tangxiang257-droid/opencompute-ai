@@ -95,44 +95,54 @@ class _Registration:
     source_id:str
     body:str
     source_binding:str
+    authorization:str|None=None
 
 class IssuanceAuthority(_Database):
-    def __init__(self,path,*,namespace,source_provider=None,authorize=None,resources=None):
+    def __init__(self,path,*,namespace,source_provider=None,authorize=None,resources=None,require_consent=False):
+        _need(type(require_consent)is bool);self.require_consent=require_consent
         _digest(namespace);self.namespace=namespace;self.source_provider=source_provider;self.authorize=authorize;self.resources=resources
         self.registrations={};self.descriptors={};self._open(path)
         try:
             with self._tx() as c:
                 if self.fresh:
                     c.execute('CREATE TABLE authority(version INTEGER,namespace TEXT,incarnation TEXT)')
-                    c.execute('INSERT INTO authority VALUES(1,?,?)',(namespace,uuid.uuid4().hex))
+                    c.execute('INSERT INTO authority VALUES(?,?,?)',(2 if require_consent else 1,namespace,uuid.uuid4().hex))
+                    if require_consent:c.execute('CREATE TABLE authorizations(registration_id TEXT PRIMARY KEY,context TEXT NOT NULL)')
                     c.execute('CREATE TABLE registrations(id TEXT PRIMARY KEY,namespace TEXT,source_id TEXT,owner TEXT,task TEXT,nonce TEXT UNIQUE,body TEXT,source_binding TEXT NOT NULL,UNIQUE(namespace,owner,source_id),UNIQUE(owner,task))')
                     c.execute('CREATE TABLE slots(registration_id TEXT,stage INTEGER,command_id TEXT UNIQUE,intent TEXT,peer TEXT,PRIMARY KEY(registration_id,stage))')
                 rows=c.execute('SELECT version,namespace,incarnation FROM authority').fetchall()
-                _need(len(rows)==1 and rows[0][:2]==(1,namespace));self.incarnation=rows[0][2]
+                _need(len(rows)==1 and rows[0][:2]==(2 if require_consent else 1,namespace));self.incarnation=rows[0][2]
         except BaseException:self.close();raise
     def ready(self):
         self._check(True)
         _need(callable(getattr(self.source_provider,'check',None)) and callable(getattr(self.authorize,'hold',None)) and callable(getattr(self.resources,'hold',None)))
-    def register(self,task,session,stages,tiles,*,hidden_size,vocab_size,config_sha256,source_id,source_binding):
+    def register(self,task,session,stages,tiles,*,hidden_size,vocab_size,config_sha256,source_id,source_binding,authorization_context=None):
         self.ready();_identifier(source_id);source_binding=_source_binding(source_binding)
         d=_make_declaration(task,session,stages,tiles,hidden_size,vocab_size,config_sha256)
         owner=d['task']['owner_id'];taskid=d['task']['task_id'];nonce=d['session']['session_id'];body=canonical(d)
+        auth=None
+        if self.require_consent:
+            _need(type(authorization_context)is dict);auth=canonical(authorization_context);_need(len(auth.encode())<=32768)
+        else:_need(authorization_context is None)
+        request=dict(version=2,declaration=d,source_binding=source_binding,authorization=authorization_context) if self.require_consent else d
         rid=_hash([self.namespace,source_id,owner,taskid,nonce,d,source_binding]);committed=False
         try:
-            with _non_suppressing(self.authorize.hold(_copy(d),'register')) as a:
+            with _non_suppressing(self.authorize.hold(json.loads(canonical(request)),'register')) as a:
                 nothing(a);nothing(self.source_provider.check(self.namespace,source_id,owner,taskid,_hash(d),_copy(source_binding)))
                 with self._tx() as c:
                     self._check(True)
                     if c.execute('SELECT 1 FROM registrations WHERE (namespace=? AND owner=? AND source_id=?) OR (owner=? AND task=?) OR nonce=?',(self.namespace,owner,source_id,owner,taskid,nonce)).fetchone():raise Conflict('source/task/nonce permanently occupied')
                     c.execute('INSERT INTO registrations VALUES(?,?,?,?,?,?,?,?)',(rid,self.namespace,source_id,owner,taskid,nonce,body,canonical(source_binding)))
+                    if self.require_consent:c.execute('INSERT INTO authorizations VALUES(?,?)',(rid,auth))
                     committed=True
-            r=_Registration(rid,source_id,body,canonical(source_binding));self.registrations[id(r)]=r;return r
+            r=_Registration(rid,source_id,body,canonical(source_binding),auth);self.registrations[id(r)]=r;return r
         except BaseException:
             if committed:self.retired=True
             raise
     def _registration(self,r):
         self.ready();_need(type(r)is _Registration and self.registrations.get(id(r)) is r)
         _need(self.db.execute('SELECT body,source_binding FROM registrations WHERE id=?',(r.registration_id,)).fetchone()==(r.body,r.source_binding))
+        if self.require_consent:_need(self.db.execute('SELECT context FROM authorizations WHERE registration_id=?',(r.registration_id,)).fetchone()==(r.authorization,))
         return json.loads(r.body)
     def describe(self,r,stage,*,node,device,instance,resource_id):
         with self.lock:
@@ -153,7 +163,7 @@ class IssuanceAuthority(_Database):
                   and value['registration_id']==r.registration_id and peer.node_id==value['node'])
         consumed=False
         try:
-            with _non_suppressing(self.authorize.hold(_copy(value),'claim')) as a,_non_suppressing(self.resources.hold(value['resource_id'],_copy(value))) as resources:
+            with _non_suppressing(self.authorize.hold(dict(version=2,intent=_copy(value),authorization=json.loads(r.authorization)), 'claim') if self.require_consent else self.authorize.hold(_copy(value),'claim')) as a,_non_suppressing(self.resources.hold(value['resource_id'],_copy(value))) as resources:
                 nothing(a);nothing(resources)
                 with self._tx() as c:
                     self._registration(r)

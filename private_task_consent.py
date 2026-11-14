@@ -4,7 +4,7 @@ Identity is the existing service USER fence; a separately trusted explicit-actio
 provider is mandatory. Records bind real stored input and a complete proposed
 P1 declaration. v12 execution prohibition and all device/resource gates remain.
 """
-import asyncio,hashlib,json,math,time,uuid
+import asyncio,hashlib,json,math,time,uuid,threading
 from dataclasses import dataclass
 from contextlib import contextmanager
 from input_declaration import InputDeclarationReader
@@ -53,11 +53,21 @@ class Receipt:
  state:str
  execution_allowed:bool=False
 
+class _RuntimeFence:
+ """Process-local invalidation only; no remote replica or device-stop claim."""
+ def __init__(self):self.lock=threading.RLock();self.dead=False;self.tasks=set()
+ def invalidate(self,task=None):
+  with self.lock:
+   if task is None:self.dead=True
+   else:self.tasks.add(task)
+
 class TaskConsent:
  def __init__(self,reader,*,identity_fence=None,trigger=None,clock=time.time):
   need(type(reader)is InputDeclarationReader and isinstance(identity_fence,LocalUserFence))
   need(reader._service is not None and reader._service._verifier is identity_fence)
   self.reader=reader;self.service=reader._service;self.authority=reader._authority
+  if not hasattr(self.authority,'_task_consent_runtime_fence'):self.authority._task_consent_runtime_fence=_RuntimeFence()
+  self.fence=self.authority._task_consent_runtime_fence
   self.identity=identity_fence;self.trigger=trigger;self._trigger=trigger;self._confirm=getattr(trigger,'confirm',None);self.clock=clock;self.boot=uuid.uuid4().hex
   self.loop=asyncio.get_running_loop();self.live=set();self.retired=False;self.last_time=None
   self.pins=(reader._model,reader._model_record_digest,reader._preprocessing_version,reader._contract_sha256)
@@ -157,6 +167,7 @@ class TaskConsent:
    # An unauthorized miss must not poison another user's live consents.
    with self._user(credential,owner):
     need(ledger._db.execute('SELECT 1 FROM stored_tasks WHERE task_id=? AND owner_id=?',(task,owner)).fetchone() is not None)
+   self.fence.invalidate(task) # Conservative local fence precedes any uncertain durable revoke.
    try:
     with self._user(credential,owner):
      with ledger._transaction():
@@ -165,7 +176,7 @@ class TaskConsent:
       ledger._db.execute("UPDATE task_consents SET state='REVOKED' WHERE task=? AND owner=? AND state IN('PENDING','CONFIRMING','ACTIVE')",(task,owner))
     return None
    except BaseException:
-    self.authority._task_consent_failed=True;self.retired=True;self.live.clear();raise
+    self.fence.invalidate();self.authority._task_consent_failed=True;self.retired=True;self.live.clear();raise
  async def check_context(self,credential,pid,expected_digest,action):
   """Consent fact check only. Does not authorize v12 execution or return a permit."""
   self._current();owner=self.service._download_owner(credential)

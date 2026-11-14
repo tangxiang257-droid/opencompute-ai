@@ -208,8 +208,12 @@ class IssuanceService(_IssuanceEndpoint):
             peer=intent.get('issuer_peer');_need(type(peer)is dict)
             _need(all(peer.get(k)==v for k,v in self._issuer_identity.items()))
             _need(all(k in intent and _json(intent[k])==_json(v) for k,v in d.items()))
-            with self.admission('claim'):
-                response=self._authority.claim_stage(self._registration,_copy(intent),self._identity)
+            if self._authority.require_consent:
+                callback=getattr(self._authority.authorize,'claim_online',None);_need(callable(callback))
+                response=await callback(self._authority,self._registration,_copy(intent),self._identity,lambda:self.admission('claim'))
+            else:
+                with self.admission('claim'):
+                    response=self._authority.claim_stage(self._registration,_copy(intent),self._identity)
             with self.admission('issued-send'):pass
             reply=dict(response,kind='issued',reply_to=_hash(request),role_challenge=request['role_challenge'],issuer_challenge=issuer)
             await self.send(reply,1)

@@ -35,13 +35,13 @@ class RegisteredInputSource:
     hidden_size/layer counts remain plan declarations, not inspected model facts.
     P1 payload_ref stays inert metadata; it is never read as a path or authority.
     """
-    def __init__(self,reader,*,identity_fence=None):
+    def __init__(self,reader,*,identity_fence=None,consent=None):
         _need(type(reader)is InputDeclarationReader and isinstance(identity_fence,LocalUserFence))
         _need(reader._service is not None and reader._service._verifier is identity_fence)
         self._reader=reader;self._service=reader._service;self._authority=reader._authority
         self._provider=identity_fence;self._loop=asyncio.get_running_loop()
         self._pins=(reader._model,reader._model_record_digest,reader._preprocessing_version,reader._contract_sha256)
-        self._active=None;self._spent=False
+        self._active=None;self._spent=False;self.consent=consent
     def _current(self):
         _need(asyncio.get_running_loop() is self._loop)
         _need(self._reader._service is self._service and self._reader._authority is self._authority
@@ -85,6 +85,11 @@ class RegisteredInputSource:
                     _need(source.execution_allowed is False and source.computation_verified is False
                           and source.tokenizer_status=='internal_metadata_only' and source.model_status=='unverified_declared')
                     binding=dict(input_snapshot=source.snapshot_digest,token_digest=source.token_blob_sha256,preprocessing=source.contract_sha256)
+                    authorization=None
+                    if self.consent is not None:
+                        _need(issuer.require_consent and issuer.authorize is self.consent)
+                        authorization=self.consent.context_locked(d,binding)
+                    else:_need(not issuer.require_consent)
                     self._active=dict(task=asyncio.current_task(),thread=threading.get_ident(),credential=credential,
                         expected=(issuer.namespace,task_id,owner,task_id,hashlib.sha256(canonical(d).encode()).hexdigest()),
                         binding=canonical(binding),source=source,consumed=False)
@@ -94,13 +99,14 @@ class RegisteredInputSource:
                             Session.model_validate_json(canonical(d['session'])),
                             tuple(Stage.model_validate_json(canonical(x)) for x in d['stages']),d['plan']['tiles'],
                             hidden_size=hidden_size,vocab_size=vocab_size,config_sha256=config_sha256,
-                            source_id=task_id,source_binding=binding)
+                            source_id=task_id,source_binding=binding,authorization_context=authorization)
                         _need(self._active['consumed']);self._owner(credential,owner)
                         _need(self._reader._read_locked(credential,task_id,owner)==source)
                     finally:self._active=None
                 # Scope exit can revoke, expire or fail after the durable insert.
                 self._owner(credential,owner)
                 _need(self._reader._read_locked(credential,task_id,owner)==source)
+                if self.consent is not None:self.consent.registered_locked(issuer,result,d,binding)
                 return result
         except BaseException:
             if attempted:issuer.retired=True

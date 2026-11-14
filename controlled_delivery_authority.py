@@ -558,6 +558,8 @@ class Authority:
             except BaseException:self._poison();raise
 
     def _poison(self):
+        gate=getattr(self,'_task_consent_runtime_fence',None)
+        if gate is not None:gate.invalidate()
         self._poisoned=True
         for receiver, *_ in self._receivers.values():
             try:receiver._fence()
@@ -779,6 +781,8 @@ class Authority:
         return await self._claim(owner,key,tile)
 
     def _fence_task(self, task):
+        gate=getattr(self,'_task_consent_runtime_fence',None)
+        if gate is not None:gate.invalidate(task)
         for receiver,_,actual,_ in self._receivers.values():
             if actual==task:receiver._fence()
 
@@ -814,6 +818,8 @@ class Authority:
             await owner.close()
             return
         async with self._lock:
+            gate=getattr(self,'_task_consent_runtime_fence',None)
+            if gate is not None:gate.invalidate()
             if self._directory is None:return
             # Never close the shared connection underneath file work in progress.
             if self._middle_busy:raise Denied()
