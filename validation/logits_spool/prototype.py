@@ -125,6 +125,12 @@ class Book:
     def transition(self,rid,plan,role,before,after,manifest=None):
         raw=plan.encoded()
         with self.tx() as c:
+            if role=='source' and before=='SEALED' and after=='READING':
+                # Optional private producer binding: consume export only after
+                # its authorization exit and final registration, in this SAME tx.
+                if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='private_producer_v1'").fetchone():
+                    producer=c.execute('SELECT state,retired FROM private_producer_v1 WHERE id=?',(rid,)).fetchone()
+                    if producer is not None:need(producer==('DONE',0))
             changed=c.execute('UPDATE reservation SET state=?,manifest=coalesce(?,manifest) WHERE id=? AND binding=? AND role=? AND state=? AND retired=0',
                               (after,manifest,rid,raw,role,before))
             need(changed.rowcount==1)
