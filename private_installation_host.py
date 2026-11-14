@@ -61,15 +61,7 @@ class InstallationHost:
   if task not in done:raise TimeoutError('installation host phase incomplete')
   return task.result()
  async def _handshake(self,sock,ctx):
-  reader=asyncio.StreamReader(limit=32768);host=self
-  class Protocol(asyncio.StreamReaderProtocol):
-   def connection_made(self,transport):
-    super().connection_made(transport)
-    host.writer=asyncio.StreamWriter(transport,self,reader,host.loop)
-  protocol=Protocol(reader);self.handed=True
-  transport,_=await self.loop.connect_accepted_socket(lambda:protocol,sock,ssl=ctx,ssl_handshake_timeout=self.c['handshake_seconds'],ssl_shutdown_timeout=self.c['close_seconds'])
-  if self.writer is None:self.writer=asyncio.StreamWriter(transport,protocol,reader,self.loop)
-  return reader,self.writer
+  return await _accepted_tls_streams(self,sock,ctx,self.c['handshake_seconds'],self.c['close_seconds'])
  async def _run(self):
   d=await self._preflight();c=self.c;key=(c['experiment'],c['stage'])
   need(key not in self.a._installations)
@@ -146,3 +138,15 @@ class InstallationHost:
   except BaseException:self.state='UNKNOWN';raise
   if self.cleanup not in done:self.state='UNKNOWN';raise TimeoutError('installation host cleanup pending; isolate host')
   self.cleanup.result()
+
+async def _accepted_tls_streams(owner,sock,ctx,handshake_seconds,close_seconds):
+ """Capture TLS ownership even if handshake fails after transport creation."""
+ reader=asyncio.StreamReader(limit=32768)
+ class Protocol(asyncio.StreamReaderProtocol):
+  def connection_made(self,transport):
+   super().connection_made(transport)
+   owner.writer=asyncio.StreamWriter(transport,self,reader,owner.loop)
+ protocol=Protocol(reader);owner.handed=True
+ transport,_=await owner.loop.connect_accepted_socket(lambda:protocol,sock,ssl=ctx,ssl_handshake_timeout=handshake_seconds,ssl_shutdown_timeout=close_seconds)
+ if owner.writer is None:owner.writer=asyncio.StreamWriter(transport,protocol,reader,owner.loop)
+ return reader,owner.writer
