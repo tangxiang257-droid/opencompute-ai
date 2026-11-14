@@ -38,7 +38,7 @@ class ExperimentAdmission(_Database):
   self.consent=consent;self.domain=source_domain;self.trigger=trigger;self.policy=policy_authority
   self._consent=consent;self._domain=source_domain;self._hold=getattr(policy_authority,'hold',None)
   self._trigger=trigger;self._confirm=getattr(trigger,'confirm',None);self._policy=policy_authority
-  self.loop=asyncio.get_running_loop();self.boot=uuid.uuid4().hex;self.published=set();self.active=None;self._issuer=None;self._issuer_pin=None;self._issuer_resources=None
+  self.loop=asyncio.get_running_loop();self.boot=uuid.uuid4().hex;self.published=set();self._registered={};self.active=None;self._issuer=None;self._issuer_pin=None;self._issuer_resources=None
   self._open(p)
   try:
    with self._tx() as c:
@@ -186,6 +186,7 @@ class ExperimentAdmission(_Database):
      self._valid(credential,owner,pid,{'DISPATCHING'})
      with self._tx() as db:db.execute("UPDATE experiments SET state='REGISTERED',registration=? WHERE id=?",(reg.registration_id,pid))
     self._valid(credential,owner,pid,{'REGISTERED'})
+   self._registered[pid]=reg # Internal original handle, only after every confirmation/registration scope exits.
    # Only inert receipt, never the issuer's live _Registration object.
    return Receipt(pid,sha,'REGISTERED')
   except BaseException:
@@ -197,4 +198,4 @@ class ExperimentAdmission(_Database):
   async with c.authority._lock:
    with c._user(credential,owner):r=self._row(owner,pid)
   return Receipt(pid,r[1],r[3])
- def close(self):self.published.clear();self.active=None;super().close()
+ def close(self):self.published.clear();self._registered.clear();self.active=None;super().close()

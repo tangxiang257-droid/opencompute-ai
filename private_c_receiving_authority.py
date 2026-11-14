@@ -13,6 +13,13 @@ from cluster_p1.control_exchange import _nothing
 
 class CReceivingPolicy:
  @classmethod
+ async def create_experiment(cls,importer,credential,pid,sha,*,parent=None,maintenance=None):
+  from private_experiment_c_receiving import _ExperimentBinding
+  need(cls is CReceivingPolicy)
+  binding=await _ExperimentBinding.create(importer,credential,pid,sha,parent=parent,maintenance=maintenance)
+  self=object.__new__(cls);self._experiment_binding=binding;self.experiment=binding;self.issuer=binding.issuer;self.registration=binding.registration;self.descriptor=binding.descriptor;self.parent=parent;self.maintenance=maintenance
+  return self
+ @classmethod
  async def create(cls,adapter,*,resource_id,charge,parent=None,maintenance=None):
   need(cls is CReceivingPolicy and type(adapter)is IssuanceConsent and callable(getattr(parent,'hold',None)) and callable(getattr(maintenance,'hold',None)))
   c=adapter.consent
@@ -25,7 +32,14 @@ class CReceivingPolicy:
     value=dict(version=1,purpose='result-receive',owner=body['owner'],task=body['task'],session=s['session_id'],epoch=s['epoch'],model=d['task']['model_hash'],layout=s['layout_hash'],plan_digest=d['plan_digest'],input_snapshot=source['input_snapshot'],token_digest=source['token_digest'],preprocessing=source['preprocessing'],hidden=d['plan']['hidden_size'],vocab=d['plan']['vocab_size'],consent_id=adapter.pid,consent_digest=adapter.sha,revision=revision,c_node=r['node'],b_node=body['placements'][1]['node'],resource_id=resource_id,charge=charge,receiver=r,b_placement=body['placements'][1],declaration_digest=digest(d),authority_incarnation=issuer.incarnation)
     self=object.__new__(cls);self.adapter=adapter;self.issuer=issuer;self.registration=registration;self.descriptor=descriptor(value);self.parent=parent;self.maintenance=maintenance;self.pins=(parent,maintenance);self.claimed=False
    adapter._locked();return self
+ def _experiment_current(self):
+  e=self._experiment_binding
+  try:
+   need(self.experiment is e and self.descriptor==e.descriptor and self.issuer is e.issuer and self.registration is e.registration and self.parent is e.parent and self.maintenance is e.maintenance)
+   return e
+  except BaseException:e.dead=True;raise
  def _check(self):
+  if hasattr(self,'_experiment_binding'):return self._experiment_current().check()
   a=self.adapter;c=a.consent;g=c.fence
   need(self.parent is self.pins[0] and self.maintenance is self.pins[1]);self.issuer._registration(self.registration)
   need(c.service._authority is c.authority and c.service._verifier is c.identity and c.authority._directory is not None and not getattr(getattr(c.authority,'_text_registration_owner',None),'_closing',False))
@@ -33,10 +47,19 @@ class CReceivingPolicy:
   need(c.trigger is c._trigger and getattr(c.trigger,'confirm',None)==c._confirm and c._now()<self.registration_body['policy']['expires_at'])
  @property
  def registration_body(self):
+  if hasattr(self,'_experiment_binding'):return self._experiment_current().body
   import json
   return json.loads(self.registration.authorization)['body']
  @contextmanager
  def hold(self,d,action):
+  if hasattr(self,'_experiment_binding'):
+   e=self._experiment_current()
+   try:
+    with e.hold(d,action):
+     self._experiment_current();yield None;self._experiment_current()
+    self._experiment_current()
+   except BaseException:e.dead=True;raise
+   return
   need(d==self.descriptor)
   if action in ('revoke','stop-ack'):
    # System maintenance after USER/export revocation; no payload or new grant.
@@ -50,6 +73,8 @@ class CReceivingPolicy:
   need(c.service._download_owner(a.credential)==d['owner'])
   with c.fence.lock:self._check()
  def claim(self):
+  if hasattr(self,'_experiment_binding'):
+   with self.hold(self.descriptor,'pending'):return self._experiment_current().claim()
   c=self.adapter.consent
   with self.hold(self.descriptor,'pending'):
    if not hasattr(c.fence,'receiver_claims'):c.fence.receiver_claims=set()

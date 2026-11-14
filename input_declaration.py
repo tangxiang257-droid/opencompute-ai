@@ -135,11 +135,20 @@ class InputDeclarationReader:
         Only the trusted reader/bridge assembly calls this method. No public
         already-locked flag or claim of hostile same-UID isolation is provided.
         """
+        _need(self._authority._lock.locked())
+        return self._read_current(credential, task_id, expected_owner)
+
+    def _read_current(self, credential, task_id, expected_owner):
+        """Private synchronous revalidation under trusted USER/task fences.
+
+        Same event-loop assembly only, no await or network call. Runtime export
+        fences reuse all source validation without holding an async lock over IO.
+        This does not grant execution or replace the caller's revocation fences.
+        """
         service = self._service
         _need(service is not None)
         authority = self._authority
         _need(service._authority is authority)
-        _need(authority._lock.locked())
         authority._check()
         application._task(task_id)
         owner = expected_owner
