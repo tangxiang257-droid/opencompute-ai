@@ -125,6 +125,11 @@ class Chain(InputBase):
  def spawn_job(self,coro):
   t=asyncio.create_task(coro);self.jobs.append(t);return t
  async def create_stage(self,*args,**kwargs):return await StageLauncher.create(*args,**kwargs)
+ async def create_installation_endpoint(self,stage,sr,sw,tls,grants):
+  server=Channel(sr,sw,tls,grants,capacity_bytes=32768,capacity_tiles=1);self.channels.append(server)
+  return await self.adm.installation_service(self.token,self.receipt.proposal_id,self.receipt.proposal_digest,stage,server,issuer_node='issuer',issuer_certificate=hashlib.sha256(b'issuer').hexdigest(),identity=Identity(),authorize=Holds(),resources=self.central_resources)
+ async def serve_installation_endpoint(self,service,launch,args,policy):
+  await asyncio.gather(service.serve_once(session_policy=policy),launch.install(**args,session_policy=policy))
  async def install_stages(self):
   s=self.spec;ar,aw,br,bw=wire.streams('a','b');g=Grant(s.request,s.session,1,0,(0,1),s.model,2)
   self.hidden_send=Channel(ar,aw,wire.config('b'),{'b':{g}},capacity_bytes=65536,capacity_tiles=1)
@@ -145,14 +150,13 @@ class Chain(InputBase):
    def factory(number,loaded,spec,completion):return compute.SyntheticBackend(number,spec,completion,self.calls[number])
    runtime=dict(instance=instance,layer_range=extent,authority=compute.SyntheticAuthority(),resources=r,ticket=ticket,device=compute.SyntheticDevice(),loader=loader,factories=factory)
    cr,cw,sr,sw=wire.streams(p['node'],'issuer');g=Grant(s.request,s.session,1,stage,(0,1),s.model,2)
-   server=Channel(sr,sw,wire.config(p['node']),{p['node']:{g}},capacity_bytes=32768,capacity_tiles=1);self.channels.append(server)
-   service=await self.adm.installation_service(self.token,self.receipt.proposal_id,self.receipt.proposal_digest,stage,server,issuer_node='issuer',issuer_certificate=hashlib.sha256(b'issuer').hexdigest(),identity=Identity(),authorize=Holds(),resources=self.central_resources);self.owned.append(service)
+   service=await self.create_installation_endpoint(stage,sr,sw,wire.config(p['node']),{p['node']:{g}});self.owned.append(service)
    launch=await self.create_stage(configuration(self.root,('A','B')[stage],d),cr,cw,wire.config('issuer'),{'issuer':{g}},store,d,identity=Identity(),authorize=Holds(),resources=r,completion=BootstrapDevice(),runtime=runtime);self.owned.append(launch);self.launchers[stage]=launch
    @contextmanager
    def owner(*args):yield self.owner
    args=dict(execution_authorize=owner) if stage==0 else dict(prepared=prepared)
    policy=getattr(self,'installation_session_policy',None)
-   await asyncio.gather(service.serve_once(session_policy=policy),launch.install(**args,session_policy=policy))
+   await self.serve_installation_endpoint(service,launch,args,policy)
  async def register_role(self,stage,spec,operation,*,bind=True):
   launch=self.launchers[stage];node=self.body['placements'][stage]['node'];cr,cw,sr,sw=wire.streams('controller',node)
   g=Grant(spec.request,spec.session,1,stage,(0,1),spec.model,2)
