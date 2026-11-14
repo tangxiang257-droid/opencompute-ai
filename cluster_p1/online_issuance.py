@@ -98,20 +98,23 @@ class _Registration:
     authorization:str|None=None
 
 class IssuanceAuthority(_Database):
-    def __init__(self,path,*,namespace,source_provider=None,authorize=None,resources=None,require_consent=False):
-        _need(type(require_consent)is bool);self.require_consent=require_consent
+    def __init__(self,path,*,namespace,source_provider=None,authorize=None,resources=None,require_consent=False,enable_receiving=False):
+        _need(type(require_consent)is bool and type(enable_receiving)is bool and (not enable_receiving or require_consent));self.require_consent=require_consent;self.enable_receiving=enable_receiving
         _digest(namespace);self.namespace=namespace;self.source_provider=source_provider;self.authorize=authorize;self.resources=resources
         self.registrations={};self.descriptors={};self._open(path)
         try:
             with self._tx() as c:
                 if self.fresh:
                     c.execute('CREATE TABLE authority(version INTEGER,namespace TEXT,incarnation TEXT)')
-                    c.execute('INSERT INTO authority VALUES(?,?,?)',(2 if require_consent else 1,namespace,uuid.uuid4().hex))
+                    c.execute('INSERT INTO authority VALUES(?,?,?)',(3 if enable_receiving else (2 if require_consent else 1),namespace,uuid.uuid4().hex))
+                    if enable_receiving:
+                        from .c_receiving import SCHEMA
+                        c.execute(SCHEMA)
                     if require_consent:c.execute('CREATE TABLE authorizations(registration_id TEXT PRIMARY KEY,context TEXT NOT NULL)')
                     c.execute('CREATE TABLE registrations(id TEXT PRIMARY KEY,namespace TEXT,source_id TEXT,owner TEXT,task TEXT,nonce TEXT UNIQUE,body TEXT,source_binding TEXT NOT NULL,UNIQUE(namespace,owner,source_id),UNIQUE(owner,task))')
                     c.execute('CREATE TABLE slots(registration_id TEXT,stage INTEGER,command_id TEXT UNIQUE,intent TEXT,peer TEXT,PRIMARY KEY(registration_id,stage))')
                 rows=c.execute('SELECT version,namespace,incarnation FROM authority').fetchall()
-                _need(len(rows)==1 and rows[0][:2]==(2 if require_consent else 1,namespace));self.incarnation=rows[0][2]
+                _need(len(rows)==1 and rows[0][:2]==(3 if enable_receiving else (2 if require_consent else 1),namespace));self.incarnation=rows[0][2]
         except BaseException:self.close();raise
     def ready(self):
         self._check(True)

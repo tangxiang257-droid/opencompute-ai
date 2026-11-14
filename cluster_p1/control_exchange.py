@@ -121,14 +121,14 @@ class ControlClient(_Endpoint):
         try:
             self.current();self.validate(delivery.envelope,binding,sequence)
             reply=_parse(delivery.envelope.payload)
-            _need(type(reply)is dict and set(reply)=={'version','sequence','reply_to','receipt'}
+            _need(type(reply)is dict and set(reply)==({'version','sequence','reply_to','receipt','input_ready'} if action=='input-ready' else {'version','sequence','reply_to','receipt'})
                   and type(reply['version'])is int and reply['version']==1
                   and type(reply['sequence'])is int and reply['sequence']==sequence
                   and reply['reply_to']==hashlib.sha256(raw).hexdigest())
             receipt=reply['receipt']
             _receipt(receipt,command,reservation,binding,charge)
             await delivery.release()
-            return dict(receipt,result_digest=receipt['output_digest'])
+            return dict(receipt,result_digest=receipt['output_digest'],**({'input_ready':reply['input_ready']} if action=='input-ready' else {}))
         finally:delivery.envelope=None
 
 
@@ -190,14 +190,14 @@ class ControlService(_Endpoint):
             self.validate(delivery.envelope,binding,sequence)
             raw=delivery.envelope.payload;request=_parse(raw)
             _need(set(request)=={'version','sequence','action','command','reservation','binding','charge'}
-                  and request['action'] in ('prepare','query','execute'))
+                  and request['action'] in ('prepare','query','execute','input-ready'))
             action=request['action'];command,reservation,_,charge=self._call
             _need(_json(request)==_json(dict(version=1,sequence=sequence,action=action,command=command,
                                             reservation=reservation,binding=binding,charge=charge)))
             try:
                 with self.fence(binding,action):
                     if action=='prepare':receipt=self.journal.prepare(command,reservation,binding,charge)
-                    elif action=='query':receipt=self.journal.query(command)
+                    elif action in ('query','input-ready'):receipt=self.journal.query(command)
                     else:
                         receipt=self.journal.query(command);_need(receipt is not None)
                         if receipt['state']=='RESERVED' and not receipt['retired']:
@@ -229,8 +229,18 @@ class ControlService(_Endpoint):
                     raise
                 except Exception:
                     receipt=self._fail(binding)
+            proof={}
+            if action=='input-ready':
+                from .role_assembly import InstalledStageRole
+                owner=getattr(self,'_receipt_owner',None)
+                with self.fence(binding,'prepare'):
+                    _need(type(owner)is InstalledStageRole and owner.role._service is self and self.stage==1)
+                    owner._check();_need(receipt['state']=='RESERVED' and receipt['retired'] is False)
+                    payload=owner.operation.received_bytes();value=hashlib.sha256(payload).hexdigest()
+                    _need(value==binding['input_digest'])
+                    proof={'input_ready':dict(resource_id=owner.startup.descriptor['resource_id'],input_digest=value,receipt_digest=hashlib.sha256(_json(dict(binding=binding,bytes=len(payload),digest=value))).hexdigest())}
             self.current()
-            reply=_json(dict(version=1,sequence=sequence,reply_to=hashlib.sha256(raw).hexdigest(),receipt=receipt))
+            reply=_json(dict(version=1,sequence=sequence,reply_to=hashlib.sha256(raw).hexdigest(),receipt=receipt,**proof))
             await self.channel.send(self.envelope(binding,sequence,reply),max_frame_bytes=65536)
         finally:
             if delivery is not None:delivery.envelope=None

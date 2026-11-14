@@ -126,7 +126,7 @@ class RuntimeConsent:
     nothing(result);need(self.consent.service._download_owner(self.issuer.credential)==self.body['owner']);yield None
     need(self.consent.service._download_owner(self.issuer.credential)==self.body['owner'])
    need(self.consent.service._download_owner(self.issuer.credential)==self.body['owner']);return
-  mapping={'register':'install','prepare':'install','execute':'execute','execute-start':'execute','complete':'commit'}
+  mapping={'register':'install','prepare':'install','input-ready':'install','execute':'execute','execute-start':'execute','complete':'commit'}
   need(action in mapping);self.check(mapping[action])
   try:
    with _non_suppressing(self.parent.hold(binding,action)) as result:

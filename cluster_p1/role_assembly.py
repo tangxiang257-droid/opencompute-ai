@@ -46,7 +46,9 @@ class InstalledStageRole:
                 r.bind_control(t.reservation_id,rid,binding,charge)
             self.role=RegisteredRole.register(service,operation.spec,operation,
                 declaration_digest=d['declaration_digest'],charge=charge,completion=operation.completion)
-            self._check();return self
+            self._check()
+            if startup.stage==1:service._receipt_owner=self
+            return self
         except BaseException as error:
             try:await self.close()
             except BaseException as cleanup:raise _with_cleanup(error,cleanup)

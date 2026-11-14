@@ -119,7 +119,7 @@ class CoordinatorControl:
     Separate trusted role bootstrap must run the role's event loop. This module
     does not connect hosts, deploy a node, grant execution or recover a session.
     """
-    __slots__=('_client','_descriptor','_started','_busy','_closed')
+    __slots__=('_client','_descriptor','_started','_busy','_closed','_executed')
     def __init__(self,client,descriptor):
         _need(type(client)is ControlClient and type(descriptor)is RoleDescriptor)
         descriptor.__post_init__();client.current()
@@ -130,21 +130,42 @@ class CoordinatorControl:
         # This local marker is not global replay prevention or a reconnect grant.
         client.channel._role_control_claimed=True
         self._client=client;self._descriptor=descriptor
-        self._started=False;self._busy=False;self._closed=False
+        self._started=False;self._busy=False;self._closed=False;self._executed=False
     @property
     def descriptor(self):return self._descriptor
     async def _request(self,action):
         d=self._descriptor;self._client.current()
         _need(self._client._identity.node_id==d.role_node)
         return await self._client.request(action,d.command_id,d.reservation_id,d.binding,d.charge)
-    async def dispatch(self):
+    async def prepare(self):
+        """Prepare/query only: no execute before remote C is ready."""
         _need(not self._busy and not self._closed);self._busy=True
         try:
             if self._started:return await self._request('query')
-            self._started=True # Set before I/O: an unknown response never repeats execute.
-            receipt=await self._request('prepare')
+            self._started=True
+            return await self._request('prepare')
+        except BaseException as error:
+            try:await self.close()
+            except BaseException as cleanup:raise _with_cleanup(error,cleanup)
+            raise
+        finally:self._busy=False
+    async def dispatch(self):
+        _need(not self._busy and not self._closed);self._busy=True
+        try:
+            if self._executed:return await self._request('query')
+            action='query' if self._started else 'prepare';self._started=True
+            receipt=await self._request(action)
             if receipt['state']!='RESERVED' or receipt['retired']:return receipt
+            self._executed=True # Unknown execute response never repeats execution.
             return await self._request('execute')
+        except BaseException as error:
+            try:await self.close()
+            except BaseException as cleanup:raise _with_cleanup(error,cleanup)
+            raise
+        finally:self._busy=False
+    async def input_ready(self):
+        _need(self._started and not self._executed and not self._busy and not self._closed);self._busy=True
+        try:return await self._request('input-ready')
         except BaseException as error:
             try:await self.close()
             except BaseException as cleanup:raise _with_cleanup(error,cleanup)
