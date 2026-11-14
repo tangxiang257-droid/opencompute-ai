@@ -12,6 +12,7 @@ from .local_attempt import LocalAttemptJournal,_non_suppressing
 from .receipt_attempt import ReceiptAttemptJournal
 from .nonce_coordinator import _require_coordinated_pair
 from .async_role_bridge import AsyncRoleBridge
+from .control_exchange import ControlPair,result_digest
 from .envelope import Envelope,decode
 from .store import canonical
 from token_input_snapshot import read_input
@@ -156,14 +157,16 @@ def _coalesce(blocks):
 
 async def run_one_token(*,spec,policy,sender,receiver,artifacts,source_book,destination_book,
                         spool_root,journal_path,result_key,authority=None,resources=None,
-                        device=None,loader=None,conduit=None,factories=None):
+                        device=None,loader=None,conduit=None,factories=None,control=None):
     # Check all missing execution dependencies BEFORE I/O, grants, reserve or load.
     need(all(x is not None for x in (authority,resources,device,loader,conduit)))
+    need(control is None or type(control)is ControlPair)
     asynchronous=type(conduit)is AsyncRoleBridge
+    need(control is None or asynchronous)
     conduit_methods=('require_current','exchange_hidden','publish_result','reservation_generation','transport_buffer_bytes','validate_journal','close') if asynchronous else ('require_current','exchange_hidden','exchange_result','result_binding')
     for provider,methods in (
         (authority,('hold_pipeline','hold_load','hold_stage0','hold_call','finalize','hold_publish')),
-        (resources,('reserve_pipeline','verify_stage1','quarantine')),
+        (resources,('reserve_pipeline','verify_stage1','quarantine')+(('bind_control',) if control is not None else ())),
         (device,('hold_load','open_scope','require_open','materialize','finish_scope','require_finished','quarantine')),
         (loader,('load','quarantine')),
         (conduit,conduit_methods)):
@@ -174,7 +177,20 @@ async def run_one_token(*,spec,policy,sender,receiver,artifacts,source_book,dest
     if asynchronous:conduit.validate_journal(receiver)
     need(type(source_book)is Book and type(destination_book)is Book)
     required=policy.requirements(spec);factory=factories or _factories
-    ticket=None;reservation_started=False;bridge=CompletionBridge(device);driver=None;sink=None;owner0=None;backends=[];spool=None;scope0=None;journal=None;load_started=False
+    ticket=None;reservation_started=False;bridge=CompletionBridge(device);driver=None;sink=None;owner0=None;backends=[];spool=None;scope0=None;journal=None;load_started=False;result=None
+    @contextmanager
+    def authority_scope(factory):
+        if control is None:
+            with _non_suppressing(factory()) as value:
+                nothing(value);yield None
+        else:
+            # Control/data awaits must never retain a local identity RLock.
+            with _non_suppressing(factory()) as value:nothing(value)
+            yield None
+            with _non_suppressing(factory()) as value:nothing(value)
+    def confirmed(receipt,metadata):
+        need(type(receipt)is dict and receipt.get('state')=='COMMITTED' and receipt.get('retired') is False
+             and receipt.get('execution_allowed') is False and receipt.get('result_digest')==result_digest(metadata))
     def source_context():
         _require_coordinated_pair(sender,receiver)
         with sender._authorized() as owner,sender._store._tx() as c:
@@ -193,7 +209,7 @@ async def run_one_token(*,spec,policy,sender,receiver,artifacts,source_book,dest
             need(p==spec.plan_digest and len(values)==1 and values[0]==value)
         return value
     try:
-        with _non_suppressing(authority.hold_pipeline(spec)) as auth:
+        with authority_scope(lambda:authority.hold_pipeline(spec)) as auth:
             nothing(auth);source_context();need(sender.query(0) is None);nothing(conduit.require_current(spec))
             task,binding=artifacts._metadata(spec.owner,spec.request)
             stored=read_input(artifacts._directory,task.snapshot,binding)
@@ -209,15 +225,22 @@ async def run_one_token(*,spec,policy,sender,receiver,artifacts,source_book,dest
                 stages=[json.loads(row[0]) for row in c.execute('SELECT body FROM p1_stages WHERE session_id=? ORDER BY stage_id',(spec.session,))]
             need(len(stages)==2)
             ranges=tuple((s['layer_start'],s['layer_end']) for s in stages)
+            declaration_digest=hashlib.sha256(sender._coordinator_body.encode()).hexdigest()
+            if control is not None:control.check(spec,tuple(assignments),declaration_digest=declaration_digest)
             probe=Envelope(spec.request,spec.session,spec.epoch,0,0,(0,1),spec.model,edge.layout_version,(1,1,spec.hidden),'float32',bytes(spec.hidden*4))
             need(len(probe.encode())<=65536)
             transport_buffers=conduit.transport_buffer_bytes(spec) if asynchronous else 0
             # Four logical receive capacities replace the legacy coalescing buffer.
             # Provider must additionally admit actual decode/copy/allocator peaks.
             need(type(transport_buffers)is int and transport_buffers>=0)
-            pipeline_host=required['host']+(0 if asynchronous else 65536)+len(probe.encode())+transport_buffers
+            control_buffers=control.buffer_bytes() if control is not None else 0
+            need(type(control_buffers)is int and control_buffers>=0)
+            pipeline_host=required['host']+(0 if asynchronous else 65536)+len(probe.encode())+transport_buffers+control_buffers
             need(pipeline_host<=policy.host_capacity)
-            reservation_started=True;ticket=synchronous(resources.reserve_pipeline(spec,policy,dict(required,pipeline_host=pipeline_host,transport_buffers=transport_buffers,assignments=tuple(assignments),layer_ranges=ranges)))
+            if control is not None:
+                control.check(spec,tuple(assignments),declaration_digest=declaration_digest,
+                              minimum_charge=required['device']+pipeline_host+required['source']+required['destination'])
+            reservation_started=True;ticket=synchronous(resources.reserve_pipeline(spec,policy,dict(required,pipeline_host=pipeline_host,transport_buffers=transport_buffers,control_buffers=control_buffers,assignments=tuple(assignments),layer_ranges=ranges)))
             need(ticket is not None and type(ticket)is not bool)
             generation=conduit.reservation_generation(spec) if asynchronous else receiver._receipt_peer.connection_generation
             bp=Plan(Binding(spec.owner,spec.request,spec.session,'single-token',spec.epoch,generation,
@@ -230,31 +253,54 @@ async def run_one_token(*,spec,policy,sender,receiver,artifacts,source_book,dest
                 c.execute('CREATE TABLE IF NOT EXISTS assembly_calls(id TEXT PRIMARY KEY,spec TEXT NOT NULL)')
                 need(c.execute('SELECT 1 FROM assembly_calls WHERE id=?',(result_key,)).fetchone() is None)
                 c.execute('INSERT INTO assembly_calls VALUES(?,?)',(result_key,spec.digest))
-            load_started=True
-            with _non_suppressing(authority.hold_load(spec,0)) as value,_non_suppressing(device.hold_load(spec,0)) as completed:
-                nothing(value);nothing(completed);loaded=synchronous(loader.load(0,spec));need(type(loaded)is Loaded and loaded.model==spec.model and loaded.layout==spec.layout and loaded.instance==assignments[0][3] and loaded.layer_range==ranges[0])
-                backend0=factory(0,loaded,spec,bridge);backends.append((backend0,spec))
-            scope0=uuid.uuid4().hex;bridge.open_scope(spec,0,scope0)
-            owner0=sender.make_owner(lambda value,**kw:backend0.operation(scope0,value,**kw),(tokens,),instance_id=loaded.instance)
-            with _non_suppressing(authority.hold_stage0(spec)) as value:
-                nothing(value);await owner0.call(tokens,token_start=0,token_count=1)
-            await owner0.close();owner0=None
+            async def stage0_body():
+                nonlocal load_started,owner0,scope0
+                source_context();need(sender.query(0) is None)
+                load_started=True
+                with _non_suppressing(authority.hold_load(spec,0)) as value,_non_suppressing(device.hold_load(spec,0)) as completed:
+                    nothing(value);nothing(completed);loaded=synchronous(loader.load(0,spec));need(type(loaded)is Loaded and loaded.model==spec.model and loaded.layout==spec.layout and loaded.instance==assignments[0][3] and loaded.layer_range==ranges[0])
+                    backend0=factory(0,loaded,spec,bridge);backends.append((backend0,spec))
+                scope0=uuid.uuid4().hex;bridge.open_scope(spec,0,scope0)
+                owner0=sender.make_owner(lambda value,**kw:backend0.operation(scope0,value,**kw),(tokens,),instance_id=loaded.instance)
+                with authority_scope(lambda:authority.hold_stage0(spec)) as value:
+                    nothing(value);await owner0.call(tokens,token_start=0,token_count=1)
+                await owner0.close();owner0=None
+                row=sender.query(0);need(row is not None and row['state']=='OUTPUT_COMMITTED')
+                return {'output_digest':hashlib.sha256(row['output']).hexdigest()}
+            if control is None:await stage0_body()
+            else:
+                descriptor=control.describe(0,spec)
+                nothing(await resources.bind_control(spec,ticket,0,descriptor))
+                receipt=await control.dispatch(0,spec,stage0_body)
+                row=sender.query(0);need(row is not None and row['state']=='OUTPUT_COMMITTED')
+                confirmed(receipt,{'output_digest':hashlib.sha256(row['output']).hexdigest()})
             row=sender.query(0);need(row is not None and row['state']=='OUTPUT_COMMITTED')
             envelope=replace(probe,payload=row['output']);raw=envelope.encode()
             received=await conduit.exchange_hidden(raw) if asynchronous else synchronous(conduit.exchange_hidden(raw))
             need(type(received)is bytes and received==raw)
             if not asynchronous:receiver.make_receiver().receive_bytes(received)
             hidden=committed_hidden();actual=replace(spec,inputs=(hashlib.sha256(hidden).hexdigest(),))
-            nothing(resources.verify_stage1(actual,ticket))
-            with _non_suppressing(authority.hold_load(actual,1)) as value,_non_suppressing(device.hold_load(actual,1)) as completed:
-                nothing(value);nothing(completed);loaded=synchronous(loader.load(1,actual));need(type(loaded)is Loaded and loaded.model==spec.model and loaded.layout==spec.layout and loaded.instance==assignments[1][3] and loaded.layer_range==ranges[1])
-                backend1=factory(1,loaded,actual,bridge);backends.append((backend1,actual))
-            spool=Spool(spool_root,source_book,destination_book,result_key,bp);sink=_PushSpool(spool,actual)
-            journal=Journal(journal_path,actual)
-            driver=Driver(journal,actual,policy,authority=_BoundAuthority(authority,lambda:need(committed_hidden()==hidden)),
-                          resources=_Resources(resources,ticket),backend=backend1,completion=bridge,sink=sink)
-            result=driver.run(0,hidden)
-            need(result.output_digest==sink.digest.hexdigest())
+            def stage1_body():
+                nonlocal driver,sink,journal,spool,result
+                need(committed_hidden()==hidden)
+                nothing(resources.verify_stage1(actual,ticket))
+                with _non_suppressing(authority.hold_load(actual,1)) as value,_non_suppressing(device.hold_load(actual,1)) as completed:
+                    nothing(value);nothing(completed);loaded=synchronous(loader.load(1,actual));need(type(loaded)is Loaded and loaded.model==spec.model and loaded.layout==spec.layout and loaded.instance==assignments[1][3] and loaded.layer_range==ranges[1])
+                    backend1=factory(1,loaded,actual,bridge);backends.append((backend1,actual))
+                spool=Spool(spool_root,source_book,destination_book,result_key,bp);sink=_PushSpool(spool,actual)
+                journal=Journal(journal_path,actual)
+                driver=Driver(journal,actual,policy,authority=_BoundAuthority(authority,lambda:need(committed_hidden()==hidden)),
+                              resources=_Resources(resources,ticket),backend=backend1,completion=bridge,sink=sink)
+                result=driver.run(0,hidden)
+                need(result.output_digest==sink.digest.hexdigest())
+                return {'output_digest':result.output_digest}
+            if control is None:stage1_body()
+            else:
+                descriptor=control.describe(1,actual)
+                nothing(await resources.bind_control(actual,ticket,1,descriptor))
+                receipt=await control.dispatch(1,actual,stage1_body)
+                need(result is not None)
+                confirmed(receipt,{'output_digest':result.output_digest})
         # Pipeline authorization exit must also succeed before source export.
         sink.enable_read()
         if asynchronous:
@@ -292,6 +338,9 @@ async def run_one_token(*,spec,policy,sender,receiver,artifacts,source_book,dest
         failures=[]
         for action in ([lambda:driver.retire()] if driver else [])+([lambda:sink.quarantine()] if sink else [])+([lambda:bridge.quarantine(scope0)] if scope0 else [])+([lambda:resources.quarantine(spec,ticket,None)] if reservation_started else [])+([lambda:loader.quarantine(spec)] if load_started else [])+([lambda:source_book.isolate(result_key),lambda:destination_book.isolate(result_key)] if reservation_started else [])+[lambda b=b,s=s:b.retire(s) for b,s in backends]:
             try:action()
+            except BaseException as e:failures.append(e)
+        if control is not None:
+            try:await control.close()
             except BaseException as e:failures.append(e)
         if asynchronous:
             try:await conduit.close()
