@@ -64,8 +64,8 @@ class _IssuanceEndpoint(_HistoryEndpoint):
         _hex(scope['model']);self._scope=_copy(scope)
         self.identity=identity;self.authorize=authorize;self.resources=resources
         self._attempted=False;self._principal=None
-        _need(not getattr(channel,'_online_issuance_claimed',False))
-        self.ready();channel._online_issuance_claimed=True
+        _need(not getattr(channel,'_online_issuance_claimed',False) and not channel._start_attempted)
+        self.ready();channel._single_start=True;channel._online_issuance_claimed=True
     def ready(self):
         self.current();_need(not self._closed)
         for provider in (self.identity,self.authorize,self.resources):

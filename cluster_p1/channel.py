@@ -74,10 +74,13 @@ class ChannelIdentity:
 
 class Channel:
 
-    def __init__(self, r, w, config, grants, capacity_bytes=MAX_PAYLOAD, capacity_tiles=8, timeout=10, *, _gate_receipt=False):
+    def __init__(self, r, w, config, grants, capacity_bytes=MAX_PAYLOAD, capacity_tiles=8, timeout=10, *, _gate_receipt=False, _single_start=False):
         if type(_gate_receipt)is not bool:raise TypeError('explicit receipt gate flag required')
+        if type(_single_start)is not bool:raise TypeError('explicit single-start flag required')
+        self._single_start=_single_start
         self._receipt_state='unprepared' if _gate_receipt else None
         self._receipt_h_started=False
+        self._start_attempted=False
         obj = w.get_extra_info('ssl_object')
         if obj is None or obj.context.verify_mode != ssl.CERT_REQUIRED:
             raise ChannelError('TLS certificate validation is required')
@@ -140,18 +143,22 @@ class Channel:
         self._abort()
 
     async def start(self):
-        if self._receipt_state is not None:
-            # Opt-in only: reserve before the first await, even if the write lock
-            # or drain blocks. A cancelled/unknown advertisement is never retried.
-            if self._receipt_state!='ready' or self._receipt_h_started:
-                raise ChannelError('receipt capacity not ready or already advertised')
-            self._receipt_h_started=True
-            try:
-                await self._frame(b'H',struct.pack('!QI',self.capacity_bytes,self.capacity_tiles))
-            except BaseException:
-                self._abort();raise
-            return self
-        await self._frame(b'H', struct.pack('!QI', self.capacity_bytes, self.capacity_tiles))
+        self._identity_loop_check()
+        if self._closed or self.w.is_closing():raise ChannelError('disconnected')
+        if self._start_attempted and (self._single_start or self._receipt_state is not None):
+            raise ChannelError('local capacity advertisement already attempted')
+        if self._receipt_state is not None and (self._receipt_state!='ready' or self._receipt_h_started):
+            # An early call cannot bypass preparation or burn its future ready H.
+            raise ChannelError('receipt capacity not ready')
+        # Track every real H attempt, before any lock/drain await. Private
+        # single-start and receipt paths reject duplicates without aborting the
+        # first caller. Legacy ordinary Channels retain repeat-start behavior.
+        self._start_attempted=True
+        if self._receipt_state is not None:self._receipt_h_started=True
+        try:
+            await self._frame(b'H',struct.pack('!QI',self.capacity_bytes,self.capacity_tiles))
+        except BaseException:
+            self._abort();raise
         return self
 
     async def _frame(self, kind, data):
@@ -306,12 +313,66 @@ class Channel:
         except Exception:
             pass
 
-async def accept(reader, writer, config, grants, **kwargs):
+async def _failed_owned_stream(error, channel, writer, timeout):
+    """Retain and join local cleanup even if its caller is cancelled again."""
+    async def cleanup():
+        errors=[]
+        if channel is not None:
+            channel._identity_loop_check()
+            try:await channel.close()
+            except BaseException as exc:
+                errors.append(exc)
+                try:await asyncio.wait_for(writer.wait_closed(),timeout)
+                except BaseException as wait_error:errors.append(wait_error)
+            finally:
+                if not channel._task.done():channel._task.cancel()
+                await asyncio.gather(channel._task,return_exceptions=True)
+        else:
+            try:writer.close()
+            except BaseException as exc:errors.append(exc)
+            try:await asyncio.wait_for(writer.wait_closed(),timeout)
+            except BaseException as exc:errors.append(exc)
+        if errors:raise BaseExceptionGroup('supplied transport cleanup failed',errors)
+    task=asyncio.create_task(cleanup());cancelled=None
+    while not task.done():
+        try:await asyncio.shield(task)
+        except asyncio.CancelledError as exc:cancelled=exc
+        except BaseException:break
+    errors=[error]
+    try:task.result()
+    except BaseException as exc:errors.append(exc)
+    if cancelled is not None and cancelled is not error:errors.append(cancelled)
+    if len(errors)>1:raise BaseExceptionGroup('transport construction/start failed',errors)
+    raise error
+
+
+async def _accept_unstarted(reader, writer, config, grants, **kwargs):
+    """Private supplied-stream seam: validates TLS, starts reader, sends NO H.
+
+    Ownership transfers to this helper, including on constructor failure. It does
+    not mark a B receipt gate ready. PreparedReceipt alone owns that transition.
+    """
     try:
-        return await Channel(reader, writer, config, grants, **kwargs).start()
-    except BaseException:
-        writer.close()
-        raise
+        kwargs.setdefault('_single_start',True)
+        return Channel(reader,writer,config,grants,**kwargs)
+    except BaseException as error:
+        await _failed_owned_stream(error,None,writer,kwargs.get('timeout',10))
+
+
+async def _connect_unstarted(host, port, config, grants, server_hostname, **kwargs):
+    """Private TLS dial returning a Channel before local H; no retry policy."""
+    r,w=await asyncio.wait_for(asyncio.open_connection(host,port,ssl=config.context(),
+        server_hostname=server_hostname),kwargs.get('timeout',10))
+    return await _accept_unstarted(r,w,config,grants,**kwargs)
+
+
+async def accept(reader, writer, config, grants, **kwargs):
+    kwargs.setdefault('_single_start',False) # preserve legacy ordinary repeat-start
+    channel=await _accept_unstarted(reader,writer,config,grants,**kwargs)
+    try:return await channel.start()
+    except BaseException as error:
+        await _failed_owned_stream(error,channel,writer,kwargs.get('timeout',10))
+
 
 async def connect(host, port, config, grants, server_hostname, **kwargs):
     r, w = await asyncio.wait_for(asyncio.open_connection(host, port, ssl=config.context(), server_hostname=server_hostname), kwargs.get('timeout', 10))
