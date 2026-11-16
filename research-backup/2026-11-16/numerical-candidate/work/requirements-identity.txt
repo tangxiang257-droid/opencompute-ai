@@ -1,0 +1,3 @@
+# Optional private pinned-key adapter; no default authentication is enabled.
+# Exact version used by the isolated CPU cryptographic validation.
+cryptography==50.0.0

@@ -1,0 +1,2 @@
+# Independent, local randomly initialized Qwen2 oracle (no weight download).
+transformers==4.57.1

@@ -1,0 +1,39 @@
+name: P1 tiled Qwen2 independent parity
+on:
+  push:
+    paths:
+      - 'compute/qwen2_tiled_stage.py'
+      - 'tests/test_p1_tiled_stage.py'
+      - 'tests/test_p1_hf_reference.py'
+      - 'requirements-p1-test.txt'
+      - 'docs/p1-qwen2-tiled.md'
+      - '.github/workflows/p1-qwen2.yml'
+  pull_request:
+    paths:
+      - 'compute/qwen2_tiled_stage.py'
+      - 'tests/test_p1_tiled_stage.py'
+      - 'tests/test_p1_hf_reference.py'
+      - 'requirements-p1-test.txt'
+      - 'docs/p1-qwen2-tiled.md'
+      - '.github/workflows/p1-qwen2.yml'
+jobs:
+  independent-cpu:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      OMP_NUM_THREADS: '1'
+      HF_HUB_OFFLINE: '1'
+      TRANSFORMERS_OFFLINE: '1'
+      P1_REQUIRE_HF: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install -r requirements-dev.txt -r requirements-p1-test.txt
+      # P1_REQUIRE_HF makes an absent Transformers oracle a hard failure.
+      - run: python -m unittest discover -s tests -p 'test_p1_tiled_stage.py' -v
+      - run: python -m unittest discover -s tests -p 'test_p1_hf_reference.py' -v
+      - run: python -m unittest discover -s tests -p 'test_qwen2_single_device_v072.py' -v
+      - run: python -m unittest discover -s tests -p 'test_qwen2_safetensors_v042.py' -v

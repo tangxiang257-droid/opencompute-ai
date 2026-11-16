@@ -1,0 +1,290 @@
+name: v0.3 heterogeneous CPU cluster
+on:
+  push:
+    paths:
+      - 'cluster_v03/**'
+      - 'cluster_v031/**'
+      - 'cluster_v04/**'
+      - 'cluster_v05/**'
+      - 'cluster_v07/**'
+      - 'public_pool/**'
+      - 'tests/test_public_pool*.py'
+      - 'compute/qwen2_*.py'
+      - 'tests/test_qwen2_safetensors_v042.py'
+      - 'tests/test_qwen2_*.py'
+      - 'compute/request_queue_v049.py'
+      - 'tests/test_request_queue_v049.py'
+      - 'benchmarks/qwen2_tp_session_demo.py'
+      - 'benchmarks/qwen2_chunked_session_demo.py'
+      - 'benchmarks/qwen2_offline_reference.py'
+      - 'tests/test_qwen2_bf16_v044.py'
+      - 'benchmarks/qwen2_offline_validation.py'
+      - 'benchmarks/qwen2_matrix_v045.py'
+      - 'benchmarks/qwen2_repeat_v046.py'
+      - 'benchmarks/qwen2_pp_compare_v047.py'
+      - 'benchmarks/qwen2_multi_request_v048.py'
+      - 'compute/parallel_screen_v046.py'
+      - 'benchmarks/qwen2_offline_reference.py'
+      - 'tests/test_model_registry_v04.py'
+      - 'compute/rendezvous.py'
+      - 'compute/gpt2_generate.py'
+      - 'tests/test_rendezvous_v033.py'
+      - 'tests/test_resource_limits_v034.py'
+      - 'tests/test_checkpoint_security_v035.py'
+      - 'tests/test_preflight_v035.py'
+      - 'cluster_v031/limits.py'
+      - 'cluster_v031/checkpoints.py'
+      - 'tests/test_tp_v031.py'
+      - 'tests/test_*_v032.py'
+      - 'benchmarks/tp_session_demo.py'
+      - 'tests/test_cluster_v03.py'
+      - 'benchmarks/cluster_sim.py'
+      - 'backend/app.py'
+      - 'web/**'
+      - 'tests/test_web_dashboard_v051.py'
+      - 'scripts/**'
+      - 'docs/v0.6-windows-local-launcher.md'
+      - 'tests/test_windows_launcher_v06.py'
+      - 'tests/test_gpu_pool_v07.py'
+      - 'tests/test_gpu_scheduler_v071.py'
+      - 'docs/v0.7.1-gpu-task-scheduling.md'
+      - 'Dockerfile.worker'
+      - 'Dockerfile.tp-worker'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - 'compose.yaml'
+      - 'docker-compose.tp-local.yml'
+      - 'requirements-dev.txt'
+      - '.github/workflows/cluster-v03.yml'
+  pull_request:
+    paths:
+      - 'cluster_v03/**'
+      - 'cluster_v031/**'
+      - 'cluster_v04/**'
+      - 'cluster_v05/**'
+      - 'cluster_v07/**'
+      - 'public_pool/**'
+      - 'tests/test_public_pool*.py'
+      - 'compute/qwen2_*.py'
+      - 'tests/test_qwen2_safetensors_v042.py'
+      - 'tests/test_qwen2_*.py'
+      - 'compute/request_queue_v049.py'
+      - 'tests/test_request_queue_v049.py'
+      - 'benchmarks/qwen2_tp_session_demo.py'
+      - 'benchmarks/qwen2_chunked_session_demo.py'
+      - 'benchmarks/qwen2_offline_reference.py'
+      - 'tests/test_qwen2_bf16_v044.py'
+      - 'benchmarks/qwen2_offline_validation.py'
+      - 'benchmarks/qwen2_matrix_v045.py'
+      - 'benchmarks/qwen2_repeat_v046.py'
+      - 'benchmarks/qwen2_pp_compare_v047.py'
+      - 'benchmarks/qwen2_multi_request_v048.py'
+      - 'compute/parallel_screen_v046.py'
+      - 'benchmarks/qwen2_offline_reference.py'
+      - 'tests/test_model_registry_v04.py'
+      - 'compute/rendezvous.py'
+      - 'compute/gpt2_generate.py'
+      - 'tests/test_rendezvous_v033.py'
+      - 'tests/test_resource_limits_v034.py'
+      - 'tests/test_checkpoint_security_v035.py'
+      - 'tests/test_preflight_v035.py'
+      - 'cluster_v031/limits.py'
+      - 'cluster_v031/checkpoints.py'
+      - 'tests/test_tp_v031.py'
+      - 'tests/test_*_v032.py'
+      - 'benchmarks/tp_session_demo.py'
+      - 'tests/test_cluster_v03.py'
+      - 'benchmarks/cluster_sim.py'
+      - 'backend/app.py'
+      - 'web/**'
+      - 'tests/test_web_dashboard_v051.py'
+      - 'scripts/**'
+      - 'docs/v0.6-windows-local-launcher.md'
+      - 'tests/test_windows_launcher_v06.py'
+      - 'tests/test_gpu_pool_v07.py'
+      - 'tests/test_gpu_scheduler_v071.py'
+      - 'docs/v0.7.1-gpu-task-scheduling.md'
+      - 'Dockerfile.worker'
+      - 'Dockerfile.tp-worker'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+      - 'compose.yaml'
+      - 'docker-compose.tp-local.yml'
+      - 'requirements-dev.txt'
+      - '.github/workflows/cluster-v03.yml'
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install lightweight v0.3 dependencies
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r requirements-dev.txt
+      - name: Validate optional Linux TP container composition without starting services
+        run: |
+          OPENCOMPUTE_ADMIN_KEY=ci-test-admin-placeholder-long-only \
+          OPENCOMPUTE_JOIN_KEY=ci-test-join-placeholder-long-only \
+          docker compose -f docker-compose.tp-local.yml config --quiet
+      - name: Validate default dashboard Compose configuration
+        run: |
+          OPENCOMPUTE_ADMIN_KEY=ci-test-admin-placeholder-long-only \
+          OPENCOMPUTE_JOIN_KEY=ci-test-join-placeholder-long-only \
+          docker compose config --quiet
+      - name: Build API and TP worker images and check imports
+        run: |
+          docker build -t opencompute-ci .
+          docker run --rm opencompute-ci python -c 'from backend.app import app; assert {"/v0.7/gpus", "/v0.8/public/status"} <= app.openapi()["paths"].keys()'
+          docker build -f Dockerfile.tp-worker -t opencompute-tp-worker-ci .
+          docker run --rm opencompute-tp-worker-ci python -m cluster_v031.worker --help
+      - name: Single-device Qwen2 Safetensors and CUDA fallback checks
+        run: python -m unittest discover -s tests -p 'test_qwen2_single_device_v072.py' -v
+      - name: GPU inventory, scheduling and lease regressions
+        run: python -m unittest discover -s tests -p 'test_gpu_*.py' -v
+      - name: Public Worker admission, verification and API regressions
+        run: python -m unittest discover -s tests -p 'test_public_pool*.py' -v
+      - name: Compile check source and regression tests
+        run: python -m compileall -q backend compute cluster_v03 cluster_v031 cluster_v04 cluster_v05 cluster_v07 public_pool tests benchmarks
+      - name: v0.5.1 browser dashboard packaging regression
+        run: python -m unittest discover -s tests -p 'test_web_dashboard_v051.py' -v
+      - name: v0.6 Windows local launcher safety regression
+        run: python -m unittest discover -s tests -p 'test_windows_launcher_v06.py' -v
+      - name: Test scheduling, auth, leases, concurrent claims and Worker jobs
+        run: python -m unittest discover -s tests -p 'test_cluster_v03.py' -v
+      - name: Run managed TP session API and Gloo tests
+        run: python -m unittest discover -s tests -p 'test_tp_v031.py' -v
+      - name: v0.3.2 security and Worker cancellation regressions
+        run: python -m unittest discover -s tests -p 'test_*_v032.py' -v
+      - name: v0.3.3 owned-rendezvous and safe fresh-group retry regressions
+        run: python -m unittest discover -s tests -p 'test_rendezvous_v033.py' -v
+      - name: v0.3.4 local process guardrails and supervised RSS watchdog
+        run: python -m unittest discover -s tests -p 'test_resource_limits_v034.py' -v
+      - name: v0.3.5 SHA-256 pin, safe retry and child environment security
+        run: python -m unittest discover -s tests -p 'test_checkpoint_security_v035.py' -v
+      - name: v0.3.5 distributed fail-fast preflight regression
+        run: python -m unittest discover -s tests -p 'test_preflight_v035.py' -v
+      - name: v0.4 multi-model catalogue and adapter routing checks
+        run: python -m unittest discover -s tests -p 'test_model_registry_v04.py' -v
+      - name: Qwen2 numerical parity and corrupted rank preflight tests
+        run: python -m unittest discover -s tests -p 'test_qwen2_parity_v041.py' -v
+      - name: Qwen2 Gloo rank parity and managed pool routing
+        run: python -m unittest discover -s tests -p 'test_qwen2_v041.py' -v
+      - name: v0.4.2 offline Safetensors import, safety and DeepSeek capacity planning
+        run: python -m unittest discover -s tests -p 'test_qwen2_safetensors_v042.py' -v
+      - name: v0.4.3 streaming Qwen2 shard parity and Safetensors layout tests
+        run: python -m unittest discover -s tests -p 'test_qwen2_chunked_v043.py' -v
+      - name: v0.4.4 offline Qwen2 tokenizer and HF parity harness safety contract
+        run: python -m unittest discover -s tests -p 'test_qwen2_offline_validation_v044.py' -v
+      - name: v0.4.3 two-Worker chunked checkpoint HTTP and Gloo integration
+        run: python -m benchmarks.qwen2_chunked_session_demo
+      - name: v0.4.4 BF16 streaming rank parity, LRU safety, and offline tokenizer tests
+        run: python -m unittest discover -s tests -p 'test_qwen2_bf16_v044.py' -v
+      - name: v0.4.5 strict numerical parity and Gloo profiler contract
+        run: python -m unittest discover -s tests -p 'test_qwen2_validation_v045.py' -v
+      - name: Install pinned Transformers library for offline independent Qwen2 reference
+        run: python -m pip install 'transformers==4.57.1'
+      - name: v0.4.5 independent Hugging Face Qwen2 tiny model versus two real Gloo ranks
+        env:
+          OPENCOMPUTE_REQUIRE_HF_TINY: '1'
+          HF_HUB_OFFLINE: '1'
+          TRANSFORMERS_OFFLINE: '1'
+        run: python -m unittest discover -s tests -p 'test_qwen2_hf_tiny_v045.py' -v
+      - name: v0.4.7 independent local Hugging Face Qwen2 versus real two-stage PP
+        env:
+          OPENCOMPUTE_REQUIRE_HF_TINY: '1'
+          HF_HUB_OFFLINE: '1'
+          TRANSFORMERS_OFFLINE: '1'
+        run: python -m unittest discover -s tests -p 'test_qwen2_pipeline_hf_v047.py' -v
+      - name: v0.4.5 RoPE/RMS model provenance and local-chat-template checks
+        run: python -m unittest discover -s tests -p 'test_qwen2_provenance_v045.py' -v
+      - name: v0.4.5 publish synthetic 1-vs-2 Rank FP32/BF16 benchmark JSON
+        run: python -m benchmarks.qwen2_matrix_v045 --workers 1,2 --precisions float32,bfloat16 --new-tokens 2 --output qwen2-v045-matrix.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opencompute-qwen2-v045-synthetic-benchmark
+          path: qwen2-v045-matrix.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: v0.4.6 capacity screening, repeat statistics, one-rank fastpath
+        run: python -m unittest discover -s tests -p 'test_qwen2_repeat_v046.py' -v
+      - name: v0.4.6 repeated no-download Qwen2 Gloo A/B benchmark
+        run: python -m benchmarks.qwen2_repeat_v046 --model-size tiny --dtype float32 --repeats 3 --warmups 0 --tokens 2 --output qwen2-v046-repeats.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opencompute-qwen2-v046-repeated-gloo
+          path: qwen2-v046-repeats.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: v0.4.7 true two-stage Qwen2 pipeline parity, tampering and fail-fast
+        run: python -m unittest discover -s tests -p 'test_qwen2_pipeline_v047.py' -v
+      - name: v0.4.7 Qwen2 TP1/TP2/PP2 CPU comparison and JSON artifact
+        run: python -m benchmarks.qwen2_pp_compare_v047 --dtype float32 --new-tokens 3 --output qwen2-v047-tp-pp.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opencompute-qwen2-v047-tp-pp-localhost
+          path: qwen2-v047-tp-pp.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: v0.4.8 bounded multi-request PP and KV independence
+        run: python -m unittest discover -s tests -p 'test_qwen2_pipeline_batch_v048.py' -v
+      - name: v0.4.9 bounded fair request queue, deadlines and lifecycle
+        run: python -m unittest discover -s tests -p 'test_request_queue_v049.py' -v
+      - name: v0.5.0 dynamic queue to real two-stage Qwen2 Gloo service
+        env:
+          OPENCOMPUTE_REQUIRE_LIVE_PP_V050: '1'
+        run: python -m unittest discover -s tests -p 'test_qwen2_live_service_v050.py' -v
+      - name: v0.5.0 default backend and browser console packaging
+        run: python -m unittest discover -s tests -p 'test_qwen2_console_v050.py' -v
+      - name: v0.4.8 independent HF Qwen2 multi-prompt parity
+        env:
+          OPENCOMPUTE_REQUIRE_HF_TINY: '1'
+          HF_HUB_OFFLINE: '1'
+          TRANSFORMERS_OFFLINE: '1'
+        run: python -m unittest discover -s tests -p 'test_qwen2_pipeline_batch_hf_v048.py' -v
+      - name: v0.4.8 two-stage Gloo sequential versus overlapping multi-request benchmark
+        run: python -m benchmarks.qwen2_multi_request_v048 --requests 3 --repeats 2 --new-tokens 3 --output qwen2-v048-batch-vs-sequential.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opencompute-qwen2-v048-multirequest
+          path: qwen2-v048-batch-vs-sequential.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Run full localhost HTTP with two Qwen2 TP Workers
+        run: python -m benchmarks.qwen2_tp_session_demo
+      - name: Run full localhost HTTP and two-agent TP demo
+        run: python -m benchmarks.tp_session_demo
+      - name: Simulate 3 heterogeneous devices without a cloud server
+        run: python -m benchmarks.cluster_sim
+
+  windows-launcher-syntax:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse PowerShell launcher scripts on Windows
+        shell: powershell
+        run: |
+          $scripts = @(
+            "scripts/start-local.ps1",
+            "scripts/status-local.ps1",
+            "scripts/stop-local.ps1"
+          )
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $script),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              foreach ($parseError in $errors) {
+                Write-Host ("Line {0}, Column {1}: {2}" -f $parseError.Extent.StartLineNumber, $parseError.Extent.StartColumnNumber, $parseError.Message)
+                Write-Host ("Extent: " + $parseError.Extent.Text)
+              }
+              throw "PowerShell syntax validation failed: $script"
+            }
+          }

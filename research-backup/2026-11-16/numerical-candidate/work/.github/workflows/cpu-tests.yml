@@ -1,0 +1,38 @@
+name: CPU tensor parallel tests
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install CPU PyTorch
+        run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install API/worker test dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+      - name: Small benchmark
+        run: python -m benchmarks.run --hidden 64 --batch 4 --iterations 2
+      - name: MLP communication-delay smoke test
+        run: python -m benchmarks.mlp_latency --workers 2 --hidden 16 --expansion 32 --batch 2 --iterations 1
+      - name: v0.2 single/multi-rank token generation benchmark
+        run: python -m benchmarks.generate --workers 1,2 --hidden 16 --heads 4 --layers 1 --new-tokens 2
+
+      - name: Actual localhost Gloo collective probe
+        run: OMP_NUM_THREADS=1 python -m torch.distributed.run --standalone --nproc-per-node=2 -m benchmarks.gloo_probe --payloads-bytes 8,1024 --iterations 2 --warmup 1
+      - name: WAN penalty sensitivity smoke test
+        run: OMP_NUM_THREADS=1 python -m benchmarks.network_sweep --workers 2 --hidden 16 --heads 4 --layers 1 --new-tokens 2 --latencies-ms 0,1 --bandwidths-mbps 0
+
+      - name: v0.2 topology planner smoke check
+        run: python -m compute.topology_planner --devices 4 --memory-mib 512 --runtime-reserve-mib 128
+      - name: Optimized vs legacy synchronization A/B smoke check
+        run: python -m benchmarks.compare_sync --workers 2 --hidden 16 --heads 4 --layers 1 --new-tokens 2 --repeats 1
+
+      - name: Capacity-filtered CPU TP autotune smoke
+        run: python -m benchmarks.autotune --devices 2 --hidden 16 --heads 4 --layers 1 --new-tokens 2 --repeats 1 --memory-mib 512

@@ -1,0 +1,24 @@
+# Opt-in HTTPS ingress. Requires a domain pointing to this server and free 80/443.
+# docker compose -f compose.yaml -f compose.public.yaml up -d --build
+services:
+  gateway:
+    image: caddy:2.10.2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      OPENCOMPUTE_DOMAIN: "${OPENCOMPUTE_DOMAIN:?Set OPENCOMPUTE_DOMAIN to your DNS hostname}"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      opencompute:
+        condition: service_healthy
+    mem_limit: 128m
+    cpus: 0.25
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

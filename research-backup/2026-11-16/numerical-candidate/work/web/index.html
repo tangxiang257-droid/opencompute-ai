@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0b1020">
+<meta name="description" content="OpenCompute AI 分布式算力平台控制台">
+<title>OpenCompute AI · 分布式算力控制台</title>
+<style>
+:root{color-scheme:dark;--bg:#090e1b;--panel:#111a2d;--panel2:#151f35;--line:#26344f;--muted:#8fa1bd;--text:#edf3ff;--blue:#78a9ff;--cyan:#62d7d0;--green:#63d9a2;--amber:#f0bd68;--red:#f08086;font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 80% -10%,#17274a 0,transparent 42%),var(--bg);color:var(--text);min-height:100vh}button,input,select,textarea{font:inherit}button{cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}
+.shell{display:grid;grid-template-columns:248px minmax(0,1fr);min-height:100vh}.sidebar{position:sticky;top:0;height:100vh;padding:24px 16px;border-right:1px solid var(--line);background:#0b1222eF;display:flex;flex-direction:column;z-index:5}.brand{display:flex;align-items:center;gap:11px;padding:3px 10px 27px}.brand-mark{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;background:linear-gradient(140deg,#6ba7ff,#62d7d0);color:#071324;font-size:22px;font-weight:900}.brand-name{font-size:16px;font-weight:750}.brand-sub{font-size:10px;color:var(--muted);letter-spacing:1.7px;text-transform:uppercase}.nav-label{font-size:10px;color:#71839f;letter-spacing:1.5px;text-transform:uppercase;padding:15px 12px 7px}.nav{display:grid;gap:5px}.nav button{border:1px solid transparent;background:transparent;color:#a9b8d0;text-align:left;border-radius:10px;padding:10px 12px;display:flex;align-items:center;gap:12px}.nav button:hover{background:#18243b;color:#fff}.nav button.active{background:linear-gradient(90deg,#1b3154,#17263e);border-color:#304b73;color:#fff}.nav .ico{width:20px;text-align:center;color:#8eaddb;font-size:16px}.side-bottom{margin-top:auto}.side-status{border:1px solid var(--line);background:#101a2b;border-radius:12px;padding:13px;margin:15px 3px}.side-status strong{display:block;font-size:12px;margin-bottom:5px}.side-status small{color:var(--muted);font-size:11px}.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#64748b;margin-right:7px}.dot.on{background:var(--green);box-shadow:0 0 0 4px #63d9a21c}
+.main{min-width:0;padding:25px clamp(18px,3vw,42px) 50px;max-width:1600px;width:100%;margin:0 auto}.topbar{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:26px}.crumb{font-size:12px;color:var(--muted);margin-bottom:3px}.page-title{font-size:25px;font-weight:720;letter-spacing:-.6px;margin:0}.top-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.connection{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;border:1px solid var(--line);border-radius:999px;padding:8px 12px;background:#10192a}.key-box{display:flex;gap:7px;align-items:center}.key-box input{width:min(230px,38vw)}input,select,textarea{background:#0d1628;border:1px solid #2c3b57;border-radius:9px;color:var(--text);padding:10px 11px;outline:none;min-width:0}input:focus,select:focus,textarea:focus{border-color:#689be9;box-shadow:0 0 0 3px #689be922}input::placeholder,textarea::placeholder{color:#667995}.btn{border:1px solid #426aa5;background:#2a5a9e;color:#fff;padding:9px 13px;border-radius:9px;font-weight:620}.btn:hover{background:#3674c5}.btn.secondary{background:#17243a;border-color:#344966;color:#d5e2f6}.btn.secondary:hover{background:#203452}.btn.small{font-size:12px;padding:7px 10px}.mobile-menu{display:none}
+.page{display:none}.page.active{display:block}.hero{position:relative;overflow:hidden;border:1px solid #31496d;border-radius:17px;padding:25px 27px;background:linear-gradient(110deg,#152a49 0%,#15243d 53%,#16373d 100%);margin-bottom:18px}.hero:after{content:"";position:absolute;width:260px;height:260px;border-radius:50%;right:8%;top:-155px;border:1px solid #9ec4ff25;box-shadow:0 0 0 28px #9ec4ff08,0 0 0 58px #9ec4ff06}.hero-kicker{font-size:11px;letter-spacing:1.5px;color:#a9caff;text-transform:uppercase}.hero h2{font-size:clamp(21px,3vw,30px);line-height:1.2;margin:9px 0 8px;max-width:680px}.hero p{color:#b2c3dc;margin:0;max-width:650px}.hero-foot{display:flex;gap:10px;flex-wrap:wrap;margin-top:19px;position:relative;z-index:1}.pill{font-size:11px;color:#b8c9e3;border:1px solid #55708e88;background:#0c1b2e77;border-radius:999px;padding:5px 9px}
+.grid{display:grid;gap:14px}.kpis{grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:17px}.card{background:linear-gradient(180deg,#121d31,#10192a);border:1px solid var(--line);border-radius:14px;padding:17px;min-width:0}.kpi-top{display:flex;align-items:center;justify-content:space-between;color:var(--muted);font-size:12px}.kpi-icon{width:29px;height:29px;border-radius:9px;display:grid;place-items:center;background:#233b5e;color:#9fc3ff}.kpi-value{font-size:27px;font-weight:750;letter-spacing:-.7px;margin:10px 0 2px;font-variant-numeric:tabular-nums}.kpi-foot{font-size:11px;color:#8295b1}.two-col{grid-template-columns:minmax(0,1.15fr) minmax(300px,.85fr);margin-bottom:15px}.card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:15px}.card-head h3{font-size:14px;margin:0;font-weight:680}.card-head p{margin:4px 0 0;color:var(--muted);font-size:11px}.link-btn{border:0;background:none;color:var(--blue);font-size:12px;padding:2px 0}.resource{display:grid;gap:12px}.resource-row{display:grid;grid-template-columns:82px 1fr 75px;gap:10px;align-items:center;font-size:11px;color:#aabbd3}.bar{height:7px;background:#25334c;border-radius:99px;overflow:hidden}.bar span{display:block;height:100%;background:linear-gradient(90deg,#6a9dff,#5ed6ce);border-radius:99px;width:0}.empty{border:1px dashed #34445e;border-radius:11px;padding:22px;text-align:center;color:var(--muted);font-size:12px}.empty strong{display:block;color:#c9d7eb;font-size:13px;margin-bottom:5px}
+.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;white-space:nowrap;font-size:12px}th{text-align:left;color:#8194b0;font-weight:550;font-size:10px;letter-spacing:.7px;text-transform:uppercase;padding:10px 11px;border-bottom:1px solid var(--line)}td{padding:12px 11px;border-bottom:1px solid #233149;color:#c3d0e4}tbody tr:last-child td{border-bottom:0}.node-name{font-weight:650;color:#e4edfb}.sub{font-size:10px;color:#8193ad;margin-top:2px}.status{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:99px;font-size:10px;border:1px solid #34435b;background:#1a263a;color:#afbed2}.status.good{color:#7de2b3;border-color:#28664f;background:#143329}.status.wait{color:#f0c779;border-color:#705b32;background:#332a19}.status.bad{color:#f49ca1;border-color:#704149;background:#351d29}
+.section-title{display:flex;align-items:end;justify-content:space-between;gap:12px;margin:24px 0 13px}.section-title h2{font-size:17px;margin:0}.section-title p{font-size:11px;color:var(--muted);margin:4px 0 0}.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.field{display:grid;gap:6px}.field label{font-size:11px;color:#9eafc8}.field.full{grid-column:1/-1}.field textarea{min-height:100px;resize:vertical}.form-actions{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-top:15px}.notice{padding:12px 14px;border:1px solid #3b4d68;background:#14233a;border-radius:10px;color:#aebfd8;font-size:11px;line-height:1.65}.notice.warn{border-color:#6a5736;background:#2a2419;color:#e7cb91}.model-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.model-card{border:1px solid var(--line);border-radius:13px;padding:15px;background:#111b2d}.model-card h3{font-size:14px;margin:10px 0 5px}.model-card p{font-size:11px;color:var(--muted);min-height:48px;margin:0 0 12px}.model-meta{display:flex;gap:6px;flex-wrap:wrap}.tag{font-size:10px;padding:4px 7px;border-radius:6px;background:#1b2a43;color:#a9c3e9;border:1px solid #304562}.tag.ready{background:#15362e;color:#84dfb4;border-color:#28644e}.tag.planned{background:#342a19;color:#e6c47e;border-color:#6a5734}.code{background:#08111f;border:1px solid #263650;border-radius:10px;padding:13px;color:#a9c6ee;font:11px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.result{max-height:260px;overflow:auto}.muted{color:var(--muted)}.tiny{font-size:10px}.hidden{display:none!important}.toast{position:fixed;right:24px;bottom:24px;z-index:20;background:#17263d;border:1px solid #3b5579;color:#e7f0ff;border-radius:10px;padding:12px 15px;box-shadow:0 18px 50px #0005;max-width:min(400px,calc(100vw - 32px));font-size:12px;opacity:0;transform:translateY(10px);transition:.2s;pointer-events:none}.toast.show{opacity:1;transform:translateY(0)}
+@media(max-width:1100px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.model-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:820px){.shell{grid-template-columns:1fr}.sidebar{position:fixed;left:-270px;width:248px;transition:left .2s;box-shadow:0 18px 50px #0005}.sidebar.open{left:0}.mobile-menu{display:inline-flex}.main{padding:18px 15px 38px}.topbar{align-items:flex-start}.top-actions{justify-content:flex-end}.two-col{grid-template-columns:1fr}.key-box input{width:155px}.page-title{font-size:22px}}
+@media(max-width:560px){.topbar{display:grid;grid-template-columns:1fr}.top-actions{justify-content:flex-start}.key-box{width:100%}.key-box input{flex:1;width:100%}.kpis{gap:9px}.card{padding:13px}.kpi-value{font-size:23px}.model-grid{grid-template-columns:1fr}.form-grid{grid-template-columns:1fr}.field.full{grid-column:auto}.hero{padding:21px}.hero h2{font-size:22px}}
+
+::selection{background:#335d8d;color:#fff}input,textarea{caret-color:var(--cyan)}:focus-visible{outline:2px solid var(--cyan);outline-offset:3px}a{text-underline-offset:3px}*{scrollbar-color:#42618b #10192a}th,td,.checks dd{font-variant-numeric:tabular-nums}.task-filters{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px}.task-filters label{color:var(--muted);font-size:12px}.task-filters input{width:min(240px,100%)}.task-actions{display:flex;gap:6px}.checks{margin:0}.checks>div{display:grid;grid-template-columns:150px minmax(0,1fr);gap:18px;padding:15px 0;border-bottom:1px solid var(--line)}.checks>div:last-child{border:0}.checks dt{color:var(--muted)}.checks dd{margin:0;overflow-wrap:anywhere}.code{overflow-wrap:anywhere}#connectionFeedback{margin-bottom:18px}#taskDetail{white-space:pre-wrap}.key-box{flex-wrap:wrap}.key-box input{min-width:160px}button{min-height:36px}.card-head p{line-height:1.7}.nav-label{color:#9aacc7}.brand-sub,.nav-label,.status,.sub,th,.tiny,.kpi-foot,.field label,.notice,.card-head p,.section-title p{font-size:12px}input::placeholder,textarea::placeholder{color:#93a5c1}th{color:#a3b6d0}button svg{vertical-align:middle}
+@media(max-width:700px){:root{font-size:16px}.topbar{align-items:flex-start;flex-direction:column}.top-actions,.key-box{width:100%}.key-box input{flex:1;width:100%;font-size:16px}.checks>div{grid-template-columns:1fr;gap:6px}.task-filters{align-items:flex-start}.main{padding:20px 16px 36px}.btn{min-height:44px}.field label,.notice,.card-head p,.section-title p,.empty{font-size:14px}input,select,textarea{font-size:16px}.hero p{font-size:14px}.code{font-size:13px}.card-head{flex-wrap:wrap}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
+.form-grid[hidden]{display:none}
+.gpu-task-output{white-space:pre-wrap;overflow-wrap:anywhere;min-width:12rem;max-width:34rem;margin:.5rem 0 0}
+</style>
+</head>
+<body>
+<div class="shell">
+<aside class="sidebar" id="sidebar">
+  <div class="brand"><div class="brand-mark">◈</div><div><div class="brand-name">OpenCompute AI</div><div class="brand-sub">Distributed Compute</div></div></div>
+  <div class="nav-label">工作空间</div>
+  <nav class="nav" aria-label="主导航">
+    <button class="active" data-page="overview"><span class="ico">▦</span>总览</button>
+    <button data-page="devices"><span class="ico">▣</span>设备节点</button>
+    <button data-page="tasks"><span class="ico">⇄</span>任务队列</button>
+    <button data-page="models"><span class="ico">◫</span>模型中心</button>
+    <button data-page="inference"><span class="ico">✳</span>推理实验</button>
+    <button data-page="system"><span class="ico" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg></span>连接诊断</button>
+  </nav>
+  <div class="nav-label">开发者</div><nav class="nav"><button data-page="connect"><span class="ico">⌘</span>设备接入与 API</button></nav>
+  <div class="side-bottom"><div class="side-status"><strong><span class="dot" id="sideDot"></span><span id="sideState">尚未连接集群</span></strong><small id="sideHint">输入管理员密钥以读取实时数据</small></div><div class="tiny muted" style="padding:0 10px">OpenCompute AI · v0.7 GPU Pool Preview</div></div>
+</aside>
+<main class="main">
+<header class="topbar">
+  <div style="display:flex;align-items:center;gap:10px"><button class="btn secondary mobile-menu" id="menuBtn" aria-label="打开导航" aria-expanded="false" aria-controls="sidebar">☰</button><div><span id="crumb" hidden>OVERVIEW</span><h1 class="page-title" id="pageTitle">算力总览</h1></div></div>
+  <div class="top-actions"><div class="connection"><span class="dot" id="connectionDot"></span><span id="connectionText">等待连接</span></div><div class="key-box"><input id="adminKey" type="password" autocomplete="off" placeholder="管理员 API Key" aria-label="管理员 API Key"><button class="btn" id="connectBtn">连接</button><button class="btn secondary" id="disconnectBtn" disabled>断开</button></div></div>
+</header>
+<div id="connectionFeedback" class="notice warn hidden" role="status" aria-live="polite"></div>
+
+<section class="page active" id="page-overview">
+  <div class="hero"><h2>让分散的设备，成为协同工作的 AI 算力网络。</h2><p>统一查看设备资源、任务调度与模型推理状态。统一管理 CPU 与 GPU 资源，逐步扩展到跨设备模型并行。</p><div class="hero-foot"><span class="pill">v0.7.1 GPU 调度预览</span><span class="pill">节点状态实时读取</span><span class="pill">任务队列可操作</span></div></div>
+  <div class="grid kpis">
+    <article class="card"><div class="kpi-top"><span>在线设备</span><span class="kpi-icon">▣</span></div><div class="kpi-value" id="kpiNodes">—</div><div class="kpi-foot" id="kpiNodesFoot">等待集群连接</div></article>
+    <article class="card"><div class="kpi-top"><span>在线 CPU 核心</span><span class="kpi-icon">⌘</span></div><div class="kpi-value" id="kpiCpu">—</div><div class="kpi-foot">来自在线 Worker 注册信息</div></article>
+    <article class="card"><div class="kpi-top"><span>设备总内存</span><span class="kpi-icon">▤</span></div><div class="kpi-value" id="kpiRam">—</div><div class="kpi-foot">在线节点报告的物理内存</div></article>
+    <article class="card"><div class="kpi-top"><span>运行中任务</span><span class="kpi-icon">⇄</span></div><div class="kpi-value" id="kpiRunning">—</div><div class="kpi-foot" id="kpiTaskFoot">等待集群连接</div></article>
+  </div>
+  <div class="grid two-col">
+    <article class="card"><div class="card-head"><div><h3>集群资源概况</h3><p>在线设备负载与可用资源</p></div><button class="link-btn" data-goto="devices">查看设备 →</button></div><div class="resource" id="resourceBars"><div class="empty"><strong>等待设备数据</strong>连接管理员密钥后查看资源概况</div></div></article>
+    <article class="card"><div class="card-head"><div><h3>任务状态</h3><p>调度器当前记录</p></div><button class="link-btn" data-goto="tasks">查看任务 →</button></div><div class="resource" id="taskBars"><div class="empty"><strong>暂无任务数据</strong>连接集群后查看任务队列</div></div></article>
+  </div>
+  <div class="grid two-col">
+    <article class="card"><div class="card-head"><div><h3>在线设备</h3><p>最近心跳正常的计算节点</p></div><button class="link-btn" data-goto="devices">全部设备 →</button></div><div class="table-wrap"><table><thead><tr><th>设备</th><th>资源</th><th>负载</th><th>状态</th></tr></thead><tbody id="overviewNodes"><tr><td colspan="4" class="muted">尚未连接</td></tr></tbody></table></div></article>
+    <article class="card"><div class="card-head"><div><h3>最近任务</h3><p>最新提交的任务记录</p></div><button class="link-btn" data-goto="tasks">任务列表 →</button></div><div class="table-wrap"><table><thead><tr><th>任务</th><th>类型</th><th>状态</th></tr></thead><tbody id="overviewTasks"><tr><td colspan="3" class="muted">尚未连接</td></tr></tbody></table></div></article>
+  </div>
+</section>
+
+<section class="page" id="page-devices">
+  <div class="section-title"><div><h2>设备节点</h2><p>已注册 Worker 的在线状态、资源容量与能力标签</p></div><button class="btn secondary small" id="refreshDevices">刷新设备</button></div>
+  <article class="card"><div class="card-head"><div><h3>节点列表</h3><p id="deviceCount">等待数据</p></div><button class="btn small" data-goto="connect">接入新设备</button></div><div class="table-wrap"><table><thead><tr><th>设备名称</th><th>平台</th><th>CPU</th><th>内存</th><th>CPU 负载</th><th>能力</th><th>最近心跳</th><th>状态</th></tr></thead><tbody id="deviceRows"><tr><td colspan="8" class="muted">请先连接集群</td></tr></tbody></table></div></article>
+  <article class="card" style="margin-top:14px">
+    <div class="card-head"><div><h3>GPU 算力池</h3><p>在线显卡、显存容量与设备负载</p></div><span id="gpuPoolState" class="status wait">等待数据</span></div>
+    <div class="resource" id="gpuSummary"><div class="empty"><strong>等待 GPU 数据</strong>连接集群后读取 GPU Worker 上报的资源</div></div>
+    <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>所属节点</th><th>GPU 设备</th><th>厂商 / 后端</th><th>显存可用 / 总量</th><th>利用率</th><th>计算能力</th><th>执行环境</th><th>状态</th></tr></thead><tbody id="gpuRows"><tr><td colspan="7" class="muted">请先连接集群</td></tr></tbody></table></div>
+  </article>
+  <div class="notice warn" style="margin-top:14px">GPU 信息由 Worker 通过节点令牌上报，属于自报遥测而非硬件证明。GPU 任务调度要求节点同时报告可用的 PyTorch CUDA 运行环境。</div>
+  <div class="notice" style="margin-top:10px">配置了本地 Qwen2 模型的在线 Worker 会出现在 GPU 任务队列的模型列表中。</div>
+</section>
+
+<section class="page" id="page-tasks">
+  <div class="section-title"><div><h2>任务队列</h2><p>提交受限 CPU / GPU 任务，观察设备领取、显存预留与执行结果</p></div><button class="btn secondary small" id="refreshTasks">刷新队列</button></div>
+  <div class="grid two-col">
+    <article class="card"><div class="card-head"><div><h3>创建计算任务</h3><p>CPU 队列开放三种受限任务；GPU 队列独立调度 CUDA 任务</p></div></div>
+      <form id="taskForm"><div class="form-grid">
+        <div class="field full"><label for="taskKind">任务类型</label><select id="taskKind"><option value="sum">数值求和</option><option value="sha256">SHA-256 摘要</option><option value="matmul_checksum">矩阵乘法校验</option></select></div>
+        <div class="field full" id="sumField"><label for="sumInput">数值列表（逗号分隔）</label><input id="sumInput" value="1,2,3,4,5"></div>
+        <div class="field full hidden" id="textField"><label for="hashInput">待计算文本</label><textarea id="hashInput" placeholder="输入要计算 SHA-256 的文本"></textarea></div>
+        <div class="field full hidden" id="matrixField"><label for="matrixSize">矩阵边长（1–64）</label><input id="matrixSize" type="number" min="1" max="64" value="24"></div>
+        <div class="field"><label for="taskCpu">所需 CPU 核心</label><input id="taskCpu" type="number" min="1" max="128" value="1"></div>
+        <div class="field"><label for="taskRam">所需内存（MB）</label><input id="taskRam" type="number" min="1" max="1048576" value="64"></div>
+      </div><div class="form-actions"><button class="btn" type="submit" id="submitTask">提交任务</button><span class="tiny muted">需要已连接的管理员密钥</span></div></form><p id="taskFeedback" class="tiny muted" role="status"></p>
+    </article>
+    <article class="card"><div class="card-head"><div><h3>队列概况</h3><p>任务生命周期计数</p></div></div><div class="resource" id="taskSummary"><div class="empty">连接后读取任务统计</div></div><div class="notice" style="margin-top:15px">任务会被调度到支持对应能力且资源满足要求的在线节点。若没有匹配节点，任务将保持排队状态。</div></article>
+  </div>
+  <article class="card" style="margin-top:16px">
+    <div class="card-head"><div><h3>GPU 任务调度</h3><p>在 NVIDIA CUDA Worker 上运行矩阵校验或 Qwen2 文本生成</p></div><span class="status wait" id="gpuTaskLiveStatus">未连接</span></div>
+    <form id="gpuTaskForm">
+      <div class="field"><label for="gpuTaskKind">任务类型</label><select id="gpuTaskKind">
+        <option value="matmul_checksum">矩阵校验</option><option value="qwen2_generate">Qwen2 文本生成</option>
+      </select></div>
+      <div class="form-grid" id="gpuMatrixFields">
+        <div class="field"><label for="gpuTaskSize">矩阵边长（16–512）</label><input id="gpuTaskSize" type="number" min="16" max="512" value="128"></div>
+        <div class="field"><label for="gpuTaskVram">预留显存（MB）</label><input id="gpuTaskVram" type="number" min="64" max="1048576" value="256"></div>
+      </div>
+      <div id="gpuQwenFields" hidden>
+        <div class="form-grid">
+          <div class="field"><label for="gpuQwenModel">模型</label><select id="gpuQwenModel" disabled><option value="">等待配置了 Qwen2 的在线 Worker</option></select></div>
+          <div class="field"><label for="gpuQwenTokens">生成 Token 数（1–64）</label><input id="gpuQwenTokens" type="number" min="1" max="64" value="16"></div>
+        </div>
+        <div class="field"><label for="gpuQwenPrompt">提示词</label><textarea id="gpuQwenPrompt" rows="4" maxlength="4096" placeholder="输入要续写的文本"></textarea></div>
+      </div>
+      <div class="form-actions"><button class="btn" type="submit" id="submitGpuTask">提交 GPU 任务</button></div>
+    </form>
+    <p id="gpuTaskFeedback" class="tiny muted" role="status"></p>
+    <div class="resource" id="gpuTaskSummary"><div class="empty">连接后读取 GPU 任务统计</div></div>
+    <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>任务 ID</th><th>类型</th><th>状态</th><th>分配设备</th><th>预留显存</th><th>尝试次数</th><th>结果</th><th>操作</th></tr></thead><tbody id="gpuTaskRows"><tr><td colspan="8" class="muted">请先连接集群</td></tr></tbody></table></div>
+    <div class="notice" style="margin-top:12px">Qwen2 提示词会发送给执行任务的 Worker，并保存在任务记录中。</div>
+  </article>
+  <article class="card"><div class="card-head"><div><h3>任务记录</h3><p>最近 100 条任务，按创建时间倒序</p><div class="task-filters"><label for="taskFilter">状态</label><select id="taskFilter"><option value="all">全部状态</option><option value="queued">排队中</option><option value="leased">执行中</option><option value="completed">已完成</option><option value="failed">失败</option><option value="cancelled">已取消</option></select><label for="taskSearch">搜索</label><input id="taskSearch" placeholder="任务 ID 或类型"></div></div><span class="status" id="taskLiveStatus">未连接</span></div><div class="table-wrap"><table><thead><tr><th>任务 ID</th><th>类型</th><th>状态</th><th>分配设备</th><th>尝试次数</th><th>创建时间</th><th>结果</th><th>操作</th></tr></thead><tbody id="taskRows"><tr><td colspan="8" class="muted">请先连接集群</td></tr></tbody></table></div></article>
+<article id="taskDetailPanel" class="card hidden" style="margin-top:16px"><div class="card-head"><div><h3>任务详情</h3><p>完整输入、结果与状态；取消使租约失效，设备可能仍会完成当前计算。</p></div><button id="closeTaskDetail" class="btn secondary small">收起详情</button></div><pre id="taskDetail" class="code result" aria-live="polite"></pre></article>
+</section>
+
+<section class="page" id="page-models">
+  <div class="section-title"><div><h2>模型中心</h2><p>浏览模型适配情况；目录收录不代表当前都可执行</p></div><button class="btn secondary small" id="refreshModels">刷新模型目录</button></div>
+  <div class="notice warn" style="margin-bottom:14px">当前已接通的实时请求服务是本机 Qwen2 双阶段 CPU 实验路径。DeepSeek、Llama 等模型条目是否可运行，以模型目录能力状态为准；第三方 API 调用不等于使用本平台设备算力。</div>
+  <div class="grid model-grid" id="modelCards"><div class="empty">连接后加载模型目录</div></div><div class="form-actions"><a class="btn secondary" href="/v0.4/console">打开原版模型实验控制台 ↗</a></div>
+</section>
+
+<section class="page" id="page-inference">
+  <div class="section-title"><div><h2>推理实验</h2><p>向本机 Qwen2 PP 服务提交 Token ID 请求</p></div><button class="btn secondary small" id="refreshInference">刷新服务状态</button></div>
+  <div class="grid two-col">
+    <article class="card"><div class="card-head"><div><h3>Qwen2 双阶段推理</h3><p>动态请求队列 · micro-batch · Gloo CPU</p></div><span class="status wait" id="qwenBadge">未检测</span></div><div class="resource" id="qwenStats"><div class="empty">连接后读取推理服务状态</div></div></article>
+    <article class="card"><div class="card-head"><div><h3>提交推理请求</h3><p>输入 Token ID，不是自然语言 Prompt</p></div></div>
+      <form id="inferenceForm"><div class="field"><label for="clientId">客户端标识</label><input id="clientId" value="web-console" maxlength="64"></div><div class="field" style="margin-top:11px"><label for="promptIds">Prompt Token ID（逗号分隔，1–128 个）</label><textarea id="promptIds">1,2,3</textarea></div><div class="form-actions"><button class="btn" id="submitInference" type="submit" disabled>提交推理</button></div></form><p id="inferenceFeedback" class="tiny muted" role="status"></p>
+    </article>
+  </div>
+  <article class="card" style="margin-top:14px"><div class="card-head"><div><h3>推理返回结果</h3><p>原始 JSON 响应</p></div></div><pre class="code result" id="inferenceResult">尚未提交请求</pre></article>
+  <div class="notice warn" style="margin-top:14px">实验限制：当前每个 micro-batch 都会启动新的本机双 Rank 进程组并重新加载权重；没有常驻推理进程、自然语言 Tokenizer、流式输出或跨设备 Qwen2 执行。未配置 OPENCOMPUTE_QWEN2_PP_BUNDLE 时，服务会明确显示未启用。</div>
+</section>
+
+<section class="page" id="page-system">
+  <div class="section-title"><div><h2>连接诊断</h2><p>区分网站可达、身份验证、设备与模型状态</p></div><button id="refreshSystem" class="btn secondary small">重新检测</button></div>
+  <article class="card"><div class="card-head"><div><h3>当前服务</h3><p id="systemHint">连接管理员密钥后读取服务器状态</p></div><span id="systemState" class="status">未检测</span></div><dl id="systemChecks" class="checks"><div><dt>API 地址</dt><dd id="apiOrigin"></dd></div></dl></article>
+  <div class="notice" style="margin-top:16px">页面能打开只代表网站入口可达。没有在线设备时，CPU 任务会等待；没有配置模型包时，推理实验会停用。域名无法打开时，请在服务器运行部署检查脚本，分别核查本机服务、Funnel 与公共 DNS。</div>
+</section>
+
+<section class="page" id="page-connect">
+  <div class="section-title"><div><h2>设备接入与 API</h2><p>让本机参与算力校验，查看在线节点</p></div></div>
+  <article class="card" style="margin-bottom:14px">
+    <div class="card-head">
+      <div><h3>公网设备接入</h3><p>运行一次校验，资源达标后自动加入</p></div>
+      <button class="btn secondary small" id="refreshPublicPool">刷新状态</button>
+    </div>
+    <p id="publicPoolStatus" class="muted" role="status">正在读取接入状态…</p>
+    <div id="publicPoolControls" hidden>
+      <div class="resource" id="publicPoolMetrics"></div>
+      <p class="muted">需要 Python 3.9+、至少 2 核 CPU 和 2 GB 内存。GPU 模式还需 NVIDIA CUDA 版 PyTorch 和至少 4 GB 显存。</p>
+      <div class="form-grid">
+        <div class="field"><label for="publicWorkerShell">命令环境</label><select id="publicWorkerShell"><option value="powershell">Windows PowerShell</option><option value="posix">Linux / macOS</option></select></div>
+        <div class="field"><label for="publicWorkerDevice">贡献算力</label><select id="publicWorkerDevice"><option value="cpu">CPU</option><option value="cuda">NVIDIA GPU</option></select></div>
+      </div>
+      <div class="form-actions"><a class="btn" id="downloadPublicWorker" href="/v0.8/public/worker.py" download="opencompute-worker.py">下载 Worker</a><button class="btn secondary" id="copyPublicWorker">复制启动命令</button></div>
+      <pre class="code" id="publicWorkerCommand" style="margin-top:12px"></pre>
+      <p class="muted tiny">在下载文件的目录运行命令并保持终端开启。CPU 模式目前仅做接入校验，尚未参与 CPU 任务调度；GPU 模式执行可验证矩阵任务，尚不承载 Qwen2 / DeepSeek 推理。设备规格由 Worker 上报，暂非硬件远程证明。</p>
+    </div>
+  </article>
+  <div class="grid two-col">
+    <article class="card"><div class="card-head"><div><h3>可信设备接入</h3><p>用于接收平台计算与模型推理任务</p></div></div>
+      <ol class="muted" style="font-size:12px;line-height:2;padding-left:19px"><li>在服务端配置 OPENCOMPUTE_JOIN_KEY（至少 16 位）。</li><li>在可信私有网络中启动服务端，并确认设备可访问 API 地址。</li><li>在设备上安装仓库依赖，然后运行 Worker Agent。</li><li>返回本页刷新设备列表，确认节点在线。</li></ol>
+      <div class="field"><label for="serverUrl">服务端 API 地址</label><input id="serverUrl" value="http://127.0.0.1:8000"></div><div class="field" style="margin-top:10px"><label for="workerName">设备名称</label><input id="workerName" value="my-cpu-worker"></div>
+      <div class="field" style="margin-top:10px"><label for="workerShell">命令环境</label><select id="workerShell"><option value="posix">Linux / macOS Shell</option><option value="powershell">Windows PowerShell</option></select></div><div class="code" id="workerCommand" style="margin-top:12px">OPENCOMPUTE_API_URL=http://127.0.0.1:8000
+OPENCOMPUTE_JOIN_KEY=替换为服务端加入密钥
+python -m cluster_v03.worker --name my-cpu-worker</div><div class="form-actions"><button class="btn secondary small" id="copyWorker">复制接入命令</button></div>
+    </article>
+    <article class="card"><div class="card-head"><div><h3>API 快速参考</h3><p>管理员密钥使用 X-Admin-Key 请求头</p></div></div><div class="code">GET  /health
+GET  /v0.3/status
+GET  /v0.6/system
+GET  /v0.3/tasks/{id}
+POST /v0.3/tasks/{id}/cancel
+POST /v0.3/tasks/{id}/retry
+POST /v0.3/tasks
+GET  /v0.7/gpus
+POST /v0.7/gpu-tasks
+POST /v0.7/nodes/{id}/gpu-claim
+POST /v0.7/gpu-tasks/{id}/complete
+GET  /v0.4/models
+GET  /v0.5/status
+POST /v0.5/requests</div><p class="muted tiny" style="line-height:1.8">Worker 节点使用 X-Join-Key 完成注册，之后使用节点令牌发送心跳、领取任务和提交结果。不要把管理员密钥或节点令牌写入公开网页、代码仓库或 URL。</p><a href="/docs" target="_blank" rel="noreferrer">打开 FastAPI 交互式 API 文档 ↗</a></article>
+  </div>
+  <div class="notice warn" style="margin-top:14px">公网接入请使用站点的 HTTPS 地址。可信设备使用独立的加入密钥，服务端默认绑定 127.0.0.1。</div>
+</section>
+</main>
+</div>
+<div class="toast" id="toast" role="status"></div>
+<script src="/assets/dashboard.js" defer></script>
+</body></html>

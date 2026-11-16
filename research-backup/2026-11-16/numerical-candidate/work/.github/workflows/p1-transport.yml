@@ -1,0 +1,17 @@
+name: P1 transport
+on:
+  push:
+    paths: ['cluster_p1/envelope.py', 'cluster_p1/channel.py', 'tests/test_p1_channel.py', 'tests/test_p1_envelope.py', '.github/workflows/p1-transport.yml']
+  pull_request:
+    paths: ['cluster_p1/envelope.py', 'cluster_p1/channel.py', 'tests/test_p1_channel.py', 'tests/test_p1_envelope.py', '.github/workflows/p1-transport.yml']
+jobs:
+  transport:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: openssl version
+      - run: python -W error::ResourceWarning -m unittest discover -s tests -p 'test_p1_envelope.py' -v
+      - run: python -W error::ResourceWarning -m unittest discover -s tests -p 'test_p1_channel.py' -v
